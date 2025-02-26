@@ -1,0 +1,4 @@
+#pragma once
+
+#define PLUGIN_NAME "@CMAKE_PROJECT_NAME@";
+#define PLUGIN_VERSION "@CMAKE_PROJECT_VERSION@";
