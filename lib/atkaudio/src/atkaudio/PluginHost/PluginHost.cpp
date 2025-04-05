@@ -16,11 +16,13 @@ static std::unique_ptr<StandalonePluginHolder2> createPluginHolder()
 struct atk::PluginHost::Impl : public juce::Timer
 {
     Impl()
-        : mainWindow(std::make_unique<StandaloneFilterWindow>(
-              "atkAudio Plugin Host",
-              LookAndFeel::getDefaultLookAndFeel().findColour(ResizableWindow::backgroundColourId),
-              createPluginHolder()
-          ))
+        : mainWindow(
+              std::make_unique<StandaloneFilterWindow>(
+                  "atkAudio Plugin Host",
+                  LookAndFeel::getDefaultLookAndFeel().findColour(ResizableWindow::backgroundColourId),
+                  createPluginHolder()
+              )
+          )
     {
         startTimerHz(30);
     }
@@ -62,8 +64,10 @@ struct atk::PluginHost::Impl : public juce::Timer
 
     void process(float** buffer, int numChannels, int numSamples, double sampleRate)
     {
-        if (this->numChannels != numChannels || this->numSamples < numSamples || this->sampleRate != sampleRate)
+        if (!buffer || this->numChannels != numChannels || this->numSamples < numSamples ||
+            this->sampleRate != sampleRate || isFirstRun)
         {
+            isFirstRun = false;
             this->numChannels = numChannels;
             this->numSamples = numSamples;
             this->sampleRate = sampleRate;
@@ -130,6 +134,7 @@ private:
     double sampleRate = 48000.0;
 
     std::atomic_bool isPrepared{false};
+    bool isFirstRun = true;
     bool needsRelease = false;
 };
 

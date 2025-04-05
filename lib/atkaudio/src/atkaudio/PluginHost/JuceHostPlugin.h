@@ -18,10 +18,12 @@ class HostAudioProcessorImpl
 {
 public:
     HostAudioProcessorImpl()
-        : AudioProcessor(BusesProperties()
-                             .withInput("Input", AudioChannelSet::stereo(), true)
-                             .withOutput("Output", AudioChannelSet::stereo(), true)
-                             .withInput("Sidechain", AudioChannelSet::stereo(), false))
+        : AudioProcessor(
+              BusesProperties()
+                  .withInput("Input", AudioChannelSet::stereo(), true)
+                  .withOutput("Output", AudioChannelSet::stereo(), true)
+                  .withInput("Sidechain", AudioChannelSet::stereo(), false)
+          )
 
     {
         appProperties.setStorageParameters(
@@ -249,9 +251,6 @@ public:
 
             editorStyle = where;
 
-            if (inner != nullptr && !mb.isEmpty())
-                inner->setStateInformation(mb.getData(), (int)mb.getSize());
-
             // In a 'real' plugin, we'd also need to set the bus configuration of the inner plugin.
             // One possibility would be to match the bus configuration of the wrapper plugin, but
             // the inner plugin isn't guaranteed to support the same layout. Alternatively, we
@@ -321,15 +320,19 @@ public:
                         getBlockSize()
                     );
                 }
-
-                inner->prepareToPlay(getSampleRate(), getBlockSize());
             }
+
+            this->prepareToPlay(getSampleRate(), getBlockSize());
+
+            if (inner != nullptr && !mb.isEmpty())
+                inner->setStateInformation(mb.getData(), (int)mb.getSize());
 
             if (needsPluginChanged)
                 NullCheckedInvocation::invoke(pluginChanged);
         };
 
-        pluginFormatManager.createPluginInstanceAsync(pd, getSampleRate(), getBlockSize(), callback);
+        if (inner == nullptr || (inner != nullptr && inner->getPluginDescription().name != pd.name))
+            pluginFormatManager.createPluginInstanceAsync(pd, getSampleRate(), getBlockSize(), callback);
     }
 
     void clearPlugin()
