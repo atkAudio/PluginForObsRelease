@@ -145,6 +145,9 @@ static void pluginhost_update(void* data, obs_data_t* s)
 
         obs_weak_source_release(old_weak_sidechain);
     }
+
+    // load state
+    load(data, s);
 }
 
 static void* pluginhost_create(obs_data_t* settings, obs_source_t* filter)
@@ -393,5 +396,5 @@ struct obs_source_info pluginhost_filter = {
     .video_tick = pluginhost_tick,
     .filter_audio = pluginhost_filter_audio,
     .save = save,
-    .load = load,
+    // .load = load,
 };
