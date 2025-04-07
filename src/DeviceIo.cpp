@@ -37,12 +37,23 @@ static void devio_destroy(void* data)
     delete adio;
 }
 
+static void load(void* data, obs_data_t* settings)
+{
+    auto* adio = (struct adio_data*)data;
+    std::string s;
+    const char* chunkData = obs_data_get_string(settings, FILTER_ID);
+    s = chunkData;
+    adio->deviceIo.setState(s);
+}
+
 static void devio_update(void* data, obs_data_t* s)
 {
     struct adio_data* adio = (struct adio_data*)data;
     auto mix = obs_data_get_bool(s, S_MIX_INPUT);
     adio->mixInput.store(mix);
     adio->channels = (int)audio_output_get_channels(obs_get_audio());
+
+    load(data, s);
 }
 
 static void* devio_create(obs_data_t* settings, obs_source_t* filter)
@@ -135,15 +146,6 @@ static void save(void* data, obs_data_t* settings)
     obs_data_set_string(settings, FILTER_ID, s.c_str());
 }
 
-static void load(void* data, obs_data_t* settings)
-{
-    auto* adio = (struct adio_data*)data;
-    std::string s;
-    const char* chunkData = obs_data_get_string(settings, FILTER_ID);
-    s = chunkData;
-    adio->deviceIo.setState(s);
-}
-
 struct obs_source_info device_io_filter = {
     .id = FILTER_ID,
     .type = OBS_SOURCE_TYPE_FILTER,
@@ -156,5 +158,5 @@ struct obs_source_info device_io_filter = {
     .update = devio_update,
     .filter_audio = devio_filter,
     .save = save,
-    .load = load,
+    // .load = load,
 };
