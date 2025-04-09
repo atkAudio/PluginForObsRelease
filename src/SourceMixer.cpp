@@ -202,9 +202,9 @@ static void asmd_capture(void* param, obs_source_t* sourceIn, const struct audio
         {
             auto* sourcePtr = (float*)audio_data->data[i];
             for (size_t j = 0; j < frames; j++)
-                source->tempBuffer[j] = sourcePtr[j] * source->gain;
+                sourcePtr[j] *= source->gain;
 
-            source->fifoBuffer.write(source->tempBuffer.data(), i, frames, i == numChannels - 1);
+            source->fifoBuffer.write(sourcePtr, i, frames, i == numChannels - 1);
         }
     }
 
@@ -233,6 +233,8 @@ static void asmd_capture(void* param, obs_source_t* sourceIn, const struct audio
         }
     }
 
+    // TODO
+    doThisCallback = false;
     if (!doThisCallback)
     {
         asmd->doRawCallback = true;
@@ -240,9 +242,9 @@ static void asmd_capture(void* param, obs_source_t* sourceIn, const struct audio
     }
     asmd->doRawCallback = false;
 
-    std::scoped_lock lock(asmd->captureCallbackMutex);
-
     auto sampleRate = audio_output_get_sample_rate(obs_get_audio());
+
+    std::scoped_lock lock(asmd->captureCallbackMutex);
 
     for (auto& source : *asmd->sources)
     {
