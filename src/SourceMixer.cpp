@@ -194,7 +194,10 @@ static void asmd_capture(void* param, obs_source_t* sourceIn, const struct audio
 
     source->fifoBuffer.setSize(numChannels, fifoSize);
 
-    source->tempBuffer.resize(fifoSize, 0.0f);
+    {
+        std::scoped_lock lock(asmd->captureCallbackMutex);
+        source->tempBuffer.resize(fifoSize, 0.0f);
+    }
 
     if (!(muted && source->postMute))
     {
@@ -233,8 +236,6 @@ static void asmd_capture(void* param, obs_source_t* sourceIn, const struct audio
         }
     }
 
-    // TODO
-    doThisCallback = false;
     if (!doThisCallback)
     {
         asmd->doRawCallback = true;
@@ -260,10 +261,7 @@ static void asmd_capture(void* param, obs_source_t* sourceIn, const struct audio
 
         auto numReady = source.fifoBuffer.getNumReady();
 
-        if (numReady < frames && source.isActive.load(std::memory_order_acquire))
-            // if (numReady < frames)
-            // if (numReady < frames &&
-            //     audio_data->timestamp - source.last_callback_time < 2.0 * frames / sampleRate * 1000000000)
+        if (numReady < 2 * frames && source.isActive.load(std::memory_order_acquire))
             return;
     }
 
@@ -297,7 +295,7 @@ static void asmd_capture(void* param, obs_source_t* sourceIn, const struct audio
         {
             auto numReady = source.fifoBuffer.getNumReady();
 
-            if (numReady != frames)
+            if (numReady < frames || numReady > 2 * frames)
             {
                 source.fifoBuffer.reset();
 
