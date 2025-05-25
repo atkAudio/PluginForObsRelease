@@ -14,8 +14,8 @@
 !buildspec.json
 !CMakeLists.txt
 !CMakePresets.json
-!LICENSE*
 !README.md
+!LICENSE*
 
 !/lib
 !.vscode

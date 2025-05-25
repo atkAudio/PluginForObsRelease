@@ -25,7 +25,6 @@ execute_process(
 execute_process(
   COMMAND /usr/bin/productbuild
     --distribution "@CMAKE_CURRENT_BINARY_DIR@/distribution"
-    --resources "@CMAKE_BINARY_DIR@"
     --package-path "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/temp"
     "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/@CMAKE_PROJECT_NAME@.pkg"
     COMMAND_ERROR_IS_FATAL ANY)

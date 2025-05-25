@@ -5,7 +5,7 @@
 namespace atk
 {
 
-class DLL_EXPORT FifoBuffer
+class FifoBuffer
 {
 public:
     FifoBuffer();

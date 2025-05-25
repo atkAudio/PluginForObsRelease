@@ -54,7 +54,7 @@ drawTextLayout(Graphics& g, Component& owner, StringRef text, const Rectangle<in
 
     AttributedString attributedString{text};
     attributedString.setColour(textColour);
-    attributedString.setFont((float)textBounds.getHeight() * 0.6f);
+    attributedString.setFont(owner.withDefaultMetrics(FontOptions{(float)textBounds.getHeight() * 0.6f}));
     attributedString.setJustification(Justification::centredLeft);
     attributedString.setWordWrap(AttributedString::WordWrap::none);
 
@@ -676,8 +676,10 @@ private:
                 {
                     resetDeviceButton = std::make_unique<TextButton>(
                         TRANS("Reset Device"),
-                        TRANS("Resets the audio interface - sometimes needed after "
-                              "changing a device's properties in its custom control panel")
+                        TRANS(
+                            "Resets the audio interface - sometimes needed after "
+                            "changing a device's properties in its custom control panel"
+                        )
                     );
                     addAndMakeVisible(resetDeviceButton.get());
                     resetDeviceButton->onClick = [this] { resetDevice(); };

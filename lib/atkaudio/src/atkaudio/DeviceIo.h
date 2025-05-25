@@ -4,7 +4,7 @@
 
 namespace atk
 {
-class DLL_EXPORT DeviceIo
+class DeviceIo
 {
 public:
     DeviceIo();

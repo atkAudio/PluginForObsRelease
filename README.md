@@ -4,10 +4,12 @@
 VST3 plugin host for OBS.
 Up to 8 channels.
 AU plugins on Apple macOS.
+
 ## Device I/O
 Send and receive audio directly into and from audio devices.
 "Anything from/to anywhere" device routing.
 ASIO, CoreAudio and Windows Audio devices.
+
 ## Audio Source Mixer (OBS Source)
 Mix audio from up to 8 OBS sources into a new OBS audio source.
 E.g. allows creating new submixes.

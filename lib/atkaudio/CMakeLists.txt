@@ -4,7 +4,7 @@ project(atkaudio VERSION ${CMAKE_PROJECT_VERSION})
 
 find_package(Git REQUIRED)
 
-add_library(${PROJECT_NAME} SHARED)
+add_library(${PROJECT_NAME} STATIC)
 
 file(GLOB_RECURSE 
     _sources CONFIGURE_DEPENDS 
@@ -21,7 +21,7 @@ target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ${PROJECT_NAME})
 
 cmake_policy(SET CMP0177 NEW)
 
-add_subdirectory(JUCE-7.0.12 EXCLUDE_FROM_ALL)
+add_subdirectory(JUCE EXCLUDE_FROM_ALL)
 set(target ${PROJECT_NAME})
 set_target_properties(${target} PROPERTIES
     JUCE_NEEDS_WEB_BROWSER TRUE
@@ -68,24 +68,6 @@ endif()
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ${PROJECT_NAME})
 
 add_dependencies(${CMAKE_PROJECT_NAME} ${PROJECT_NAME})
-
-set_target_properties(${PROJECT_NAME} PROPERTIES INSTALL_PREFIX ${CMAKE_INSTALL_PREFIX})
-set_target_properties(${PROJECT_NAME} PROPERTIES PREFIX "")
-
-if(WIN32)
-    set_target_properties(${PROJECT_NAME} PROPERTIES PREFIX "")
-    set(destination "bin/64bit")
-    install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION "${destination}" LIBRARY DESTINATION "${destination}")
-
-    install(
-    FILES "$<TARGET_PDB_FILE:${PROJECT_NAME}>"
-    CONFIGURATIONS RelWithDebInfo Debug
-    DESTINATION "${destination}"
-    OPTIONAL
-    )
-elseif(APPLE)
-    install(TARGETS ${PROJECT_NAME} LIBRARY DESTINATION $<TARGET_BUNDLE_DIR:${CMAKE_PROJECT_NAME}>/Contents/Frameworks)
-endif()
 
 set(ASIO_SDK_URL "https://www.steinberg.net/asiosdk")
 set(ASIO_SDK_TEMPDIR "${CMAKE_CURRENT_BINARY_DIR}/asiosdk_temp")

@@ -4,7 +4,7 @@
 
 namespace atk
 {
-class DLL_EXPORT PluginHost
+class PluginHost
 {
 public:
     PluginHost();

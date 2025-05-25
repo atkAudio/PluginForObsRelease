@@ -4,7 +4,7 @@
 
 namespace atk
 {
-class DLL_EXPORT Delay
+class Delay
 {
 public:
     Delay();

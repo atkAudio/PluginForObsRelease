@@ -82,6 +82,8 @@ static void audio_output_callback(void* param, size_t mix_idx, struct audio_data
     if (!asmd->doRawCallback.load())
         return;
 
+    std::scoped_lock lock(asmd->captureCallbackMutex);
+
     auto numChannels = audio_output_get_channels(obs_get_audio());
     auto sampleRate = audio_output_get_sample_rate(obs_get_audio());
 
@@ -180,6 +182,8 @@ static void asmd_capture(void* param, obs_source_t* sourceIn, const struct audio
     if (!source)
         return;
 
+    std::scoped_lock lock(asmd->captureCallbackMutex);
+
     source->isActive.store(true, std::memory_order_release);
 
     auto frames = (int)audio_data->frames;
@@ -192,9 +196,8 @@ static void asmd_capture(void* param, obs_source_t* sourceIn, const struct audio
 
     auto fifoSize = ((asmd->frames * 2) / frames + 1) * frames;
 
-    source->fifoBuffer.setSize(numChannels, fifoSize);
-
     source->tempBuffer.resize(fifoSize, 0.0f);
+    source->fifoBuffer.setSize(numChannels, fifoSize);
 
     if (!(muted && source->postMute))
     {
@@ -233,8 +236,6 @@ static void asmd_capture(void* param, obs_source_t* sourceIn, const struct audio
         }
     }
 
-    // TODO
-    doThisCallback = false;
     if (!doThisCallback)
     {
         asmd->doRawCallback = true;
@@ -243,8 +244,6 @@ static void asmd_capture(void* param, obs_source_t* sourceIn, const struct audio
     asmd->doRawCallback = false;
 
     auto sampleRate = audio_output_get_sample_rate(obs_get_audio());
-
-    std::scoped_lock lock(asmd->captureCallbackMutex);
 
     for (auto& source : *asmd->sources)
     {
@@ -260,10 +259,7 @@ static void asmd_capture(void* param, obs_source_t* sourceIn, const struct audio
 
         auto numReady = source.fifoBuffer.getNumReady();
 
-        if (numReady < frames && source.isActive.load(std::memory_order_acquire))
-            // if (numReady < frames)
-            // if (numReady < frames &&
-            //     audio_data->timestamp - source.last_callback_time < 2.0 * frames / sampleRate * 1000000000)
+        if (numReady < 2 * frames && source.isActive.load(std::memory_order_acquire))
             return;
     }
 
@@ -297,7 +293,7 @@ static void asmd_capture(void* param, obs_source_t* sourceIn, const struct audio
         {
             auto numReady = source.fifoBuffer.getNumReady();
 
-            if (numReady != frames)
+            if (numReady < frames || numReady > 2 * frames)
             {
                 source.fifoBuffer.reset();
 
