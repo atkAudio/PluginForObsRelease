@@ -19,6 +19,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "config.h"
 
 #include <atkaudio/atkaudio.h>
+#include <obs-frontend-api.h>
 #include <obs-module.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -41,8 +42,9 @@ void obs_log(int log_level, const char* format, ...);
 
 bool obs_module_load(void)
 {
-    atk::create();
     obs_log(LOG_INFO, "plugin loaded successfully (version %s)", plugin_version);
+
+    atk::create();
 
     obs_register_source(&autoreset_filter);
     obs_register_source(&delay_filter);

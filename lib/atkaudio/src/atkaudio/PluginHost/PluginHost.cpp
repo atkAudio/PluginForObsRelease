@@ -30,8 +30,8 @@ struct atk::PluginHost::Impl : public juce::Timer
     ~Impl()
     {
         stopTimer();
-        auto* mainWindow = this->mainWindow.release();
-        auto lambda = [mainWindow] { delete mainWindow; };
+        auto* window = this->mainWindow.release();
+        auto lambda = [window] { delete window; };
         juce::MessageManager::callAsync(lambda);
     }
 
@@ -62,15 +62,15 @@ struct atk::PluginHost::Impl : public juce::Timer
         }
     }
 
-    void process(float** buffer, int numChannels, int numSamples, double sampleRate)
+    void process(float** buffer, int newNumChannels, int newNumSamples, double newSampleRate)
     {
-        if (!buffer || this->numChannels != numChannels || this->numSamples < numSamples ||
-            this->sampleRate != sampleRate || isFirstRun)
+        if (!buffer || this->numChannels != newNumChannels || this->numSamples < newNumSamples ||
+            this->sampleRate != newSampleRate || isFirstRun)
         {
             isFirstRun = false;
-            this->numChannels = numChannels;
-            this->numSamples = numSamples;
-            this->sampleRate = sampleRate;
+            this->numChannels = newNumChannels;
+            this->numSamples = newNumSamples;
+            this->sampleRate = newSampleRate;
             isPrepared.store(false, std::memory_order_release);
             return;
         }
@@ -83,7 +83,7 @@ struct atk::PluginHost::Impl : public juce::Timer
 
         auto* processor = mainWindow->getAudioProcessor();
 
-        audioBuffer.setDataToReferTo(buffer, numChannels * 2, numSamples);
+        audioBuffer.setDataToReferTo(buffer, newNumChannels * 2, newNumSamples);
         processor->getCallbackLock().enter();
         processor->processBlock(audioBuffer, midiBuffer);
         processor->getCallbackLock().exit();

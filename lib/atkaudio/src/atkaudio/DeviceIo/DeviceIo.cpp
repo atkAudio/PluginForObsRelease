@@ -17,12 +17,12 @@ struct atk::DeviceIo::Impl : public juce::Timer
 
     ~Impl()
     {
-        auto* mainWindow = this->mainWindow;
-        auto* deviceManager = this->deviceManager;
-        auto lambda = [mainWindow, deviceManager]()
+        auto* window = this->mainWindow;
+        auto* manager = this->deviceManager;
+        auto lambda = [window, manager]()
         {
-            delete mainWindow;
-            delete deviceManager;
+            delete window;
+            delete manager;
         };
         juce::MessageManager::callAsync(lambda);
     }
@@ -68,7 +68,7 @@ struct atk::DeviceIo::Impl : public juce::Timer
         }
 
         auto sampleRatio = audioAppDemo->getSampleRate() / sampleRate;
-        auto remoteBufferSize = audioAppDemo->getBufferSize();
+        // auto remoteBufferSize = audioAppDemo->getBufferSize();
 
         auto sampleRatioCorrection = 1.0;
         if (speedUp)
@@ -209,9 +209,9 @@ struct atk::DeviceIo::Impl : public juce::Timer
         deviceManager->initialise(0, 0, element.get(), false);
     }
 
-    void setMixInput(bool mixInput)
+    void setMixInput(bool val)
     {
-        this->mixInput = mixInput;
+        this->mixInput = val;
     }
 
 private:

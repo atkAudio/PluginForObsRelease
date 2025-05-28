@@ -26,6 +26,8 @@ public:
         deviceManager.initialise(0, 0, nullptr, false);
 
         setSize(settingsComponent.getWidth(), settingsComponent.getHeight());
+
+        (void)obsSampleRate; // OBS sample rate is not used in this demo, but can be set if needed
     }
 
     ~AudioAppDemo() override
@@ -66,9 +68,9 @@ public:
             inputFifo.write(buffer->getWritePointer(i), i, numSamples, i == inputChannels - 1);
 
         auto sampleRatio = getRemoteSampleRate() / sampleRate;
-        auto remoteBufferSize = getRemoteBufferSize();
+        auto remoteBufSize = getRemoteBufferSize();
 
-        if (remoteBufferSize == 0 || sampleRatio == 0)
+        if (remoteBufSize == 0 || sampleRatio == 0)
             return;
 
         auto sampleRatioCorrection = 1.0;
@@ -107,8 +109,8 @@ public:
 
         sampleRatio = getRemoteSampleRate() / sampleRate;
 
-        auto minSamples = std::min(bufferSize, (int)(remoteBufferSize / sampleRatio));
-        auto maxSamples = std::max(bufferSize, (int)(remoteBufferSize / sampleRatio));
+        auto minSamples = std::min(bufferSize, (int)(remoteBufSize / sampleRatio));
+        auto maxSamples = std::max(bufferSize, (int)(remoteBufSize / sampleRatio));
 
         maxSamples = maxSamples * 2;
         if (speedUp)
@@ -151,6 +153,7 @@ public:
     //==============================================================================
     void paint(Graphics& g) override
     {
+        (void)g;
     }
 
     void resized() override

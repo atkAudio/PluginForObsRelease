@@ -61,31 +61,6 @@ function(_setup_obs_studio)
     set(_cmake_arch "-DCMAKE_OSX_ARCHITECTURES:STRING='arm64;x86_64'")
     set(_cmake_extra "-DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}")
 
-# Find compilerconfig.cmake under .deps folder with 'macos' in its path
-  file(GLOB_RECURSE _compilerconfig_candidates
-    "${CMAKE_SOURCE_DIR}/.deps/**/compilerconfig.cmake"
-  )
-
-  if(_compilerconfig_candidates)
-    list(GET _compilerconfig_candidates 0 _compilerconfig_path)
-    foreach(_file ${_compilerconfig_candidates})
-      if(NOT _file MATCHES "/macos/")
-        continue()
-      endif()
-      message(STATUS "Found compilerconfig.cmake: ${_file}")
-
-      file(READ "${_file}" _file_content)
-      string(REGEX REPLACE ".*FATAL_ERROR.*\n?" "" _file_content "${_file_content}")
-      file(WRITE "${_file}" "${_file_content}")
-
-      file(READ "${_file}" _file_content)
-      string(REGEX REPLACE ".*REGEX.*\n?" "" _file_content "${_file_content}")
-      file(WRITE "${_file}" "${_file_content}")
-    endforeach()
-  else()
-    message(FATAL_ERROR "compilerconfig.cmake with 'macos' in path not found under .deps")
-  endif()
-
   endif()
 
   message(STATUS "Configure ${label} (${arch})")
@@ -248,6 +223,33 @@ function(_check_dependencies)
   list(REMOVE_DUPLICATES CMAKE_PREFIX_PATH)
 
   set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} CACHE PATH "CMake prefix search path" FORCE)
+
+
+# atkaudio
+# Find compilerconfig.cmake under .deps folder with 'macos' in its path
+  file(GLOB_RECURSE _compilerconfig_candidates
+    "${CMAKE_SOURCE_DIR}/.deps/**/compilerconfig.cmake"
+  )
+
+  if(_compilerconfig_candidates)
+    list(GET _compilerconfig_candidates 0 _compilerconfig_path)
+    foreach(_file ${_compilerconfig_candidates})
+      if(NOT _file MATCHES "/macos/")
+        continue()
+      endif()
+      message(STATUS "Found compilerconfig.cmake: ${_file}")
+
+      file(READ "${_file}" _file_content)
+      string(REGEX REPLACE ".*FATAL_ERROR.*\n?" "" _file_content "${_file_content}")
+      file(WRITE "${_file}" "${_file_content}")
+
+      file(READ "${_file}" _file_content)
+      string(REGEX REPLACE ".*REGEX.*\n?" "" _file_content "${_file_content}")
+      file(WRITE "${_file}" "${_file_content}")
+    endforeach()
+  else()
+    message(FATAL_ERROR "compilerconfig.cmake with 'macos' in path not found under .deps")
+  endif()
 
   _setup_obs_studio()
 endfunction()

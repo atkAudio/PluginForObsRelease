@@ -5,7 +5,11 @@
 void atk::create()
 {
     juce::initialiseJuce_GUI();
-    juce::MessageManager::getInstance()->setCurrentThreadAsMessageThread();
+}
+
+void atk::pump()
+{
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(5);
 }
 
 void atk::destroy()

@@ -1,4 +1,5 @@
 {
+  "author": "atkAudio",
   "dependencies": {
     "obs-studio": {
       "baseUrl": "https://github.com/obsproject/obs-studio/archive/refs/tags",
@@ -31,12 +32,9 @@
       "version": "2024-09-12"
     }
   },
-  "author": "atkAudio",
   "displayName": "atkAudio Plugin",
   "email": "pluginforobs@atkaudio.com",
   "name": "atkaudio-pluginforobs",
-  "version": "0.6.0",
-  "website": "https://www.atkaudio.com",
   "platformConfig": {
     "macos": {
       "bundleId": "com.atkaudio.audiopluginforobs"
@@ -44,5 +42,7 @@
   },
   "uuids": {
     "windowsApp": "ad885c58-5ca9-44de-8f4f-1c12676626a9"
-  }
+  },
+  "version": "0.7.0",
+  "website": "https://www.atkaudio.com"
 }

@@ -2,6 +2,8 @@
 
 #include "atkaudio.h"
 
+#include <string>
+
 namespace atk
 {
 class DeviceIo

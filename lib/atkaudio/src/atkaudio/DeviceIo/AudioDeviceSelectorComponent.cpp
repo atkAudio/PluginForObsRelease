@@ -401,8 +401,6 @@ public:
             r.removeFromTop(space);
         }
 
-        auto width = getWidth();
-        auto y = r.getY();
         setSize(getWidth(), r.getY());
     }
 

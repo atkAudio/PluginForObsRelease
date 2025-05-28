@@ -16,6 +16,7 @@
 !CMakePresets.json
 !README.md
 !LICENSE*
+!*.cmake
 
 !/lib
 !.vscode

@@ -3,7 +3,9 @@
 ## Plugin Host
 VST3 plugin host for OBS.
 Up to 8 channels.
+Sidechain support.
 AU plugins on Apple macOS.
+LV2 plugins on Linux.
 
 ## Device I/O
 Send and receive audio directly into and from audio devices.

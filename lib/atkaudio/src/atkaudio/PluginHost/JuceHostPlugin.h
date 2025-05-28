@@ -99,9 +99,19 @@ public:
             inner->reset();
     }
 
-    // In this example, we don't actually pass any audio through the inner processor.
-    // In a 'real' plugin, we'd need to add some synchronisation to ensure that the inner
-    // plugin instance was never modified (deleted, replaced etc.) during a call to processBlock.
+    class AtkAudioPlayHead : public juce::AudioPlayHead
+    {
+    public:
+        juce::AudioPlayHead::PositionInfo positionInfo;
+
+        juce::Optional<juce::AudioPlayHead::PositionInfo> getPosition() const override
+        {
+            return positionInfo;
+        }
+    };
+
+    AtkAudioPlayHead atkPlayHead;
+
     void processBlock(AudioBuffer<float>& buffer, MidiBuffer& midiBuffer) final
     {
         jassert(!isUsingDoublePrecision());
@@ -116,6 +126,13 @@ public:
 
         if (numChannels == 0)
             return;
+
+        atkPlayHead.positionInfo.setIsPlaying(true);
+        atkPlayHead.positionInfo.setBpm(120.0);
+        auto pos =
+            atkPlayHead.positionInfo.getTimeInSamples().hasValue() ? *atkPlayHead.positionInfo.getTimeInSamples() : 0;
+        atkPlayHead.positionInfo.setTimeInSamples(pos + buffer.getNumSamples());
+        inner->setPlayHead(&atkPlayHead);
 
         tempBuffer.setDataToReferTo(buffer.getArrayOfWritePointers(), numChannels, buffer.getNumSamples());
         inner->processBlock(tempBuffer, midiBuffer);

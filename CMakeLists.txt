@@ -1,20 +1,16 @@
 cmake_minimum_required(VERSION 3.28...3.30)
 
-set(CMAKE_COMPILE_WARNING_AS_ERROR OFF)
-
+include(./lib/atkaudio/cmake/preconfig.cmake)
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/common/bootstrap.cmake")
-string(JSON _displayName GET ${buildspec} displayName)
-string(JSON _windowsApp GET ${buildspec} uuids windowsApp)
 
 project(${_name} VERSION ${_version})
 
-option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" OFF)
-option(ENABLE_QT "Use Qt functionality" OFF)
+option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" ON)
+option(ENABLE_QT "Use Qt functionality" ON)
 
 include(compilerconfig)
 include(defaults)
 include(helpers)
-
 
 add_library(${CMAKE_PROJECT_NAME} MODULE)
 
@@ -39,7 +35,7 @@ if(ENABLE_QT)
   )
 endif()
 
-file(GLOB_RECURSE _sources CONFIGURE_DEPENDS src/*.c*)
+file(GLOB_RECURSE _sources CONFIGURE_DEPENDS src/*.cpp)
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE ${_sources})
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
@@ -50,7 +46,4 @@ set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CXX_STANDARD 23)
 
 add_subdirectory(lib/atkaudio)
 
-# Sanitize CMAKE_INSTALL_PREFIX path (convert to CMake style and remove trailing slash)
-file(TO_CMAKE_PATH "${CMAKE_INSTALL_PREFIX}" _sanitized_prefix)
-string(REGEX REPLACE "/$" "" _sanitized_prefix "${_sanitized_prefix}")
-set(CMAKE_INSTALL_PREFIX "${_sanitized_prefix}" CACHE PATH "Sanitized install prefix" FORCE)
+include(./lib/atkaudio/cmake/cpack.cmake)

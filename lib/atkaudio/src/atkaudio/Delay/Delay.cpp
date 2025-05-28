@@ -33,33 +33,34 @@ struct atk::Delay::Impl : public juce::Timer
         }
     }
 
-    void prepare(int numChannels, int numSamples, double sampleRate)
+    void prepare(int newNumChannels, int newNumSamples, double newSampleRate)
     {
         delayLine.clear();
-        delayLine.resize(numChannels);
+        delayLine.resize(newNumChannels);
         for (auto& i : delayLine)
         {
-            i.prepare(juce::dsp::ProcessSpec({sampleRate, (uint32_t)numSamples, (uint32_t)1}));
+            i.prepare(juce::dsp::ProcessSpec({newSampleRate, (uint32_t)newNumSamples, (uint32_t)1}));
             i.reset();
-            i.setMaximumDelayInSamples((int)sampleRate);
+            i.setMaximumDelayInSamples((int)newSampleRate);
             i.setDelay(0.0f);
         }
 
         delayTimeSmooth.clear();
-        delayTimeSmooth.resize(numChannels);
+        delayTimeSmooth.resize(newNumChannels);
         for (auto& i : delayTimeSmooth)
-            i.reset(sampleRate, 0.4f);
+            i.reset(newSampleRate, 0.4f);
 
         isPrepared.store(true, std::memory_order_release);
     }
 
-    void process(float** buffer, int numChannels, int numSamples, double sampleRate)
+    void process(float** buffer, int newNumChannels, int newNumSamples, double newSampleRate)
     {
-        if (this->numChannels != numChannels || this->numSamples != numSamples || this->sampleRate != sampleRate)
+        if (this->numChannels != newNumChannels || this->numSamples != newNumSamples ||
+            this->sampleRate != newSampleRate)
         {
-            this->numChannels = numChannels;
-            this->numSamples = numSamples;
-            this->sampleRate = sampleRate;
+            this->numChannels = newNumChannels;
+            this->numSamples = newNumSamples;
+            this->sampleRate = newSampleRate;
 
             isPrepared.store(false, std::memory_order_release);
 
@@ -69,9 +70,9 @@ struct atk::Delay::Impl : public juce::Timer
         if (!isPrepared.load(std::memory_order_acquire))
             return;
 
-        for (int i = 0; i < numChannels; ++i)
+        for (int i = 0; i < newNumChannels; ++i)
         {
-            for (int j = 0; j < numSamples; ++j)
+            for (int j = 0; j < newNumSamples; ++j)
             {
                 delayLine[i].pushSample(0, buffer[i][j]);
                 buffer[i][j] = delayLine[i].popSample(0, delayTimeSmooth[i].getNextValue());
