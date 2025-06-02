@@ -244,7 +244,7 @@ class AudioAppMainWindow final : public DocumentWindow
 {
 public:
     AudioAppMainWindow(AudioAppDemo& demo)
-        : DocumentWindow("", Colours::lightgrey, DocumentWindow::minimiseButton | DocumentWindow::closeButton)
+        : DocumentWindow("", Colours::lightgrey, DocumentWindow::minimiseButton | DocumentWindow::closeButton, false)
         , audioApp(demo)
     {
         setContentOwned(&demo, true);

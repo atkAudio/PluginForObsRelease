@@ -16,6 +16,8 @@ class HostAudioProcessorImpl
     : public AudioProcessor
     , private ChangeListener
 {
+    static inline juce::InterProcessLock appPropertiesLock{"pluginHostAppPropertiesLock"};
+
 public:
     HostAudioProcessorImpl()
         : AudioProcessor(
@@ -37,6 +39,7 @@ public:
                 opt.ignoreCaseOfKeyNames = false;
                 opt.storageFormat = PropertiesFile::StorageFormat::storeAsXML;
                 opt.osxLibrarySubFolder = "Application Support";
+                opt.processLock = &appPropertiesLock;
                 return opt;
             }()
         );

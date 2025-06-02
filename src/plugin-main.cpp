@@ -16,6 +16,7 @@ You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
+#include "MessagePump.h"
 #include "config.h"
 
 #include <atkaudio/atkaudio.h>
@@ -40,24 +41,26 @@ extern struct obs_source_info source_mixer;
 
 void obs_log(int log_level, const char* format, ...);
 
+MessagePump* messagePump = nullptr;
+
 bool obs_module_load(void)
 {
     obs_log(LOG_INFO, "plugin loaded successfully (version %s)", plugin_version);
 
-    atk::create();
+    auto* mainWindow = (QObject*)obs_frontend_get_main_window();
+    messagePump = new MessagePump(mainWindow); // parent handles lifetime
 
     obs_register_source(&autoreset_filter);
     obs_register_source(&delay_filter);
+    obs_register_source(&source_mixer);
     obs_register_source(&device_io_filter);
     obs_register_source(&pluginhost_filter);
-    obs_register_source(&source_mixer);
 
     return true;
 }
 
 void obs_module_unload(void)
 {
-    atk::destroy();
     obs_log(LOG_INFO, "plugin unloaded");
 }
 

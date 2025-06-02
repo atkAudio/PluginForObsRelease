@@ -172,6 +172,9 @@ struct atk::DeviceIo::Impl : public juce::Timer
 
     void setVisible(bool visible)
     {
+        if (!mainWindow->isOnDesktop())
+            mainWindow->addToDesktop(juce::ComponentPeer::StyleFlags{});
+
         mainWindow->setVisible(visible);
         if (visible && mainWindow->isMinimised())
             mainWindow->setMinimised(false);

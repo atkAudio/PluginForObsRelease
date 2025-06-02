@@ -44,6 +44,10 @@ else()
     set(CPACK_PACKAGE_EXTENSION "pkg")
 endif()
 
+if(UNIX AND NOT APPLE)
+
+endif()
+
 if(NOT WIN32)
     return()
 endif()
@@ -51,6 +55,9 @@ endif()
 
 set(CPACK_RELEASE_STAGING_DIRECTORY "${CMAKE_SOURCE_DIR}/release")
 set(BUILD_TYPE_FOR_CPACK "RelWithDebInfo")
+if(NOT EXISTS ${CMAKE_BINARY_DIR}/${BUILD_TYPE_FOR_CPACK})
+  set(BUILD_TYPE_FOR_CPACK "Debug")
+endif()
 if(DEFINED ENV{CI})
     set(BUILD_TYPE_FOR_CPACK "Release")
 endif()

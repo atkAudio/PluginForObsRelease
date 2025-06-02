@@ -519,12 +519,14 @@ private:
                 auto extra = r.removeFromTop(itemHeight);
 
                 auto seperatorHeight = (itemHeight >> 1);
-                shouldMuteButton.setBounds(Rectangle<int>(
-                    extra.proportionOfWidth(0.35f),
-                    seperatorHeight,
-                    extra.proportionOfWidth(0.60f),
-                    deviceSelector.getItemHeight()
-                ));
+                shouldMuteButton.setBounds(
+                    Rectangle<int>(
+                        extra.proportionOfWidth(0.35f),
+                        seperatorHeight,
+                        extra.proportionOfWidth(0.60f),
+                        deviceSelector.getItemHeight()
+                    )
+                );
 
                 r.removeFromTop(seperatorHeight);
             }
@@ -595,26 +597,13 @@ public:
         Colour backgroundColour,
         std::unique_ptr<StandalonePluginHolder2> pluginHolderIn
     )
-        : DocumentWindow(title, backgroundColour, DocumentWindow::minimiseButton | DocumentWindow::closeButton)
+        : DocumentWindow(title, backgroundColour, DocumentWindow::minimiseButton | DocumentWindow::closeButton, false)
         , pluginHolder(std::move(pluginHolderIn))
-    // , optionsButton("Options")
     {
         setConstrainer(&decoratorConstrainer);
 
-#if JUCE_IOS || JUCE_ANDROID
-        setTitleBarHeight(0);
-#else
         setTitleBarButtonsRequired(DocumentWindow::minimiseButton | DocumentWindow::closeButton, false);
 
-        // Component::addAndMakeVisible(optionsButton);
-        // optionsButton.addListener(this);
-        // optionsButton.setTriggeredOnMouseDown(true);
-#endif
-
-#if JUCE_IOS || JUCE_ANDROID
-        setFullScreen(true);
-        updateContent();
-#else
         updateContent();
 
         const auto windowScreenBounds = [this]() -> Rectangle<int>
@@ -657,7 +646,6 @@ public:
         if (auto* processor = getAudioProcessor())
             if (auto* editor = processor->getActiveEditor())
                 setResizable(editor->isResizable(), false);
-#endif
     }
 
     ~StandaloneFilterWindow() override

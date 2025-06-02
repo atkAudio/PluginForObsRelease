@@ -32,9 +32,15 @@ target_compile_definitions(
     JUCE_PLUGINHOST_VST3=1
     JUCE_PLUGINHOST_VST=0
     JUCE_PLUGINHOST_AU=1
-    JUCE_USE_CURL=0
+    JUCE_USE_CURL=1
     JUCE_WEB_BROWSER=0
     JUCE_MODAL_LOOPS_PERMITTED=1 # we use QT event loop, so this is needed
+)
+
+set_target_properties(${PROJECT_NAME} PROPERTIES
+    JUCE_NEEDS_WEB_BROWSER FALSE
+    JUCE_NEEDS_CURL TRUE
+    JUCE_IS_PLUGIN TRUE
 )
 
 if(UNIX AND NOT APPLE)
@@ -42,6 +48,7 @@ if(UNIX AND NOT APPLE)
         ${PROJECT_NAME} 
         PRIVATE 
         JUCE_PLUGINHOST_LV2=1
+        JUCE_PLUGINHOST_LADSPA=1
     )
 endif()
 
