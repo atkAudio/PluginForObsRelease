@@ -58,6 +58,7 @@ if(MSVC)
     target_compile_options(
         ${PROJECT_NAME} 
         PRIVATE 
+        /wd4244
         /wd4267
         /wd5105
         )

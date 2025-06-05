@@ -11,7 +11,7 @@ class SettingsComponent : public Component
 {
 public:
     SettingsComponent(
-        // AudioAppDemo& pluginHolder,
+        // DeviceIoApp& pluginHolder,
         AudioDeviceManager& deviceManagerToUse,
         int maxAudioInputChannels,
         int maxAudioOutputChannels

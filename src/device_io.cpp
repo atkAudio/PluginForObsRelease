@@ -134,14 +134,7 @@ static void save(void* data, obs_data_t* settings)
 {
     auto* adio = (struct adio_data*)data;
     std::string s;
-    s.reserve(4096);
-    while (s.capacity() < 1024 * 1024 * 1024) // 1 GB
-    {
-        adio->deviceIo.getState(s);
-        if (!s.empty())
-            break;
-        s.reserve(s.capacity() * 2);
-    }
+    adio->deviceIo.getState(s);
 
     obs_data_set_string(settings, FILTER_ID, s.c_str());
 }

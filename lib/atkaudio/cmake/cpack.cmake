@@ -31,36 +31,28 @@ set(ICON_PATH "${CMAKE_SOURCE_DIR}/lib/atkaudio/assets/icon.ico")
 file(TO_CMAKE_PATH "${ICON_PATH}" ICON_PATH)
 file(TO_NATIVE_PATH "${ICON_PATH}" ICON_PATH)
 string(REPLACE "\\" "\\\\" ICON_PATH "${ICON_PATH}")
-set(CPACK_NSIS_MUI_ICON "${ICON_PATH}") 
-set(CPACK_NSIS_MUI_UNIICON "${ICON_PATH}") 
+set(CPACK_NSIS_MUI_ICON "${ICON_PATH}")
+set(CPACK_NSIS_MUI_UNIICON "${ICON_PATH}")
 set(CPACK_PACKAGE_ICON "${ICON_PATH}")
 
 if(WIN32)
-    set(CPACK_GENERATOR "NSIS")
-    set(CPACK_PACKAGE_INSTALL_DIRECTORY " ") # for some reason this is required for NSIS
-    set(CPACK_PACKAGE_EXTENSION "exe")
+  set(CPACK_GENERATOR "NSIS")
+  set(CPACK_PACKAGE_INSTALL_DIRECTORY " ") # for some reason this is required for NSIS
+  set(CPACK_PACKAGE_EXTENSION "exe")
 else()
-    set(CPACK_GENERATOR "productbuild")
-    set(CPACK_PACKAGE_EXTENSION "pkg")
+  set(CPACK_GENERATOR "productbuild")
+  set(CPACK_PACKAGE_EXTENSION "pkg")
 endif()
 
-if(UNIX AND NOT APPLE)
-
+if(NOT DEFINED ENV{CI})
+  return()
 endif()
-
 if(NOT WIN32)
-    return()
+  return()
 endif()
-
 
 set(CPACK_RELEASE_STAGING_DIRECTORY "${CMAKE_SOURCE_DIR}/release")
-set(BUILD_TYPE_FOR_CPACK "RelWithDebInfo")
-if(NOT EXISTS ${CMAKE_BINARY_DIR}/${BUILD_TYPE_FOR_CPACK})
-  set(BUILD_TYPE_FOR_CPACK "Debug")
-endif()
-if(DEFINED ENV{CI})
-    set(BUILD_TYPE_FOR_CPACK "Release")
-endif()
+set(BUILD_TYPE_FOR_CPACK "Release")
 
 set(CPACK_PACKAGE_DIRECTORY "${CMAKE_BINARY_DIR}")
 set(CPACK_PACKAGE_ABSOLUTE_PATH ${CPACK_PACKAGE_DIRECTORY}/${CPACK_PACKAGE_FILE_NAME}.${CPACK_PACKAGE_EXTENSION})
@@ -68,7 +60,7 @@ set(CPACK_PACKAGE_ABSOLUTE_PATH ${CPACK_PACKAGE_DIRECTORY}/${CPACK_PACKAGE_FILE_
 include(CPack)
 
 if(NOT EXISTS ${CPACK_PACKAGE_ABSOLUTE_PATH})
-    add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
+  add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
         COMMAND cpack --config CPackConfig.cmake -C ${BUILD_TYPE_FOR_CPACK}
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     )
@@ -76,7 +68,7 @@ endif()
 
 # hack
 # Copy the package to the release staging directory
-install(CODE 
+install(CODE
 "
 if(EXISTS \"${CPACK_PACKAGE_ABSOLUTE_PATH}\" AND EXISTS \"${CPACK_RELEASE_STAGING_DIRECTORY}\")
     message(STATUS \"Copying package to release staging directory: ${CPACK_RELEASE_STAGING_DIRECTORY}\")
@@ -84,4 +76,4 @@ if(EXISTS \"${CPACK_PACKAGE_ABSOLUTE_PATH}\" AND EXISTS \"${CPACK_RELEASE_STAGIN
 endif()
 "
 )
-    
+

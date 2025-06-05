@@ -16,11 +16,9 @@ You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
-#include "MessagePump.h"
 #include "config.h"
 
 #include <atkaudio/atkaudio.h>
-#include <obs-frontend-api.h>
 #include <obs-module.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -37,30 +35,43 @@ extern struct obs_source_info autoreset_filter;
 extern struct obs_source_info delay_filter;
 extern struct obs_source_info device_io_filter;
 extern struct obs_source_info pluginhost_filter;
+extern struct obs_source_info pluginhost2_filter;
 extern struct obs_source_info source_mixer;
 
 void obs_log(int log_level, const char* format, ...);
 
+#include "MessagePump.h"
+#ifndef NO_MESSAGE_PUMP
+#include <obs-frontend-api.h>
 MessagePump* messagePump = nullptr;
+#endif
 
 bool obs_module_load(void)
 {
     obs_log(LOG_INFO, "plugin loaded successfully (version %s)", plugin_version);
 
+#ifdef NO_MESSAGE_PUMP
+    atk::create();
+#else
     auto* mainWindow = (QObject*)obs_frontend_get_main_window();
     messagePump = new MessagePump(mainWindow); // parent handles lifetime
+#endif
 
     obs_register_source(&autoreset_filter);
     obs_register_source(&delay_filter);
     obs_register_source(&source_mixer);
     obs_register_source(&device_io_filter);
     obs_register_source(&pluginhost_filter);
+    obs_register_source(&pluginhost2_filter);
 
     return true;
 }
 
 void obs_module_unload(void)
 {
+#ifdef NO_MESSAGE_PUMP
+    atk::destroy();
+#endif
     obs_log(LOG_INFO, "plugin unloaded");
 }
 

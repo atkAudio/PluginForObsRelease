@@ -1,4 +1,10 @@
 #pragma once
+#include <atkaudio/atkaudio.h>
+
+#if defined(JUCE_DEBUG) && defined(JUCE_WINDOWS)
+#define NO_MESSAGE_PUMP
+#endif
+#ifndef NO_MESSAGE_PUMP
 
 #include <QTimer>
 
@@ -19,3 +25,4 @@ private slots:
 private:
     QTimer* timer;
 };
+#endif

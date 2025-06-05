@@ -1,7 +1,5 @@
 #include "MessagePump.h"
-
-#include <atkaudio/atkaudio.h>
-#include <juce_gui_basics/juce_gui_basics.h>
+#ifndef NO_MESSAGE_PUMP
 
 MessagePump::MessagePump(QObject* parent)
     : QObject(parent)
@@ -21,3 +19,4 @@ void MessagePump::onTimeout()
 {
     atk::pump();
 }
+#endif

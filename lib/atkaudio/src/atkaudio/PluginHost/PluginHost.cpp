@@ -65,9 +65,9 @@ struct atk::PluginHost::Impl : public juce::Timer
     void process(float** buffer, int newNumChannels, int newNumSamples, double newSampleRate)
     {
         if (!buffer || this->numChannels != newNumChannels || this->numSamples < newNumSamples ||
-            this->sampleRate != newSampleRate || isFirstRun)
+            this->sampleRate != newSampleRate || isFirstRun.load(std::memory_order_acquire))
         {
-            isFirstRun = false;
+            isFirstRun.store(false, std::memory_order_release);
             this->numChannels = newNumChannels;
             this->numSamples = newNumSamples;
             this->sampleRate = newSampleRate;
@@ -94,24 +94,20 @@ struct atk::PluginHost::Impl : public juce::Timer
     void setVisible(bool visible)
     {
         if (!mainWindow->isOnDesktop())
-            mainWindow->addToDesktop(juce::ComponentPeer::StyleFlags{});
+            mainWindow->addToDesktop();
 
         mainWindow->setVisible(visible);
         if (visible && mainWindow->isMinimised())
             mainWindow->setMinimised(false);
     }
 
+    // some plugins dont export state if audio is not playing
     void getState(std::string& s)
     {
         auto* processor = mainWindow->getAudioProcessor();
         juce::MemoryBlock state;
         processor->getStateInformation(state);
-        auto capacity = s.capacity();
         auto stateString = state.toString().toStdString();
-        auto stateStringSize = stateString.size();
-
-        if (stateStringSize > capacity)
-            return;
 
         s = stateString;
     }
@@ -120,10 +116,10 @@ struct atk::PluginHost::Impl : public juce::Timer
     {
         if (s.empty())
             return;
-
         juce::ScopedLock lock(mainWindow->getPluginHolderLock());
         auto* processor = mainWindow->getAudioProcessor();
-        processor->setStateInformation(s.data(), (int)s.size());
+        juce::MemoryBlock stateData(s.data(), s.size());
+        processor->setStateInformation(stateData.getData(), (int)stateData.getSize());
     }
 
 private:
@@ -137,7 +133,7 @@ private:
     double sampleRate = 48000.0;
 
     std::atomic_bool isPrepared{false};
-    bool isFirstRun = true;
+    std::atomic_bool isFirstRun{true};
     bool needsRelease = false;
 };
 

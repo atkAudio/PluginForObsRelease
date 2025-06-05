@@ -91,6 +91,15 @@ static void sidechain_capture(void* param, obs_source_t* source, const struct au
     }
 }
 
+static void save(void* data, obs_data_t* settings)
+{
+    auto* ph = (struct pluginhost_data*)data;
+    std::string s;
+    ph->pluginHost.getState(s);
+
+    obs_data_set_string(settings, FILTER_ID, s.c_str());
+}
+
 static void load(void* data, obs_data_t* settings)
 {
     auto* ph = (struct pluginhost_data*)data;
@@ -365,22 +374,6 @@ static obs_properties_t* pluginhost_properties(void* data)
     obs_enum_sources(add_sources, &info);
 
     return props;
-}
-
-static void save(void* data, obs_data_t* settings)
-{
-    auto* ph = (struct pluginhost_data*)data;
-    std::string s;
-    s.reserve(4096);
-    while (s.capacity() < 1024 * 1024 * 1024) // 1 GB
-    {
-        ph->pluginHost.getState(s);
-        if (!s.empty())
-            break;
-        s.reserve(s.capacity() * 2);
-    }
-
-    obs_data_set_string(settings, FILTER_ID, s.c_str());
 }
 
 struct obs_source_info pluginhost_filter = {

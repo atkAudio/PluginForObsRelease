@@ -1,5 +1,7 @@
 #include "FifoBuffer.h"
 
+#include "FifoBuffer2.h"
+
 #include <juce_audio_utils/juce_audio_utils.h>
 
 struct atk::FifoBuffer::Impl

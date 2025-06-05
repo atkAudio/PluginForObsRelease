@@ -153,6 +153,11 @@ public:
         g.drawFittedText(itemText, 0, 0, width, height, Justification::centred, 1);
     }
 
+    void drawMenuBarBackground(Graphics& g, int width, int height, bool isMouseOverBar, MenuBarComponent&) override
+    {
+        g.fillAll(findColour(juce::ResizableWindow::backgroundColourId));
+    }
+
 private:
 };
 } // namespace atk
