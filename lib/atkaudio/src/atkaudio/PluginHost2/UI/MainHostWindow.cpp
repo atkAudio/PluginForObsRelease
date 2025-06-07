@@ -1,5 +1,6 @@
 #include "MainHostWindow.h"
 
+#include "../../About.h"
 #include "../Plugins/InternalPlugins.h"
 #include "../VirtualAudioIoDevice.h"
 #include "../ph2_AudioDeviceSelectorComponent.h"
@@ -943,8 +944,10 @@ bool MainHostWindow::perform(const InvocationInfo& info)
         break;
 
     case CommandIDs::aboutBox:
-        // TODO
+    {
+        showAboutDialog();
         break;
+    }
 
     case CommandIDs::allWindowsForward:
     {

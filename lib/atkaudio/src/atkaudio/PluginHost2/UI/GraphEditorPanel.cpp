@@ -101,11 +101,6 @@ struct GraphEditorPanel::PinComponent final
                         );
                 else
                     tip = (isInput ? "Main Input: " : "Main Output: ") + String(pin.channelIndex + 1);
-
-                auto splitPoint = processor.getMainBusNumOutputChannels() / 2;
-                auto isInputNode = processor.getName() == "Audio Input";
-                if (isInputNode && !isInput && pin.channelIndex >= splitPoint)
-                    busIdx = 1;
             }
 
             setTooltip(tip);

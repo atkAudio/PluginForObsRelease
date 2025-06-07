@@ -80,7 +80,7 @@ public:
     juce::BigInteger getActiveInputChannels() const override
     {
         juce::BigInteger b;
-        b.setRange(0, numChannels * 2, true);
+        b.setRange(0, numChannels, true);
         return b;
     }
 

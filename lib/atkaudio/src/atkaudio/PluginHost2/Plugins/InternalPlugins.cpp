@@ -233,7 +233,7 @@ private:
         descr.descriptiveName = identifier;
         descr.pluginFormatName = InternalPluginFormat::getIdentifier();
         descr.category = (registerAsGenerator ? (acceptsMidi ? "Synth" : "Generator") : "Effect");
-        descr.manufacturerName = "JUCE";
+        descr.manufacturerName = PLUGIN_AUTHOR;
         descr.version = PLUGIN_VERSION;
         descr.fileOrIdentifier = identifier;
         descr.isInstrument = (acceptsMidi && registerAsGenerator);
@@ -675,7 +675,8 @@ InternalPluginFormat::InternalPluginFormat()
 
           [] { return std::make_unique<InternalPlugin>(std::make_unique<SineWaveSynth>()); },
           [] { return std::make_unique<InternalPlugin>(std::make_unique<ReverbPlugin>()); },
-
+          [] { return std::make_unique<InternalPlugin>(std::make_unique<ObsSourceAudioProcessor>()); },
+          [] { return std::make_unique<InternalPlugin>(std::make_unique<Ph2DeviceIoProcessor>()); }
       }
 {
 }

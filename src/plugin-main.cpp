@@ -59,10 +59,10 @@ bool obs_module_load(void)
 
     obs_register_source(&autoreset_filter);
     obs_register_source(&delay_filter);
-    obs_register_source(&source_mixer);
     obs_register_source(&device_io_filter);
-    obs_register_source(&pluginhost_filter);
     obs_register_source(&pluginhost2_filter);
+    obs_register_source(&pluginhost_filter);
+    obs_register_source(&source_mixer);
 
     return true;
 }

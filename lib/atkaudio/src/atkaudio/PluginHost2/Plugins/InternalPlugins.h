@@ -3,6 +3,8 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 using namespace juce;
 
+#include "../ObsSource.h"
+#include "../Ph2DeviceIo/Ph2DeviceIo.h"
 #include "PluginGraph.h"
 
 //==============================================================================

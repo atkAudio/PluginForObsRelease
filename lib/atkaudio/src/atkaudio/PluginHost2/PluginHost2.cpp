@@ -16,13 +16,16 @@ struct atk::PluginHost2::Impl : public juce::Timer
         auto* window = this->mainHostWindow.release();
         auto lambda = [window] { delete window; };
         juce::MessageManager::callAsync(lambda);
+#ifdef JUCE_DEBUG
+        std::this_thread::sleep_for(std::chrono::milliseconds(10)); // give time for the async call to complete
+#endif
     }
 
     void timerCallback() override
     {
     }
 
-    void initialise(int numInputChannels, int numOutputChannels, double sampleRate)
+    void initialise(int numInputChannels, int numOutputChannels, double sampleRate, void* obs_parent_source)
     {
         auto& dm = mainHostWindow->getDeviceManager();
         dm.addAudioDeviceType(std::make_unique<VirtualAudioIODeviceType>());
@@ -116,9 +119,14 @@ void atk::PluginHost2::setState(std::string& s)
     pImpl->setState(s);
 }
 
-void atk::PluginHost2::initialise(int numInputChannels, int numOutputChannels, double sampleRate)
+void atk::PluginHost2::initialise(
+    int numInputChannels,
+    int numOutputChannels,
+    double sampleRate,
+    void* obs_parent_source
+)
 {
-    pImpl->initialise(numInputChannels, numOutputChannels, sampleRate);
+    pImpl->initialise(numInputChannels, numOutputChannels, sampleRate, obs_parent_source);
 }
 
 atk::PluginHost2::PluginHost2()

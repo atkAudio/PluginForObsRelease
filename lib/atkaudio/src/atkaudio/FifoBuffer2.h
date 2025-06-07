@@ -48,7 +48,7 @@ public:
         return written;
     }
 
-    int read(float* const* dest, int numChannels, int numSamples, bool advanceRead = true)
+    int read(float* const* dest, int numChannels, int numSamples, bool advanceRead = true, bool addToBuffer = false)
     {
         jassert(buffer.getNumSamples() >= numSamples);
         jassert(buffer.getNumChannels() >= numChannels);
@@ -60,14 +60,34 @@ public:
 
         if (size1 > 0)
         {
-            for (int ch = 0; ch < numChannels && ch < buffer.getNumChannels(); ++ch)
-                std::memcpy(dest[ch], buffer.getReadPointer(ch, start1), sizeof(float) * size1);
+            if (addToBuffer)
+            {
+                for (int ch = 0; ch < numChannels && ch < buffer.getNumChannels(); ++ch)
+                    for (int i = 0; i < size1; ++i)
+                        dest[ch][readCount + i] += buffer.getReadPointer(ch, start1)[i];
+            }
+            else
+            {
+                for (int ch = 0; ch < numChannels && ch < buffer.getNumChannels(); ++ch)
+                    std::memcpy(dest[ch], buffer.getReadPointer(ch, start1), sizeof(float) * size1);
+            }
+
             readCount += size1;
         }
         if (size2 > 0)
         {
-            for (int ch = 0; ch < numChannels && ch < buffer.getNumChannels(); ++ch)
-                std::memcpy(dest[ch] + readCount, buffer.getReadPointer(ch, start2), sizeof(float) * size2);
+            if (addToBuffer)
+            {
+                for (int ch = 0; ch < numChannels && ch < buffer.getNumChannels(); ++ch)
+                    for (int i = 0; i < size2; ++i)
+                        dest[ch][readCount + i] += buffer.getReadPointer(ch, start2)[i];
+            }
+            else
+            {
+                for (int ch = 0; ch < numChannels && ch < buffer.getNumChannels(); ++ch)
+                    std::memcpy(dest[ch] + readCount, buffer.getReadPointer(ch, start2), sizeof(float) * size2);
+            }
+
             readCount += size2;
         }
 
@@ -251,9 +271,9 @@ public:
         if (maxAvailable < samplesNeeded)
             return 0;
 
-#if defined(JUCE_DEBUG) && defined(JUCE_WINDOWS)
-        DBG(ratio);
-#endif
+        // #if defined(JUCE_DEBUG) && defined(JUCE_WINDOWS)
+        //         DBG(ratio);
+        // #endif
 
         auto samplesGot = fifoBuffer.read(tempBuffer.getArrayOfWritePointers(), numChannels, samplesNeeded, false);
 

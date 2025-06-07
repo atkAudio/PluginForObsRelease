@@ -48,6 +48,9 @@ add_subdirectory(lib/atkaudio)
 
 file(READ "${CMAKE_SOURCE_DIR}/buildspec.json" buildspec)
 string(JSON PLUGIN_DISPLAY_NAME GET ${buildspec} displayName)
+string(JSON PLUGIN_AUTHOR GET ${buildspec} author)
+string(TIMESTAMP PLUGIN_YEAR "%Y")
+set(PLUGIN_AUTHOR "${PLUGIN_AUTHOR}")
 
 configure_file(src/config.h.in config.h @ONLY)
 
