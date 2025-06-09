@@ -6,8 +6,6 @@
 #define IO_TYPE "OBS"
 #define IO_NAME "atkAudio"
 
-// #define IO_MAX_CHANNELS 8
-
 class VirtualAudioIODevice : public juce::AudioIODevice
 {
 public:
@@ -120,8 +118,6 @@ public:
         close();
         sampleRate = newSampleRate;
         bufferSize = newBufferSize;
-        inputBuffer.setSize(numChannels * 2, bufferSize, false, false, true);
-        outputBuffer.setSize(numChannels, bufferSize, false, false, true);
         opened = true;
         return {};
     }
@@ -134,7 +130,6 @@ public:
 
     void start(juce::AudioIODeviceCallback* cb) override
     {
-        juce::ScopedLock lock(callbackLock);
         if (cb == nullptr)
             return;
 
@@ -145,55 +140,41 @@ public:
 
     void stop() override
     {
-        juce::ScopedLock lock(callbackLock);
+        if (currentCallback)
+            currentCallback->audioDeviceStopped();
         playing = false;
         currentCallback = nullptr;
     }
 
-    // --- core API: your code calls this to feed audio to the virtual device
-    // inputData: channels x samples; outputBuffer is filled by the callback
-    juce::AudioIODeviceCallbackContext context;
+    uint64_t hostTimeNs;
+    juce::AudioIODeviceCallbackContext context{.hostTimeNs = &hostTimeNs};
 
-    void process(const float* const* inputData, int numInputChannels, int numSamples)
+    void process(const float* const* inputData, float* const* outputData, int newNumChannels, int numSamples)
     {
-        juce::ScopedLock lock(callbackLock);
+        hostTimeNs = juce::Time::getHighResolutionTicks();
+
+        auto numChannels = std::min(newNumChannels, this->numChannels);
 
         if (playing && currentCallback)
         {
             currentCallback->audioDeviceIOCallbackWithContext(
                 inputData,
-                numInputChannels,
-                outputBuffer.getArrayOfWritePointers(),
-                // outputBuffer.getNumChannels(),
-                numInputChannels,
+                numChannels,
+                outputData,
+                numChannels,
                 numSamples,
                 context
             );
-            for (int ch = 0; ch < numInputChannels && ch < outputBuffer.getNumChannels(); ch++)
-                std::memcpy(
-                    const_cast<float*>(inputData[ch]),
-                    outputBuffer.getReadPointer(ch),
-                    sizeof(float) * numSamples
-                );
         }
     }
 
-    // Optional: get output from last callback
-    const juce::AudioBuffer<float>& getLastOutput() const
-    {
-        return outputBuffer;
-    }
-
 private:
-    juce::CriticalSection callbackLock;
-
     bool opened = false, playing = false;
     juce::AudioIODeviceCallback* currentCallback = nullptr;
     juce::String lastError;
     double sampleRate;
     int bufferSize = AUDIO_OUTPUT_FRAMES; // Default buffer size
     int numChannels;
-    juce::AudioBuffer<float> inputBuffer, outputBuffer;
 };
 
 //
@@ -203,6 +184,11 @@ struct VirtualAudioIODeviceType : public juce::AudioIODeviceType
         : juce::AudioIODeviceType(IO_TYPE)
     {
         scanForDevices();
+    }
+
+    bool isDeviceTypeActive() const
+    {
+        return true; // Always active for virtual devices
     }
 
     void scanForDevices() override

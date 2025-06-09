@@ -1,6 +1,6 @@
 #include <algorithm>
 #include <atkaudio/FifoBuffer.h>
-#include <atkaudio/PluginHost.h>
+#include <atkaudio/PluginHost/PluginHost.h>
 #include <inttypes.h>
 #include <math.h>
 #include <media-io/audio-math.h>

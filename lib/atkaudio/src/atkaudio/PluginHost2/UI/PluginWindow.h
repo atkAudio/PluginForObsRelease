@@ -10,10 +10,14 @@ inline String getFormatSuffix(const AudioProcessor* plugin)
 {
     const auto format = [plugin]()
     {
+        juce::String s;
         if (auto* instance = dynamic_cast<const AudioPluginInstance*>(plugin))
-            return instance->getPluginDescription().pluginFormatName;
+            s = instance->getPluginDescription().pluginFormatName;
 
-        return String();
+        if (s == "Internal")
+            s.clear();
+
+        return s;
     }();
 
     return format.isNotEmpty() ? (" (" + format + ")") : format;

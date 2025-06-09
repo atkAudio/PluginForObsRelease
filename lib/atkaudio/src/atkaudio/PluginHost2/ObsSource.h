@@ -76,7 +76,6 @@ public:
 
     void prepareToPlay(double sampleRate, int samplesPerBlock) override
     {
-        fifoBuffer.setSize(getMainBusNumInputChannels(), samplesPerBlock);
     }
 
     void releaseResources() override
@@ -186,11 +185,10 @@ public:
 
     void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
     {
-        if (fifoBuffer.getNumReady() < buffer.getNumSamples())
-            return;
+        auto numRead = syncBuffer.getNumReady();
 
-        fifoBuffer
-            .read(buffer.getArrayOfWritePointers(), getMainBusNumInputChannels(), buffer.getNumSamples(), true, true);
+        syncBuffer.prepareReader(getSampleRate(), getMainBusNumInputChannels(), buffer.getNumSamples());
+        syncBuffer.read(buffer.getArrayOfWritePointers(), getMainBusNumInputChannels(), buffer.getNumSamples());
     }
 
 private:
@@ -203,21 +201,19 @@ private:
         if (source != processor->currentObsSource)
             return;
 
-        auto& fifo = processor->fifoBuffer;
-
+        auto& fifo = processor->syncBuffer;
         auto frames = (int)audio_data->frames;
-        auto numChannels = processor->getMainBusNumInputChannels();
-        if (fifo.getBuffer().getNumSamples() < frames || fifo.getBuffer().getNumChannels() < numChannels)
-            fifo.setSize(numChannels, frames);
 
-        if (fifo.getNumReady() > frames)
-            fifo.advanceRead(fifo.getNumReady());
+        int numChannelsObs = audio_output_get_channels(obs_get_audio());
+        int numChannels = processor->getMainBusNumInputChannels();
+        numChannels = jmin(numChannels, numChannelsObs);
+        fifo.prepareWriter(audio_output_get_sample_rate(obs_get_audio()), numChannels, frames);
 
         fifo.write(reinterpret_cast<const float* const*>(audio_data->data), numChannels, frames);
     }
 
 private:
-    FifoBuffer2 fifoBuffer;
+    SyncBuffer syncBuffer;
     obs_source_t* currentObsSource = nullptr;
     juce::AudioProcessorValueTreeState apvts;
 

@@ -1,16 +1,16 @@
 #pragma once
 
-#include "atkaudio.h"
+#include "../atkaudio.h"
 
 #include <string>
 
 namespace atk
 {
-class PluginHost
+class PluginHost2
 {
 public:
-    PluginHost();
-    ~PluginHost();
+    PluginHost2();
+    ~PluginHost2();
 
     void process(float** buffer, int numChannels, int numSamples, double sampleRate);
 
@@ -18,6 +18,8 @@ public:
 
     void getState(std::string& s);
     void setState(std::string& s);
+
+    void initialise(int numInputChannels, int numOutputChannels, double sampleRate, void* obs_parent_source = nullptr);
 
 private:
     struct Impl;

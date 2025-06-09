@@ -128,7 +128,7 @@
       "configurePreset": "macos",
       "displayName": "macOS Universal",
       "description": "macOS build for Universal architectures",
-      "configuration": "RelWithDebInfo"
+      "configuration": "Debug"
     },
     {
       "name": "macos-ci",

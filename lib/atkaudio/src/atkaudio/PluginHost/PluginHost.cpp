@@ -1,4 +1,4 @@
-#include "../PluginHost.h"
+#include "PluginHost.h"
 
 #include "JuceHostPlugin.h"
 #include "StandaloneFilterWindow.h"

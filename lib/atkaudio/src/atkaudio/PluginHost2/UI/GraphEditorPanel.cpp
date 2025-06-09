@@ -4,73 +4,6 @@
 #include "MainHostWindow.h"
 
 //==============================================================================
-#if JUCE_IOS
-class AUScanner
-{
-public:
-    explicit AUScanner(KnownPluginList& list)
-        : knownPluginList(list)
-    {
-        knownPluginList.clearBlacklistedFiles();
-        paths = formatToScan.getDefaultLocationsToSearch();
-
-        startScan();
-    }
-
-private:
-    KnownPluginList& knownPluginList;
-    AudioUnitPluginFormat formatToScan;
-
-    std::unique_ptr<PluginDirectoryScanner> scanner;
-    FileSearchPath paths;
-
-    static constexpr auto numJobs = 5;
-    ThreadPool pool{ThreadPoolOptions{}.withNumberOfThreads(numJobs)};
-
-    void startScan()
-    {
-        auto deadMansPedalFile =
-            getAppProperties().getUserSettings()->getFile().getSiblingFile("RecentlyCrashedPluginsList");
-
-        scanner.reset(new PluginDirectoryScanner(knownPluginList, formatToScan, paths, true, deadMansPedalFile, true));
-
-        for (int i = numJobs; --i >= 0;)
-            pool.addJob(new ScanJob(*this), true);
-    }
-
-    bool doNextScan()
-    {
-        String pluginBeingScanned;
-        return scanner->scanNextFile(true, pluginBeingScanned);
-    }
-
-    struct ScanJob final : public ThreadPoolJob
-    {
-        ScanJob(AUScanner& s)
-            : ThreadPoolJob("pluginscan")
-            , scanner(s)
-        {
-        }
-
-        JobStatus runJob() override
-        {
-            while (scanner.doNextScan() && !shouldExit())
-            {
-            }
-
-            return jobHasFinished;
-        }
-
-        AUScanner& scanner;
-
-        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ScanJob)
-    };
-
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AUScanner)
-};
-#endif
-
-//==============================================================================
 struct GraphEditorPanel::PinComponent final
     : public Component
     , public SettableTooltipClient
@@ -95,10 +28,10 @@ struct GraphEditorPanel::PinComponent final
                 auto channel = processor.getOffsetInBusBufferForAbsoluteChannelIndex(isInput, pin.channelIndex, busIdx);
 
                 if (auto* bus = processor.getBus(isInput, busIdx))
-                    tip =
-                        bus->getName() + ": " +
-                        AudioChannelSet::getAbbreviatedChannelTypeName(bus->getCurrentLayout().getTypeOfChannel(channel)
-                        );
+                    tip = bus->getName() + ": " +
+                          AudioChannelSet::getAbbreviatedChannelTypeName(
+                              bus->getCurrentLayout().getTypeOfChannel(channel)
+                          );
                 else
                     tip = (isInput ? "Main Input: " : "Main Output: ") + String(pin.channelIndex + 1);
             }

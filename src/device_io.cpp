@@ -1,4 +1,4 @@
-#include <atkaudio/DeviceIo.h>
+#include <atkaudio/DeviceIo/DeviceIo.h>
 #include <atomic>
 #include <obs-module.h>
 

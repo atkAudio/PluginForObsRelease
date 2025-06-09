@@ -1,4 +1,4 @@
-#include "../DeviceIo.h"
+#include "DeviceIo.h"
 
 #include "DeviceIoApp.h"
 

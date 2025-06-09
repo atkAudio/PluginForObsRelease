@@ -310,22 +310,6 @@ MainHostWindow::MainHostWindow()
     formatManager.addDefaultFormats();
     formatManager.addFormat(new InternalPluginFormat());
 
-    auto& mgr = deviceManager;
-    // mgr.initialiseWithDefaultDevices(256, 256);
-    // mgr.addAudioDeviceType(std::make_unique<VirtualAudioIODeviceType>());
-    // mgr.setCurrentAudioDeviceType(IO_TYPE, true);
-
-    // auto safeThis = SafePointer<MainHostWindow>(this);
-    // RuntimePermissions::request(
-    //     RuntimePermissions::recordAudio,
-    //     [safeThis](bool granted) mutable
-    //     {
-    //         auto savedState = safeThis->getAppProperties().getUserSettings()->getXmlValue("audioDeviceState");
-    //         safeThis->deviceManager.initialise(granted ? 256 : 0, 256, savedState.get(), true);
-    //         // TODO
-    //     }
-    // );
-
 #if JUCE_IOS || JUCE_ANDROID
     setFullScreen(true);
 #else
@@ -369,14 +353,6 @@ MainHostWindow::MainHostWindow()
 
     Process::setPriority(Process::HighPriority);
 
-#if JUCE_IOS || JUCE_ANDROID
-    graphHolder->burgerMenu.setModel(this);
-#else
-#if JUCE_MAC
-    // setMacMainMenu(this);
-#else
-#endif
-#endif
     setMenuBar(this);
 
     getCommandManager().setFirstCommandTarget(this);
@@ -402,13 +378,7 @@ MainHostWindow::~MainHostWindow()
     getAppProperties().getUserSettings()->setValue("mainWindowPos", getWindowStateAsString());
     clearContentComponent();
 
-#if !(JUCE_ANDROID || JUCE_IOS)
-#if JUCE_MAC
-    setMacMainMenu(nullptr);
-#else
     setMenuBar(nullptr);
-#endif
-#endif
     graphHolder = nullptr;
 }
 
@@ -737,7 +707,10 @@ void MainHostWindow::addPluginsToMenu(PopupMenu& m)
         int i = 0;
 
         for (auto& t : internalTypes)
-            m.addItem(++i, t.name + " (" + t.pluginFormatName + ")");
+        {
+            // m.addItem(++i, t.name + " (" + t.pluginFormatName + ")");
+            m.addItem(++i, t.name);
+        }
     }
 
     m.addSeparator();
@@ -803,12 +776,12 @@ void MainHostWindow::getCommandInfo(const CommandID commandID, ApplicationComman
     {
 #if !(JUCE_IOS || JUCE_ANDROID)
     case CommandIDs::newFile:
-        result.setInfo("New", "Creates a new filter graph file", category, 0);
+        result.setInfo("New", "Creates new filter graph file", category, 0);
         result.defaultKeypresses.add(KeyPress('n', ModifierKeys::commandModifier, 0));
         break;
 
     case CommandIDs::open:
-        result.setInfo("Open...", "Opens a filter graph file", category, 0);
+        result.setInfo("Open...", "Opens filter graph file", category, 0);
         result.defaultKeypresses.add(KeyPress('o', ModifierKeys::commandModifier, 0));
         break;
 
@@ -818,18 +791,18 @@ void MainHostWindow::getCommandInfo(const CommandID commandID, ApplicationComman
         //     break;
 
     case CommandIDs::saveAs:
-        result.setInfo("Save As...", "Saves a copy of the current graph to a file", category, 0);
+        result.setInfo("Save As...", "Saves copy of current graph to file", category, 0);
         result.defaultKeypresses.add(KeyPress('s', ModifierKeys::shiftModifier | ModifierKeys::commandModifier, 0));
         break;
 #endif
 
     case CommandIDs::showPluginListEditor:
-        result.setInfo("Edit the List of Available Plug-ins...", {}, category, 0);
+        result.setInfo("Edit List of Available Plug-ins...", {}, category, 0);
         result.addDefaultKeypress('p', ModifierKeys::commandModifier);
         break;
 
     case CommandIDs::showAudioSettings:
-        result.setInfo("Change the Device Settings", {}, category, 0);
+        result.setInfo("Change Device Settings", {}, category, 0);
         result.addDefaultKeypress('a', ModifierKeys::commandModifier);
         break;
 

@@ -298,108 +298,108 @@ public:
         const int h = parent.getItemHeight();
         const int space = h / 4;
 
-        // if (inputDeviceDropDown != nullptr)
-        // {
-        //     auto row = r.removeFromTop(h);
+        if (inputDeviceDropDown != nullptr)
+        {
+            auto row = r.removeFromTop(h);
 
-        //     inputLevelMeter->setBounds(
-        //         row.removeFromRight(testButton != nullptr ? testButton->getWidth() : row.getWidth() / 6)
-        //     );
-        //     row.removeFromRight(space);
-        //     inputDeviceDropDown->setBounds(row);
-        //     r.removeFromTop(space);
-        // }
+            inputLevelMeter->setBounds(
+                row.removeFromRight(testButton != nullptr ? testButton->getWidth() : row.getWidth() / 6)
+            );
+            row.removeFromRight(space);
+            inputDeviceDropDown->setBounds(row);
+            r.removeFromTop(space);
+        }
 
-        // if (outputDeviceDropDown != nullptr)
-        // {
-        //     auto row = r.removeFromTop(h);
+        if (outputDeviceDropDown != nullptr)
+        {
+            auto row = r.removeFromTop(h);
 
-        //     if (testButton != nullptr)
-        //     {
-        //         testButton->changeWidthToFitText(h);
-        //         testButton->setBounds(row.removeFromRight(testButton->getWidth()));
-        //         row.removeFromRight(space);
-        //     }
+            if (testButton != nullptr)
+            {
+                testButton->changeWidthToFitText(h);
+                testButton->setBounds(row.removeFromRight(testButton->getWidth()));
+                row.removeFromRight(space);
+            }
 
-        //     outputDeviceDropDown->setBounds(row);
-        //     r.removeFromTop(space);
-        // }
+            outputDeviceDropDown->setBounds(row);
+            r.removeFromTop(space);
+        }
 
-        // if (inputChanList != nullptr)
-        // {
-        //     inputChanList->setRowHeight(jmin(22, h));
-        //     inputChanList->setBounds(r.removeFromTop(inputChanList->getBestHeight(maxListBoxHeight)));
-        //     inputChanLabel->setBounds(0, inputChanList->getBounds().getCentreY() - h / 2, r.getX(), h);
-        //     r.removeFromTop(space);
-        // }
+        if (inputChanList != nullptr)
+        {
+            inputChanList->setRowHeight(jmin(22, h));
+            inputChanList->setBounds(r.removeFromTop(inputChanList->getBestHeight(maxListBoxHeight)));
+            inputChanLabel->setBounds(0, inputChanList->getBounds().getCentreY() - h / 2, r.getX(), h);
+            r.removeFromTop(space);
+        }
 
-        // if (outputChanList != nullptr)
-        // {
-        //     outputChanList->setRowHeight(jmin(22, h));
-        //     outputChanList->setBounds(r.removeFromTop(outputChanList->getBestHeight(maxListBoxHeight)));
-        //     outputChanLabel->setBounds(0, outputChanList->getBounds().getCentreY() - h / 2, r.getX(), h);
-        //     r.removeFromTop(space);
-        // }
+        if (outputChanList != nullptr)
+        {
+            outputChanList->setRowHeight(jmin(22, h));
+            outputChanList->setBounds(r.removeFromTop(outputChanList->getBestHeight(maxListBoxHeight)));
+            outputChanLabel->setBounds(0, outputChanList->getBounds().getCentreY() - h / 2, r.getX(), h);
+            r.removeFromTop(space);
+        }
 
-        // r.removeFromTop(space * 2);
+        r.removeFromTop(space * 2);
 
-        // if (showAdvancedSettingsButton != nullptr && sampleRateDropDown != nullptr && bufferSizeDropDown != nullptr)
-        // {
-        //     showAdvancedSettingsButton->setBounds(r.removeFromTop(h));
-        //     r.removeFromTop(space);
-        //     showAdvancedSettingsButton->changeWidthToFitText();
-        // }
+        if (showAdvancedSettingsButton != nullptr && sampleRateDropDown != nullptr && bufferSizeDropDown != nullptr)
+        {
+            showAdvancedSettingsButton->setBounds(r.removeFromTop(h));
+            r.removeFromTop(space);
+            showAdvancedSettingsButton->changeWidthToFitText();
+        }
 
-        // auto advancedSettingsVisible =
-        //     showAdvancedSettingsButton == nullptr || showAdvancedSettingsButton->getToggleState();
+        auto advancedSettingsVisible =
+            showAdvancedSettingsButton == nullptr || showAdvancedSettingsButton->getToggleState();
 
-        // if (sampleRateDropDown != nullptr)
-        // {
-        //     sampleRateDropDown->setVisible(advancedSettingsVisible);
+        if (sampleRateDropDown != nullptr)
+        {
+            sampleRateDropDown->setVisible(advancedSettingsVisible);
 
-        //     if (advancedSettingsVisible)
-        //     {
-        //         sampleRateDropDown->setBounds(r.removeFromTop(h));
-        //         r.removeFromTop(space);
-        //     }
-        // }
+            if (advancedSettingsVisible)
+            {
+                sampleRateDropDown->setBounds(r.removeFromTop(h));
+                r.removeFromTop(space);
+            }
+        }
 
-        // if (bufferSizeDropDown != nullptr)
-        // {
-        //     bufferSizeDropDown->setVisible(advancedSettingsVisible);
+        if (bufferSizeDropDown != nullptr)
+        {
+            bufferSizeDropDown->setVisible(advancedSettingsVisible);
 
-        //     if (advancedSettingsVisible)
-        //     {
-        //         bufferSizeDropDown->setBounds(r.removeFromTop(h));
-        //         r.removeFromTop(space);
-        //     }
-        // }
+            if (advancedSettingsVisible)
+            {
+                bufferSizeDropDown->setBounds(r.removeFromTop(h));
+                r.removeFromTop(space);
+            }
+        }
 
-        // r.removeFromTop(space);
+        r.removeFromTop(space);
 
-        // if (showUIButton != nullptr || resetDeviceButton != nullptr)
-        // {
-        //     auto buttons = r.removeFromTop(h);
+        if (showUIButton != nullptr || resetDeviceButton != nullptr)
+        {
+            auto buttons = r.removeFromTop(h);
 
-        //     if (showUIButton != nullptr)
-        //     {
-        //         showUIButton->setVisible(advancedSettingsVisible);
-        //         showUIButton->changeWidthToFitText(h);
-        //         showUIButton->setBounds(buttons.removeFromLeft(showUIButton->getWidth()));
-        //         buttons.removeFromLeft(space);
-        //     }
+            if (showUIButton != nullptr)
+            {
+                showUIButton->setVisible(advancedSettingsVisible);
+                showUIButton->changeWidthToFitText(h);
+                showUIButton->setBounds(buttons.removeFromLeft(showUIButton->getWidth()));
+                buttons.removeFromLeft(space);
+            }
 
-        //     if (resetDeviceButton != nullptr)
-        //     {
-        //         resetDeviceButton->setVisible(advancedSettingsVisible);
-        //         resetDeviceButton->changeWidthToFitText(h);
-        //         resetDeviceButton->setBounds(buttons.removeFromLeft(resetDeviceButton->getWidth()));
-        //     }
+            if (resetDeviceButton != nullptr)
+            {
+                resetDeviceButton->setVisible(advancedSettingsVisible);
+                resetDeviceButton->changeWidthToFitText(h);
+                resetDeviceButton->setBounds(buttons.removeFromLeft(resetDeviceButton->getWidth()));
+            }
 
-        //     r.removeFromTop(space);
-        // }
+            r.removeFromTop(space);
+        }
 
-        // setSize(getWidth(), r.getY());
+        setSize(getWidth(), r.getY());
     }
 
     void updateConfig(bool updateOutputDevice, bool updateInputDevice, bool updateSampleRate, bool updateBufferSize)

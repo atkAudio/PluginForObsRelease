@@ -1,23 +1,12 @@
 #pragma once
-
 #include <juce_audio_utils/juce_audio_utils.h>
+
 using namespace juce;
 
 namespace ph2
 {
 
-//==============================================================================
-/**
-    A component containing controls to let the user change the audio settings of
-    an AudioDeviceManager object.
-
-    Very easy to use - just create one of these and show it to the user.
-
-    @see AudioDeviceManager
-
-    @tags{Audio}
-*/
-class JUCE_API AudioDeviceSelectorComponent
+class AudioDeviceSelectorComponent
     : public Component
     , private ChangeListener
 {

@@ -1,4 +1,4 @@
-#include "../PluginHost2.h"
+#include "PluginHost2.h"
 
 #include "UI/MainHostWindow.h"
 #include "VirtualAudioIoDevice.h"
@@ -16,9 +16,6 @@ struct atk::PluginHost2::Impl : public juce::Timer
         auto* window = this->mainHostWindow.release();
         auto lambda = [window] { delete window; };
         juce::MessageManager::callAsync(lambda);
-#ifdef JUCE_DEBUG
-        std::this_thread::sleep_for(std::chrono::milliseconds(10)); // give time for the async call to complete
-#endif
     }
 
     void timerCallback() override
@@ -28,18 +25,47 @@ struct atk::PluginHost2::Impl : public juce::Timer
     void initialise(int numInputChannels, int numOutputChannels, double sampleRate, void* obs_parent_source)
     {
         auto& dm = mainHostWindow->getDeviceManager();
+        dm.initialiseWithDefaultDevices(numInputChannels, numOutputChannels);
         dm.addAudioDeviceType(std::make_unique<VirtualAudioIODeviceType>());
         dm.setCurrentAudioDeviceType(IO_TYPE, true);
         juce::AudioDeviceManager::AudioDeviceSetup setup = dm.getAudioDeviceSetup();
         setup.inputDeviceName = IO_NAME;
         setup.outputDeviceName = IO_NAME;
-        auto res = dm.setAudioDeviceSetup(setup, true);
-        virtualAudioIODevice = dynamic_cast<VirtualAudioIODevice*>(dm.getCurrentAudioDevice());
+        dm.setAudioDeviceSetup(setup, true);
     }
+
+    juce::AudioBuffer<float> outputData{MAX_AUDIO_CHANNELS, AUDIO_OUTPUT_FRAMES};
 
     void process(float** buffer, int newNumChannels, int newNumSamples, double newSampleRate)
     {
-        virtualAudioIODevice->process(buffer, newNumChannels, newNumSamples);
+        (void)newSampleRate;
+        outputData.setSize(newNumChannels, newNumSamples, false, false, true);
+
+        auto& dm = mainHostWindow->getDeviceManager();
+
+        auto* currentDevice = dm.getCurrentAudioDevice();
+        if (!currentDevice || currentDevice->getTypeName() != IO_TYPE)
+        {
+            for (int ch = 0; ch < newNumChannels; ++ch)
+                std::fill(buffer[ch], buffer[ch] + newNumSamples, 0.0f);
+
+            return;
+        }
+
+        juce::ScopedLock lock(dm.getAudioCallbackLock());
+        currentDevice = dm.getCurrentAudioDevice();
+        auto* vdev = static_cast<VirtualAudioIODevice*>(currentDevice);
+        if (vdev && currentDevice && currentDevice->getTypeName() == IO_TYPE)
+        {
+            vdev->process(
+                const_cast<const float**>(buffer),
+                outputData.getArrayOfWritePointers(),
+                newNumChannels,
+                newNumSamples
+            );
+            for (int ch = 0; ch < newNumChannels; ++ch)
+                std::memcpy(buffer[ch], outputData.getReadPointer(ch), newNumSamples * sizeof(float));
+        }
     }
 
     void setVisible(bool visible)
@@ -95,8 +121,6 @@ struct atk::PluginHost2::Impl : public juce::Timer
 private:
     std::unique_ptr<MainHostWindow> mainHostWindow;
     std::unique_ptr<juce::AudioDeviceManager> deviceManager;
-
-    VirtualAudioIODevice* virtualAudioIODevice = nullptr;
 };
 
 void atk::PluginHost2::process(float** buffer, int numChannels, int numSamples, double sampleRate)

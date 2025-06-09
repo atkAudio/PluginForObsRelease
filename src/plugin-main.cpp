@@ -37,6 +37,7 @@ extern struct obs_source_info device_io_filter;
 extern struct obs_source_info pluginhost_filter;
 extern struct obs_source_info pluginhost2_filter;
 extern struct obs_source_info source_mixer;
+extern struct obs_source_info ph2helper_source_info;
 
 void obs_log(int log_level, const char* format, ...);
 
@@ -57,12 +58,13 @@ bool obs_module_load(void)
     messagePump = new MessagePump(mainWindow); // parent handles lifetime
 #endif
 
-    obs_register_source(&autoreset_filter);
+    // obs_register_source(&autoreset_filter);
     obs_register_source(&delay_filter);
     obs_register_source(&device_io_filter);
     obs_register_source(&pluginhost2_filter);
     obs_register_source(&pluginhost_filter);
     obs_register_source(&source_mixer);
+    obs_register_source(&ph2helper_source_info);
 
     return true;
 }
