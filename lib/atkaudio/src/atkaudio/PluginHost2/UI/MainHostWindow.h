@@ -113,7 +113,7 @@ public:
         PropertiesFile::Options options;
         options.applicationName = "atkAudio Plugin Host2";
         options.filenameSuffix = "settings";
-        options.osxLibrarySubFolder = "Preferences";
+        options.osxLibrarySubFolder = "Application Support";
         options.processLock = &interprocessLock;
 
         appProperties.reset(new ApplicationProperties());

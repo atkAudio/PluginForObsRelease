@@ -13,6 +13,8 @@
 - MIDI support (e.g. for using MIDI keyboard and a sampler plugin as soundboard)
 - etc
 
+Plugin Host2 can interface directly with audio and MIDI hardware, OBS audio sources, and output audio as new OBS sources, allowing for complex audio processing setups. E.g. use ASIO interface as audio device, take additional audio from OBS sources, route monitoring to ASIO outputs and/or different audio drivers/hardware, use plugins and create final mix, and output the processed audio as a new OBS source for recording and streaming. Or just create a simple soundboard with a sampler plugin and a MIDI keyboard.
+
 ## Device I/O
 - Send and receive audio directly into and from audio devices
 - "Anything from/to anywhere" device routing

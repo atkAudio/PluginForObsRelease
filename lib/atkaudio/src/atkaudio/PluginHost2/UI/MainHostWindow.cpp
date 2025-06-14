@@ -307,16 +307,21 @@ MainHostWindow::MainHostWindow()
 {
     initialise("");
 
+    auto& dm = getDeviceManager();
+    dm.initialiseWithDefaultDevices(256, 256);
+    dm.addAudioDeviceType(std::make_unique<VirtualAudioIODeviceType>());
+    dm.setCurrentAudioDeviceType(IO_TYPE, true);
+    juce::AudioDeviceManager::AudioDeviceSetup setup = dm.getAudioDeviceSetup();
+    setup.inputDeviceName = IO_NAME;
+    setup.outputDeviceName = IO_NAME;
+    dm.setAudioDeviceSetup(setup, true);
+
     formatManager.addDefaultFormats();
     formatManager.addFormat(new InternalPluginFormat());
 
-#if JUCE_IOS || JUCE_ANDROID
-    setFullScreen(true);
-#else
     setResizable(true, false);
     setResizeLimits(500, 400, 10000, 10000);
     centreWithSize(800, 600);
-#endif
 
     knownPluginList.setCustomScanner(std::make_unique<CustomPluginScanner>(*this));
 
@@ -429,10 +434,6 @@ void MainHostWindow::tryToQuitApplication()
             graphHolder->releaseGraph();
         };
 
-#if JUCE_ANDROID || JUCE_IOS
-        if (graphHolder->graph->saveDocument(PluginGraph::getDefaultGraphDocumentOnMobile()))
-            releaseAndQuit();
-#else
         SafePointer<MainHostWindow> parent{this};
         graphHolder->graph->saveIfNeededAndUserAgreesAsync(
             [parent, releaseAndQuit](FileBasedDocument::SaveResult r)
@@ -444,7 +445,6 @@ void MainHostWindow::tryToQuitApplication()
                     releaseAndQuit();
             }
         );
-#endif
 
         return;
     }
@@ -494,11 +494,8 @@ PopupMenu MainHostWindow::getMenuForIndex(int topLevelMenuIndex, const String& /
 
     if (topLevelMenuIndex == 0)
     {
-        // "File" menu
-#if !(JUCE_IOS || JUCE_ANDROID)
         menu.addCommandItem(&getCommandManager(), CommandIDs::newFile);
         menu.addCommandItem(&getCommandManager(), CommandIDs::open);
-#endif
 
         RecentlyOpenedFilesList recentFiles;
         recentFiles.restoreFromString(getAppProperties().getUserSettings()->getValue("recentFilterGraphFiles"));
@@ -507,10 +504,8 @@ PopupMenu MainHostWindow::getMenuForIndex(int topLevelMenuIndex, const String& /
         recentFiles.createPopupMenuItems(recentFilesMenu, 100, true, true);
         menu.addSubMenu("Open recent file", recentFilesMenu);
 
-#if !(JUCE_IOS || JUCE_ANDROID)
         // menu.addCommandItem(&getCommandManager(), CommandIDs::save);
         menu.addCommandItem(&getCommandManager(), CommandIDs::saveAs);
-#endif
 
         menu.addSeparator();
         menu.addCommandItem(&getCommandManager(), StandardApplicationCommandIDs::quit);
@@ -581,7 +576,6 @@ void MainHostWindow::menuItemSelected(int menuItemID, int /*topLevelMenuIndex*/)
             if (auto* graph = graphHolder->graph.get())
                 graph->clear();
     }
-#if !(JUCE_ANDROID || JUCE_IOS)
     else if (menuItemID >= 100 && menuItemID < 200)
     {
         RecentlyOpenedFilesList recentFiles;
@@ -605,7 +599,6 @@ void MainHostWindow::menuItemSelected(int menuItemID, int /*topLevelMenuIndex*/)
             }
         }
     }
-#endif
     else if (menuItemID >= 200 && menuItemID < 210)
     {
         if (menuItemID == 200)
@@ -751,12 +744,10 @@ void MainHostWindow::getAllCommands(Array<CommandID>& commands)
 {
     // this returns the set of all commands that this target can perform..
     const CommandID ids[] = {
-#if !(JUCE_IOS || JUCE_ANDROID)
         CommandIDs::newFile,
         CommandIDs::open,
         // CommandIDs::save,
         CommandIDs::saveAs,
-#endif
         CommandIDs::showPluginListEditor,
         CommandIDs::showAudioSettings,
         CommandIDs::toggleDoublePrecision,
@@ -774,7 +765,6 @@ void MainHostWindow::getCommandInfo(const CommandID commandID, ApplicationComman
 
     switch (commandID)
     {
-#if !(JUCE_IOS || JUCE_ANDROID)
     case CommandIDs::newFile:
         result.setInfo("New", "Creates new filter graph file", category, 0);
         result.defaultKeypresses.add(KeyPress('n', ModifierKeys::commandModifier, 0));
@@ -794,7 +784,6 @@ void MainHostWindow::getCommandInfo(const CommandID commandID, ApplicationComman
         result.setInfo("Save As...", "Saves copy of current graph to file", category, 0);
         result.defaultKeypresses.add(KeyPress('s', ModifierKeys::shiftModifier | ModifierKeys::commandModifier, 0));
         break;
-#endif
 
     case CommandIDs::showPluginListEditor:
         result.setInfo("Edit List of Available Plug-ins...", {}, category, 0);
@@ -832,7 +821,6 @@ bool MainHostWindow::perform(const InvocationInfo& info)
 {
     switch (info.commandID)
     {
-#if !(JUCE_IOS || JUCE_ANDROID)
     case CommandIDs::newFile:
         if (graphHolder != nullptr && graphHolder->graph != nullptr)
         {
@@ -876,7 +864,6 @@ bool MainHostWindow::perform(const InvocationInfo& info)
         if (graphHolder != nullptr && graphHolder->graph != nullptr)
             graphHolder->graph->saveAsAsync({}, true, true, true, nullptr);
         break;
-#endif
 
     case CommandIDs::showPluginListEditor:
         if (pluginListWindow == nullptr)
@@ -1002,7 +989,6 @@ void MainHostWindow::filesDropped(const StringArray& files, int x, int y)
 {
     if (graphHolder != nullptr)
     {
-#if !(JUCE_ANDROID || JUCE_IOS)
         File firstFile{files[0]};
 
         if (files.size() == 1 && firstFile.hasFileExtension(PluginGraph::getFilenameSuffix()))
@@ -1023,7 +1009,6 @@ void MainHostWindow::filesDropped(const StringArray& files, int x, int y)
             }
         }
         else
-#endif
         {
             OwnedArray<PluginDescription> typesFound;
             knownPluginList.scanAndAddDragAndDroppedFiles(formatManager, files, typesFound);

@@ -28,10 +28,10 @@ struct GraphEditorPanel::PinComponent final
                 auto channel = processor.getOffsetInBusBufferForAbsoluteChannelIndex(isInput, pin.channelIndex, busIdx);
 
                 if (auto* bus = processor.getBus(isInput, busIdx))
-                    tip = bus->getName() + ": " +
-                          AudioChannelSet::getAbbreviatedChannelTypeName(
-                              bus->getCurrentLayout().getTypeOfChannel(channel)
-                          );
+                    tip =
+                        bus->getName() + ": " +
+                        AudioChannelSet::getAbbreviatedChannelTypeName(bus->getCurrentLayout().getTypeOfChannel(channel)
+                        );
                 else
                     tip = (isInput ? "Main Input: " : "Main Output: ") + String(pin.channelIndex + 1);
             }
@@ -276,7 +276,11 @@ struct GraphEditorPanel::PluginComponent final
 
             pins.clear();
 
-            for (int i = 0; i < processor.getTotalNumInputChannels(); ++i)
+            auto inputsToAdd = processor.getTotalNumInputChannels();
+            if (processor.getName() == "OBS Source")
+                inputsToAdd = 0;
+
+            for (int i = 0; i < inputsToAdd; ++i)
                 addAndMakeVisible(pins.add(new PinComponent(panel, {pluginID, i}, true)));
 
             if (processor.acceptsMidi())
@@ -1138,6 +1142,8 @@ GraphDocumentComponent::GraphDocumentComponent(
     deviceManager.addAudioCallback(&graphPlayer);
     deviceManager.addMidiInputDeviceCallback({}, &graphPlayer.getMidiMessageCollector());
     deviceManager.addChangeListener(this);
+
+    startTimer(100);
 }
 
 void GraphDocumentComponent::init()
@@ -1155,6 +1161,10 @@ void GraphDocumentComponent::init()
     statusBar.reset(new TooltipBar());
     addAndMakeVisible(statusBar.get());
 
+    addAndMakeVisible(cpuLoadLabel);
+    cpuLoadLabel.setText("CPU Load: --", juce::dontSendNotification);
+    cpuLoadLabel.setJustificationType(juce::Justification::centredRight);
+
     graphPanel->updateComponents();
 }
 
@@ -1170,6 +1180,9 @@ GraphDocumentComponent::~GraphDocumentComponent()
 
 void GraphDocumentComponent::resized()
 {
+    auto area = getLocalBounds();
+    cpuLoadLabel.setBounds(area.removeFromTop(24).removeFromRight(120));
+
     auto r = [this]
     {
         auto bounds = getLocalBounds();

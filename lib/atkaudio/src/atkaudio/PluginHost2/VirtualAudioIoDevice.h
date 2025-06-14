@@ -146,26 +146,9 @@ public:
         currentCallback = nullptr;
     }
 
-    uint64_t hostTimeNs;
-    juce::AudioIODeviceCallbackContext context{.hostTimeNs = &hostTimeNs};
-
-    void process(const float* const* inputData, float* const* outputData, int newNumChannels, int numSamples)
+    auto* getAudioDeviceCallback() const noexcept
     {
-        hostTimeNs = juce::Time::getHighResolutionTicks();
-
-        auto numChannels = std::min(newNumChannels, this->numChannels);
-
-        if (playing && currentCallback)
-        {
-            currentCallback->audioDeviceIOCallbackWithContext(
-                inputData,
-                numChannels,
-                outputData,
-                numChannels,
-                numSamples,
-                context
-            );
-        }
+        return currentCallback;
     }
 
 private:

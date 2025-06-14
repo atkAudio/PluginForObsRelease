@@ -26,11 +26,13 @@ public:
         if (!privateSource)
         {
             privateSource = obs_source_create(id.c_str(), name.c_str(), nullptr, nullptr);
-            obs_source_set_audio_active(privateSource, true);
 
             auto* sceneSource = obs_frontend_get_current_scene();
             auto* scene = obs_scene_from_source(sceneSource);
             obs_scene_add(scene, privateSource);
+
+            obs_source_set_audio_active(privateSource, true);
+            obs_source_set_enabled(privateSource, true);
         }
     }
 

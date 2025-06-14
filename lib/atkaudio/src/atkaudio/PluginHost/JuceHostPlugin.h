@@ -35,7 +35,7 @@ public:
                 opt.applicationName = getName();
                 opt.commonToAllUsers = false;
                 opt.doNotSave = false;
-                opt.filenameSuffix = ".props";
+                opt.filenameSuffix = "settings";
                 opt.ignoreCaseOfKeyNames = false;
                 opt.storageFormat = PropertiesFile::StorageFormat::storeAsXML;
                 opt.osxLibrarySubFolder = "Application Support";
@@ -158,7 +158,7 @@ public:
 
     const String getName() const final
     {
-        return "atkAudioObsAudioPluginHost";
+        return "atkAudio Plugin Host";
     }
 
     bool acceptsMidi() const final

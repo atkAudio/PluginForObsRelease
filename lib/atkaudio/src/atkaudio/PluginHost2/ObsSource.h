@@ -46,6 +46,9 @@ static juce::StringArray GetObsAudioSources(obs_source_t* parentSource = nullptr
             if ((caps & OBS_SOURCE_AUDIO) == 0)
                 return true;
 
+            if (name && juce::String(name).containsIgnoreCase("ph2out"))
+                return true;
+
             if (name)
                 names->add(juce::String(name));
             return true;
@@ -179,6 +182,7 @@ public:
         if (source)
         {
             obs_source_add_audio_capture_callback(source, obs_capture_callback, this);
+            obs_source_set_muted(source, true);
             currentObsSource = source;
         }
     }

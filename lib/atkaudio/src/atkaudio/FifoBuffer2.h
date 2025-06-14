@@ -30,7 +30,7 @@ public:
         fifo.reset();
         auto freeSpace = fifo.getFreeSpace();
 
-        if (freeSpace < minBufferSize)
+        if (freeSpace < (int)std::ceil(minBufferSize))
             freeSpace = 2 * freeSpace;
 
         if (buffer.getNumChannels() < minNumChannels)
@@ -265,23 +265,29 @@ public:
     void prepareReader(double sampleRate, int newNumChannels, int bufferSize)
     {
         readerSampleRate.store(sampleRate, std::memory_order_release);
-        readerBufferSize.store(bufferSize, std::memory_order_release);
-        readerNumChannels.store(newNumChannels, std::memory_order_release);
     }
 
     void prepareWriter(double sampleRate, int newNumChannels, int bufferSize)
     {
         writerSampleRate.store(sampleRate, std::memory_order_release);
-        writerBufferSize.store(bufferSize, std::memory_order_release);
-        writerNumChannels.store(newNumChannels, std::memory_order_release);
     }
 
     int write(const float* const* src, int numChannels, int numSamples)
     {
+        juce::ScopedLock lock(writeLock);
+
+        auto newMinBufferSize = numSamples;
+        if (writerNumChannels.load(std::memory_order_acquire) < numChannels ||
+            writerBufferSize.load(std::memory_order_acquire) < newMinBufferSize)
+        {
+            isPrepared.store(false, std::memory_order_release);
+
+            writerNumChannels.store(numChannels, std::memory_order_release);
+            writerBufferSize.store(newMinBufferSize, std::memory_order_release);
+        }
+
         if (!isPrepared.load(std::memory_order_acquire))
             return 0;
-
-        juce::ScopedLock lock(writeLock);
 
         fifoBuffer.write(src, numChannels, numSamples);
 
@@ -290,28 +296,39 @@ public:
 
     int read(float* const* dest, int numChannels, int numSamples, bool addToBuffer = false)
     {
-        if (!isPrepared.load(std::memory_order_acquire))
-            return 0;
-
         juce::ScopedLock lock(readLock);
+        auto readerMinBufferSizeOverhead = (int)std::ceil(
+            (ATK_RATE_FACTOR * readerSampleRate.load(std::memory_order_acquire) -
+             readerSampleRate.load(std::memory_order_acquire)) /
+            2 * ATK_SMOOTHING_SPEED
+        );
+
+        auto readerMinBufferSize = readerMinBufferSizeOverhead + numSamples;
 
         auto ratio =
             writerSampleRate.load(std::memory_order_acquire) / readerSampleRate.load(std::memory_order_acquire);
 
+        readerMinBufferSize = (int)std::ceil(readerMinBufferSize * ratio);
+
+        if (readerNumChannels.load(std::memory_order_acquire) < numChannels ||
+            readerBufferSize.load(std::memory_order_acquire) < readerMinBufferSize)
+        {
+            isPrepared.store(false, std::memory_order_release);
+
+            readerNumChannels.store(numChannels, std::memory_order_release);
+            readerBufferSize.store(readerMinBufferSize, std::memory_order_release);
+        }
+
+        if (!isPrepared.load(std::memory_order_acquire))
+            return 0;
+
         int maxAvailable = fifoBuffer.getNumReady();
 
         auto factor = 1.0f;
-        if (maxAvailable < std::ceil(ATK_RATE_FACTOR * numSamples))
-        {
+        if (maxAvailable < readerMinBufferSize)
             factor = factor / ATK_RATE_FACTOR;
-        }
-        else if (maxAvailable > 2 * std::max(
-                                        std::ceil(ATK_RATE_FACTOR * readerBufferSize.load(std::memory_order_acquire)),
-                                        (float)writerBufferSize.load(std::memory_order_acquire)
-                                    ))
-        {
+        else if (maxAvailable > 2 * std::max(readerMinBufferSize, writerBufferSize.load(std::memory_order_acquire)))
             factor = factor * ATK_RATE_FACTOR;
-        }
 
         rateSmoothing.setTargetValue(factor);
         factor = rateSmoothing.getNextValue();
@@ -394,8 +411,8 @@ private:
 
     juce::AudioBuffer<float> tempBuffer;
 
-    std::atomic<int> readerBufferSize;
-    std::atomic<int> writerBufferSize;
+    std::atomic<int> readerBufferSize{0};
+    std::atomic<int> writerBufferSize{0};
     std::atomic<int> readerNumChannels{0};
     std::atomic<int> writerNumChannels{0};
 

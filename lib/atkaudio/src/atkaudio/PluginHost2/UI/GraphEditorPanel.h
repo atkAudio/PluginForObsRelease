@@ -82,6 +82,7 @@ class GraphDocumentComponent final
     : public Component
     , public DragAndDropTarget
     , public DragAndDropContainer
+    , public Timer
     , private ChangeListener
 {
 public:
@@ -93,6 +94,12 @@ public:
     );
 
     ~GraphDocumentComponent() override;
+
+    void timerCallback() override
+    {
+        auto cpuLoad = deviceManager.getCpuUsage();
+        cpuLoadLabel.setText("CPU: " + juce::String(cpuLoad, 2).replace("0.", "."), juce::dontSendNotification);
+    }
 
     //==============================================================================
     void createNewPlugin(const PluginDescriptionAndPreference&, Point<int> position);
@@ -120,6 +127,7 @@ public:
     BurgerMenuComponent burgerMenu;
 
 private:
+    Label cpuLoadLabel;
     //==============================================================================
     AudioDeviceManager& deviceManager;
     KnownPluginList& pluginList;

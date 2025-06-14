@@ -74,10 +74,6 @@ static void* pluginhost2_create(obs_data_t* settings, obs_source_t* filter)
     ph->parent = obs_filter_get_parent(filter);
     obs_source_release(ph->parent);
 
-    auto numChannels = audio_output_get_channels(obs_get_audio());
-    auto sampleRate = audio_output_get_sample_rate(obs_get_audio());
-    ph->pluginHost2.initialise(numChannels, numChannels, sampleRate);
-
     pluginhost2_update(ph, settings);
 
     return ph;

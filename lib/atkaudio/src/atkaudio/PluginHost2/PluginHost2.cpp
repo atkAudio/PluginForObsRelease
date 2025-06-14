@@ -22,52 +22,6 @@ struct atk::PluginHost2::Impl : public juce::Timer
     {
     }
 
-    void initialise(int numInputChannels, int numOutputChannels, double sampleRate, void* obs_parent_source)
-    {
-        auto& dm = mainHostWindow->getDeviceManager();
-        dm.initialiseWithDefaultDevices(numInputChannels, numOutputChannels);
-        dm.addAudioDeviceType(std::make_unique<VirtualAudioIODeviceType>());
-        dm.setCurrentAudioDeviceType(IO_TYPE, true);
-        juce::AudioDeviceManager::AudioDeviceSetup setup = dm.getAudioDeviceSetup();
-        setup.inputDeviceName = IO_NAME;
-        setup.outputDeviceName = IO_NAME;
-        dm.setAudioDeviceSetup(setup, true);
-    }
-
-    juce::AudioBuffer<float> outputData{MAX_AUDIO_CHANNELS, AUDIO_OUTPUT_FRAMES};
-
-    void process(float** buffer, int newNumChannels, int newNumSamples, double newSampleRate)
-    {
-        (void)newSampleRate;
-        outputData.setSize(newNumChannels, newNumSamples, false, false, true);
-
-        auto& dm = mainHostWindow->getDeviceManager();
-
-        auto* currentDevice = dm.getCurrentAudioDevice();
-        if (!currentDevice || currentDevice->getTypeName() != IO_TYPE)
-        {
-            for (int ch = 0; ch < newNumChannels; ++ch)
-                std::fill(buffer[ch], buffer[ch] + newNumSamples, 0.0f);
-
-            return;
-        }
-
-        juce::ScopedLock lock(dm.getAudioCallbackLock());
-        currentDevice = dm.getCurrentAudioDevice();
-        auto* vdev = static_cast<VirtualAudioIODevice*>(currentDevice);
-        if (vdev && currentDevice && currentDevice->getTypeName() == IO_TYPE)
-        {
-            vdev->process(
-                const_cast<const float**>(buffer),
-                outputData.getArrayOfWritePointers(),
-                newNumChannels,
-                newNumSamples
-            );
-            for (int ch = 0; ch < newNumChannels; ++ch)
-                std::memcpy(buffer[ch], outputData.getReadPointer(ch), newNumSamples * sizeof(float));
-        }
-    }
-
     void setVisible(bool visible)
     {
         if (!mainHostWindow->isOnDesktop() && visible)
@@ -118,9 +72,50 @@ struct atk::PluginHost2::Impl : public juce::Timer
         );
     }
 
+    void process(float** buffer, int newNumChannels, int newNumSamples, double newSampleRate)
+    {
+        (void)newSampleRate;
+        outputData.setSize(newNumChannels, newNumSamples, false, false, true);
+
+        auto& dm = mainHostWindow->getDeviceManager();
+
+        auto* currentDevice = dm.getCurrentAudioDevice();
+        if (!currentDevice || currentDevice->getTypeName() != IO_TYPE)
+        {
+            for (int ch = 0; ch < newNumChannels; ++ch)
+                std::fill(buffer[ch], buffer[ch] + newNumSamples, 0.0f);
+
+            return;
+        }
+
+        juce::ScopedLock lock(dm.getAudioCallbackLock());
+        hostTimeNs = juce::Time::getHighResolutionTicks();
+
+        currentDevice = dm.getCurrentAudioDevice();
+        auto* vdev = static_cast<VirtualAudioIODevice*>(currentDevice);
+        auto* cb = vdev->getAudioDeviceCallback();
+        if (cb && vdev && currentDevice && currentDevice->getTypeName() == IO_TYPE)
+        {
+            cb->audioDeviceIOCallbackWithContext(
+                const_cast<const float**>(buffer),
+                newNumChannels,
+                outputData.getArrayOfWritePointers(),
+                newNumChannels,
+                newNumSamples,
+                context
+            );
+            for (int ch = 0; ch < newNumChannels; ++ch)
+                std::memcpy(buffer[ch], outputData.getReadPointer(ch), newNumSamples * sizeof(float));
+        }
+    }
+
 private:
     std::unique_ptr<MainHostWindow> mainHostWindow;
     std::unique_ptr<juce::AudioDeviceManager> deviceManager;
+
+    juce::AudioBuffer<float> outputData{MAX_AUDIO_CHANNELS, AUDIO_OUTPUT_FRAMES};
+    uint64_t hostTimeNs;
+    juce::AudioIODeviceCallbackContext context{.hostTimeNs = &hostTimeNs};
 };
 
 void atk::PluginHost2::process(float** buffer, int numChannels, int numSamples, double sampleRate)
@@ -141,16 +136,6 @@ void atk::PluginHost2::getState(std::string& s)
 void atk::PluginHost2::setState(std::string& s)
 {
     pImpl->setState(s);
-}
-
-void atk::PluginHost2::initialise(
-    int numInputChannels,
-    int numOutputChannels,
-    double sampleRate,
-    void* obs_parent_source
-)
-{
-    pImpl->initialise(numInputChannels, numOutputChannels, sampleRate, obs_parent_source);
 }
 
 atk::PluginHost2::PluginHost2()

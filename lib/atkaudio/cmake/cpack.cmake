@@ -34,6 +34,7 @@ file(TO_NATIVE_PATH "${ICON_PATH}" ICON_PATH)
 string(REPLACE "\\" "\\\\" ICON_PATH "${ICON_PATH}")
 set(CPACK_NSIS_MUI_ICON "${ICON_PATH}")
 set(CPACK_NSIS_MUI_UNIICON "${ICON_PATH}")
+set(CPACK_NSIS_INSTALLED_ICON_NAME "${CMAKE_SOURCE_DIR}/lib/atkaudio/assets/icon.ico")
 set(CPACK_PACKAGE_ICON "${ICON_PATH}")
 
 if(WIN32)
@@ -45,18 +46,19 @@ else()
   set(CPACK_PACKAGE_EXTENSION "pkg")
 endif()
 
-if(NOT DEFINED ENV{CI})
-  return()
-endif()
-if(NOT WIN32)
-  return()
-endif()
 
 set(CPACK_RELEASE_STAGING_DIRECTORY "${CMAKE_SOURCE_DIR}/release")
 set(BUILD_TYPE_FOR_CPACK "Release")
 
 set(CPACK_PACKAGE_DIRECTORY "${CMAKE_BINARY_DIR}")
 set(CPACK_PACKAGE_ABSOLUTE_PATH ${CPACK_PACKAGE_DIRECTORY}/${CPACK_PACKAGE_FILE_NAME}.${CPACK_PACKAGE_EXTENSION})
+
+if(NOT DEFINED ENV{CI})
+  set(BUILD_TYPE_FOR_CPACK "Debug")
+endif()
+if(NOT WIN32)
+  return()
+endif()
 
 include(CPack)
 
