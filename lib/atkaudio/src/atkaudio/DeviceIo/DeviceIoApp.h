@@ -41,11 +41,9 @@ public:
     {
         inputChannels = deviceManager.getCurrentAudioDevice()->getActiveInputChannels().countNumberOfSetBits();
         outputChannels = deviceManager.getCurrentAudioDevice()->getActiveOutputChannels().countNumberOfSetBits();
+        sampleRate = newSampleRate;
 
         toObsBuffer.clearPrepared();
-
-        toObsBuffer.prepareWriter(newSampleRate, inputChannels, samplesPerBlockExpected);
-        fromObsBuffer.prepareReader(newSampleRate, outputChannels, samplesPerBlockExpected);
     }
 
     // processBlock
@@ -55,14 +53,16 @@ public:
             toObsBuffer.write(
                 bufferToFill.buffer->getArrayOfReadPointers(),
                 bufferToFill.buffer->getNumChannels(),
-                bufferToFill.numSamples
+                bufferToFill.numSamples,
+                sampleRate
             );
 
         if (outputChannels > 0)
             fromObsBuffer.read(
                 bufferToFill.buffer->getArrayOfWritePointers(),
                 bufferToFill.buffer->getNumChannels(),
-                bufferToFill.numSamples
+                bufferToFill.numSamples,
+                sampleRate
             );
     }
 
@@ -98,6 +98,7 @@ private:
     juce::AudioDeviceManager::AudioDeviceSetup audioSetup;
     int inputChannels = 0;
     int outputChannels = 0;
+    double sampleRate = 0.0;
 
     SyncBuffer toObsBuffer;
     SyncBuffer fromObsBuffer;

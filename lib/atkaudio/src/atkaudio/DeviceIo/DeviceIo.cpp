@@ -35,12 +35,10 @@ struct atk::DeviceIo::Impl : public juce::Timer
     void process(float** buffer, int numChannels, int numSamples, double sampleRate)
     {
         auto& fromObsBuffer = deviceIoApp->getFromObsBuffer();
-        fromObsBuffer.prepareWriter(sampleRate, numChannels, numSamples);
-        fromObsBuffer.write(buffer, numChannels, numSamples);
+        fromObsBuffer.write(buffer, numChannels, numSamples, sampleRate);
 
         auto& toObsBuffer = deviceIoApp->getToObsBuffer();
-        toObsBuffer.prepareReader(sampleRate, numChannels, numSamples);
-        toObsBuffer.read(buffer, numChannels, numSamples, this->mixInput);
+        toObsBuffer.read(buffer, numChannels, numSamples, sampleRate, this->mixInput);
     }
 
     void setVisible(bool visible)

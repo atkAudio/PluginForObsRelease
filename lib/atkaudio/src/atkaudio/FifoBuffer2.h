@@ -1,10 +1,9 @@
 #pragma once
 
 #include <juce_audio_utils/juce_audio_utils.h>
-#include <juce_dsp/juce_dsp.h>
 
-#define ATK_RATE_FACTOR 1.001f
-#define ATK_SMOOTHING_SPEED 1.0f
+constexpr auto ATK_CORRECTION_RATE = 1 + (1000 / 10000000); // 1000 ppm
+constexpr auto ATK_SMOOTHING_TIME = 0.1f;                   // 0.1f = 100 ms
 
 class FifoBuffer2 : public juce::Timer
 {
@@ -16,7 +15,7 @@ public:
         , fifo(minBufferSize + 1)
     {
         timerCallback();
-        startTimer(100);
+        startTimer(10);
     }
 
     void timerCallback() override
@@ -43,7 +42,9 @@ public:
 
     int write(const float* const* src, int numChannels, int numSamples)
     {
-        juce::ScopedLock lock(writeLock);
+        juce::ScopedTryLock lock(writeLock);
+        if (!lock.isLocked())
+            return 0;
 
         if (minBufferSize < numSamples || minNumChannels < numChannels)
         {
@@ -83,7 +84,10 @@ public:
 
     int read(float* const* dest, int numChannels, int numSamples, bool advanceRead = true, bool addToBuffer = false)
     {
-        juce::ScopedLock lock(readLock);
+        juce::ScopedTryLock lock(readLock);
+        if (!lock.isLocked())
+            return 0;
+
         if (minBufferSize < numSamples || minNumChannels < numChannels)
         {
             isPrepared.store(false, std::memory_order_release);
@@ -145,16 +149,6 @@ public:
         fifo.finishedRead(numSamples);
     }
 
-    int getNumReady() const
-    {
-        return fifo.getNumReady();
-    }
-
-    int getFreeSpace() const
-    {
-        return fifo.getFreeSpace();
-    }
-
     auto& getBuffer()
     {
         return buffer;
@@ -199,7 +193,7 @@ public:
         , readerBufferSize(-1)
         , writerBufferSize(-1)
     {
-        startTimer(100);
+        startTimer(10);
     }
 
     void timerCallback() override
@@ -207,54 +201,51 @@ public:
         if (isPrepared.load(std::memory_order_acquire))
             return;
 
-        if (readerBufferSize.load(std::memory_order_acquire) < 0 ||
-            writerBufferSize.load(std::memory_order_acquire) < 0)
-        {
-            return;
-        }
-
         prepare();
     }
 
     void clearPrepared()
     {
-        readerBufferSize.store(-1, std::memory_order_release);
-        writerBufferSize.store(-1, std::memory_order_release);
+        juce::ScopedLock lock1(writeLock);
+        juce::ScopedLock lock2(readLock);
+
+        readerBufferSize = -1;
+        writerBufferSize = -1;
         isPrepared.store(false, std::memory_order_release);
     }
 
     void prepare()
     {
-        isPrepared.store(false, std::memory_order_release);
-
         juce::ScopedLock lock1(writeLock);
         juce::ScopedLock lock2(readLock);
 
-        numChannels = std::max(
-            readerNumChannels.load(std::memory_order_acquire),
-            writerNumChannels.load(std::memory_order_acquire)
-        );
+        isPrepared.store(false, std::memory_order_release);
+
+        if (readerNumChannels < 1 || writerNumChannels < 1 || readerBufferSize < 1 || writerBufferSize < 1 ||
+            readerSampleRate <= 0.0 || writerSampleRate <= 0.0)
+        {
+            return;
+        }
+
+        numChannels = std::max(readerNumChannels, writerNumChannels);
 
         interpolators.resize(numChannels);
         for (auto& interp : interpolators)
             interp.reset();
 
-        auto ratio =
-            readerSampleRate.load(std::memory_order_acquire) / writerSampleRate.load(std::memory_order_acquire);
+        auto ratio = writerSampleRate / readerSampleRate;
 
-        minBufferSize = (int)std::ceil((ATK_RATE_FACTOR * readerBufferSize.load(std::memory_order_acquire) / ratio));
-        maxBufferSize = 3 * std::max(
-                                (int)std::ceil((readerBufferSize.load(std::memory_order_acquire) / ratio)),
-                                writerBufferSize.load(std::memory_order_acquire)
-                            );
-
-        tempBuffer.setSize(numChannels, 2 * maxBufferSize, false, false, true);
-
-        rateSmoothing.reset(
-            readerSampleRate.load(std::memory_order_acquire) / readerBufferSize.load(std::memory_order_acquire) * 1.0,
-            ATK_SMOOTHING_SPEED
+        minBufferSize = 2 * readerBufferSize;
+        maxBufferSize = std::max(
+            3 * readerBufferSize,
+            (int)std::ceil((2 * writerBufferSize) / ratio) // reader domain
         );
+
+        tempBuffer.setSize(numChannels, 2 * std::max(readerBufferSize, writerBufferSize), false, false, true);
+
+        rateSmoothing.reset(readerSampleRate, ATK_SMOOTHING_TIME);
         rateSmoothing.setCurrentAndTargetValue(1.0);
+        rateSmoothingBuffer.setSize(numChannels, readerBufferSize, false, false, true);
 
         tempBuffer.clear();
         fifoBuffer.write(tempBuffer.getArrayOfWritePointers(), numChannels, minBufferSize);
@@ -262,143 +253,129 @@ public:
         isPrepared.store(true, std::memory_order_release);
     }
 
-    void prepareReader(double sampleRate, int newNumChannels, int bufferSize)
+    int write(const float* const* src, int numChannels, int numSamples, double sampleRate)
     {
-        readerSampleRate.store(sampleRate, std::memory_order_release);
-    }
-
-    void prepareWriter(double sampleRate, int newNumChannels, int bufferSize)
-    {
-        writerSampleRate.store(sampleRate, std::memory_order_release);
-    }
-
-    int write(const float* const* src, int numChannels, int numSamples)
-    {
-        juce::ScopedLock lock(writeLock);
+        juce::ScopedTryLock lock(writeLock);
+        if (!lock.isLocked())
+            return 0;
 
         auto newMinBufferSize = numSamples;
-        if (writerNumChannels.load(std::memory_order_acquire) < numChannels ||
-            writerBufferSize.load(std::memory_order_acquire) < newMinBufferSize)
+        if (writerNumChannels < numChannels || writerBufferSize < newMinBufferSize || writerSampleRate != sampleRate)
         {
             isPrepared.store(false, std::memory_order_release);
 
-            writerNumChannels.store(numChannels, std::memory_order_release);
-            writerBufferSize.store(newMinBufferSize, std::memory_order_release);
+            writerNumChannels = numChannels;
+            writerBufferSize = newMinBufferSize;
+            writerSampleRate = sampleRate;
         }
 
         if (!isPrepared.load(std::memory_order_acquire))
             return 0;
 
-        fifoBuffer.write(src, numChannels, numSamples);
+        auto written = fifoBuffer.write(src, numChannels, numSamples);
 
-        return numSamples;
+        return written;
     }
 
-    int read(float* const* dest, int numChannels, int numSamples, bool addToBuffer = false)
+    bool read(float* const* dest, int numChannels, int numSamples, double sampleRate, bool addToBuffer = false)
     {
-        juce::ScopedLock lock(readLock);
-        auto readerMinBufferSizeOverhead = (int)std::ceil(
-            (ATK_RATE_FACTOR * readerSampleRate.load(std::memory_order_acquire) -
-             readerSampleRate.load(std::memory_order_acquire)) /
-            2 * ATK_SMOOTHING_SPEED
-        );
+        juce::ScopedTryLock lock(readLock);
+        if (!lock.isLocked())
+            return false;
 
-        auto readerMinBufferSize = readerMinBufferSizeOverhead + numSamples;
-
-        auto ratio =
-            writerSampleRate.load(std::memory_order_acquire) / readerSampleRate.load(std::memory_order_acquire);
-
-        readerMinBufferSize = (int)std::ceil(readerMinBufferSize * ratio);
-
-        if (readerNumChannels.load(std::memory_order_acquire) < numChannels ||
-            readerBufferSize.load(std::memory_order_acquire) < readerMinBufferSize)
+        if (readerNumChannels < numChannels || readerSampleRate != sampleRate || readerBufferSize < numSamples)
         {
             isPrepared.store(false, std::memory_order_release);
 
-            readerNumChannels.store(numChannels, std::memory_order_release);
-            readerBufferSize.store(readerMinBufferSize, std::memory_order_release);
+            readerBufferSize = std::max(readerBufferSize, numSamples);
+            readerNumChannels = numChannels;
+            readerSampleRate = sampleRate;
         }
 
         if (!isPrepared.load(std::memory_order_acquire))
             return 0;
 
-        int maxAvailable = fifoBuffer.getNumReady();
+        auto ratio = writerSampleRate / readerSampleRate;
+
+        int maxAvailable = fifoBuffer.getFifo().getNumReady();
+        maxAvailable = std::floor(maxAvailable / ratio); // reader domain samples
 
         auto factor = 1.0f;
-        if (maxAvailable < readerMinBufferSize)
-            factor = factor / ATK_RATE_FACTOR;
-        else if (maxAvailable > 2 * std::max(readerMinBufferSize, writerBufferSize.load(std::memory_order_acquire)))
-            factor = factor * ATK_RATE_FACTOR;
+        if (maxAvailable < minBufferSize)
+            factor = 1 / ATK_CORRECTION_RATE;
+        else if (maxAvailable > maxBufferSize)
+            factor = ATK_CORRECTION_RATE;
 
         rateSmoothing.setTargetValue(factor);
-        factor = rateSmoothing.getNextValue();
+        rateSmoothingBuffer.setSize(1, numSamples, false, false, true);
+        float maxFactor = 0.0f;
+        for (int i = 0; i < numSamples; ++i)
+        {
+            auto currentFactor = rateSmoothing.getNextValue();
+            if (currentFactor > maxFactor)
+                maxFactor = currentFactor;
+            rateSmoothingBuffer.getWritePointer(0)[i] = currentFactor;
+        }
 
-        ratio = ratio * factor;
-
-        int samplesNeeded = std::ceil(numSamples * ratio);
+        int writerSamplesNeeded = std::ceil(numSamples * ratio * maxFactor);
 
         if (!addToBuffer)
             for (int ch = 0; ch < numChannels; ++ch)
                 std::memset(dest[ch], 0, sizeof(float) * numSamples);
 
-#ifdef JUCE_DEBUG
-        if (maxAvailable < samplesNeeded)
-            DBG("needed " << samplesNeeded << " available " << maxAvailable << " ratio " << ratio);
-#endif
+        tempBuffer.setSize(numChannels, writerSamplesNeeded, false, false, true);
+        auto writerSamples =
+            fifoBuffer.read(tempBuffer.getArrayOfWritePointers(), numChannels, writerSamplesNeeded, false);
 
-        tempBuffer.setSize(numChannels, samplesNeeded, false, false, true);
-
-        auto samplesGot = fifoBuffer.read(tempBuffer.getArrayOfWritePointers(), numChannels, samplesNeeded, false);
-
-        int samplesConsumed = 0;
-
-        for (int i = 0; i < interpolators.size(); i++)
+        if (writerSamples < writerSamplesNeeded)
         {
-            auto ch = i % numChannels;
-            samplesConsumed = interpolators[i].processAdding(
-                ratio,
-                tempBuffer.getReadPointer(ch),
-                dest[ch],
-                numSamples,
-                maxAvailable,
-                maxAvailable,
-                1.0f
-            );
+#ifdef JUCE_DEBUG
+            DBG("got " << writerSamples << " needed " << writerSamplesNeeded << " ratio " << ratio);
+#endif
+            return false;
         }
 
-        fifoBuffer.advanceRead(samplesConsumed);
+        if (!addToBuffer)
+            for (int ch = 0; ch < numChannels; ++ch)
+                std::memset(dest[ch], 0, sizeof(float) * numSamples);
 
-        return samplesConsumed;
-    }
+        auto smoothingReadPtr = rateSmoothingBuffer.getReadPointer(0);
+        auto totalSamplesConsumed = 0;
 
-    int getNumReady() const
-    {
-        return fifoBuffer.getNumReady();
-    }
+        auto finalRatio = 0.0f;
+        for (int i = 0; i < interpolators.size(); i++)
+        {
+            totalSamplesConsumed = 0;
+            int samplesAvailable = writerSamples;
 
-    int getFreeSpace() const
-    {
-        return fifoBuffer.getFreeSpace();
-    }
+            auto ch = i % numChannels;
 
-    double getReaderSampleRate() const
-    {
-        return readerSampleRate.load(std::memory_order_acquire);
-    }
+            for (int j = 0; j < numSamples; ++j)
+            {
+                auto currentFactor = smoothingReadPtr[j];
+                finalRatio = ratio * currentFactor;
 
-    double getWriterSampleRate() const
-    {
-        return writerSampleRate.load(std::memory_order_acquire);
-    }
+                int samplesConsumed = interpolators[i].processAdding(
+                    finalRatio,
+                    tempBuffer.getReadPointer(i) + totalSamplesConsumed,
+                    dest[ch] + j,
+                    1,
+                    1.0f
+                );
+                samplesAvailable -= samplesConsumed;
+                totalSamplesConsumed += samplesConsumed;
+            }
+        }
 
-    int getReaderBufferSize() const
-    {
-        return readerBufferSize.load(std::memory_order_acquire);
-    }
+#ifdef JUCE_DEBUG
+        if (!juce::approximatelyEqual(finalRatio, prevFinalRatio))
+            DBG("time: " << juce::Time::getCurrentTime().toString(true, true)
+                         << juce::String(" final ratio ") + juce::String(finalRatio));
+#endif
+        prevFinalRatio = finalRatio;
+        fifoBuffer.advanceRead(totalSamplesConsumed);
 
-    int getWriterBufferSize() const
-    {
-        return writerBufferSize.load(std::memory_order_acquire);
+        return true;
     }
 
 private:
@@ -411,19 +388,22 @@ private:
 
     juce::AudioBuffer<float> tempBuffer;
 
-    std::atomic<int> readerBufferSize{0};
-    std::atomic<int> writerBufferSize{0};
-    std::atomic<int> readerNumChannels{0};
-    std::atomic<int> writerNumChannels{0};
+    int readerBufferSize{0};
+    int writerBufferSize{0};
+    int readerNumChannels{0};
+    int writerNumChannels{0};
 
-    std::atomic<double> readerSampleRate{0.0};
-    std::atomic<double> writerSampleRate{0.0};
+    double readerSampleRate{0.0};
+    double writerSampleRate{0.0};
 
     int minBufferSize{0};
     int maxBufferSize{0};
 
-    juce::LinearSmoothedValue<double> rateSmoothing;
+    juce::LinearSmoothedValue<float> rateSmoothing;
+    juce::AudioBuffer<float> rateSmoothingBuffer;
 
     juce::CriticalSection readLock;
     juce::CriticalSection writeLock;
+
+    float prevFinalRatio{1.0f};
 };

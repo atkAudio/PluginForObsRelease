@@ -189,10 +189,12 @@ public:
 
     void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
     {
-        auto numRead = syncBuffer.getNumReady();
-
-        syncBuffer.prepareReader(getSampleRate(), getMainBusNumInputChannels(), buffer.getNumSamples());
-        syncBuffer.read(buffer.getArrayOfWritePointers(), getMainBusNumInputChannels(), buffer.getNumSamples());
+        syncBuffer.read(
+            buffer.getArrayOfWritePointers(),
+            getMainBusNumInputChannels(),
+            buffer.getNumSamples(),
+            getSampleRate()
+        );
     }
 
 private:
@@ -211,9 +213,13 @@ private:
         int numChannelsObs = audio_output_get_channels(obs_get_audio());
         int numChannels = processor->getMainBusNumInputChannels();
         numChannels = jmin(numChannels, numChannelsObs);
-        fifo.prepareWriter(audio_output_get_sample_rate(obs_get_audio()), numChannels, frames);
 
-        fifo.write(reinterpret_cast<const float* const*>(audio_data->data), numChannels, frames);
+        fifo.write(
+            reinterpret_cast<const float* const*>(audio_data->data),
+            numChannels,
+            frames,
+            audio_output_get_sample_rate(obs_get_audio())
+        );
     }
 
 private:

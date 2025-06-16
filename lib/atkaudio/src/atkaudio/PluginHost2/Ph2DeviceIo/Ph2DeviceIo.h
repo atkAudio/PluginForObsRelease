@@ -27,8 +27,6 @@ public:
     void prepareToPlay(double sampleRate, int samplesPerBlock) override
     {
         auto numChannels = getMainBusNumInputChannels();
-        toHostBuffer.prepareReader(sampleRate, numChannels, samplesPerBlock);
-        fromHostBuffer.prepareWriter(sampleRate, numChannels, samplesPerBlock);
     }
 
     void releaseResources() override
@@ -44,10 +42,10 @@ public:
         auto numOutputChannels = getMainBusNumOutputChannels();
 
         auto* inputData = buffer.getArrayOfReadPointers();
-        fromHostBuffer.write(inputData, numInputChannels, numSamples);
+        fromHostBuffer.write(inputData, numInputChannels, numSamples, getSampleRate());
 
         auto* outputData = buffer.getArrayOfWritePointers();
-        toHostBuffer.read(outputData, numOutputChannels, numSamples);
+        toHostBuffer.read(outputData, numOutputChannels, numSamples, getSampleRate());
     }
 
     juce::AudioProcessorEditor* createEditor() override;
@@ -143,24 +141,14 @@ private:
     ) override
     {
         if (numInputChannels > 0)
-            toHostBuffer.write(inputChannelData, numInputChannels, numSamples);
+            toHostBuffer.write(inputChannelData, numInputChannels, numSamples, getSampleRate());
 
         if (numOutputChannels > 0)
-            fromHostBuffer.read(outputChannelData, numOutputChannels, numSamples);
+            fromHostBuffer.read(outputChannelData, numOutputChannels, numSamples, getSampleRate());
     }
 
     void audioDeviceAboutToStart(AudioIODevice* device) override
     {
-        fromHostBuffer.prepareReader(
-            device->getCurrentSampleRate(),
-            device->getActiveOutputChannels().countNumberOfSetBits(),
-            device->getCurrentBufferSizeSamples()
-        );
-        toHostBuffer.prepareWriter(
-            device->getCurrentSampleRate(),
-            device->getActiveInputChannels().countNumberOfSetBits(),
-            device->getCurrentBufferSizeSamples()
-        );
     }
 
     void audioDeviceStopped() override
