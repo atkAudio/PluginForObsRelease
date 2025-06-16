@@ -95,10 +95,29 @@ public:
 
     ~GraphDocumentComponent() override;
 
-    void timerCallback() override
+    float cpuLoadPrev = 0.0f;
+    int cpuHold = 0;
+
+    void setCpuLoad()
     {
         auto cpuLoad = deviceManager.getCpuUsage();
+        if (cpuLoad > cpuLoadPrev)
+        {
+            cpuHold = 100;
+        }
+        else if (cpuHold > 0)
+        {
+            --cpuHold;
+            cpuLoad = cpuLoadPrev;
+        }
+        cpuLoadPrev = cpuLoad;
+
         cpuLoadLabel.setText("CPU: " + juce::String(cpuLoad, 2).replace("0.", "."), juce::dontSendNotification);
+    }
+
+    void timerCallback() override
+    {
+        setCpuLoad();
     }
 
     //==============================================================================
