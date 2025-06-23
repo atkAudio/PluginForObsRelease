@@ -162,7 +162,7 @@ static inline obs_source_t* get_sidechain(source_data& sourceData, struct audios
 {
     if (sourceData.weak_sidechain)
         return obs_weak_source_get_source(sourceData.weak_sidechain);
-    return NULL;
+    return nullptr;
 }
 
 static void asmd_capture(void* param, obs_source_t* sourceIn, const struct audio_data* audio_data, bool muted)
@@ -331,7 +331,7 @@ static void asmd_destroy(void* data)
             obs_source_t* sidechain = get_sidechain(source, asmd);
             if (sidechain)
             {
-                source.source = NULL;
+                source.source = nullptr;
                 obs_source_remove_audio_capture_callback(sidechain, asmd_capture, asmd);
                 obs_source_release(sidechain);
             }
@@ -387,7 +387,7 @@ static obs_properties_t* properties(void* data)
     obs_property_list_add_int(layout, TEXT_LAYOUT_MONO, 1);
     obs_property_list_add_int(layout, TEXT_LAYOUT_STEREO, 2);
 
-    obs_source_t* parent = NULL;
+    obs_source_t* parent = nullptr;
 
     if (asmd)
         parent = obs_filter_get_parent(asmd->source);
@@ -433,8 +433,8 @@ static void update(void* data, obs_data_t* s)
 {
     struct audiosourcemixer_data* asmd = (struct audiosourcemixer_data*)data;
 
-    const uint32_t sample_rate = audio_output_get_sample_rate(obs_get_audio());
-    size_t num_channels = audio_output_get_channels(obs_get_audio());
+    // const uint32_t sample_rate = audio_output_get_sample_rate(obs_get_audio());
+    // size_t num_channels = audio_output_get_channels(obs_get_audio());
 
     auto layout = obs_data_get_int(s, S_LAYOUT);
 
@@ -459,7 +459,7 @@ static void update(void* data, obs_data_t* s)
         const char* sidechain_name = obs_data_get_string(s, sidechainText.c_str());
 
         bool valid_sidechain = *sidechain_name && strcmp(sidechain_name, "none") != 0;
-        obs_weak_source_t* old_weak_sidechain = NULL;
+        obs_weak_source_t* old_weak_sidechain = nullptr;
 
         asmd->sidechain_update_mutex.lock();
 
@@ -468,18 +468,18 @@ static void update(void* data, obs_data_t* s)
             if (source.weak_sidechain)
             {
                 old_weak_sidechain = source.weak_sidechain;
-                source.weak_sidechain = NULL;
+                source.weak_sidechain = nullptr;
             }
 
             bfree(source.sidechain_name);
-            source.sidechain_name = NULL;
+            source.sidechain_name = nullptr;
         }
         else if (!source.sidechain_name || strcmp(source.sidechain_name, sidechain_name) != 0)
         {
             if (source.weak_sidechain)
             {
                 old_weak_sidechain = source.weak_sidechain;
-                source.weak_sidechain = NULL;
+                source.weak_sidechain = nullptr;
             }
 
             bfree(source.sidechain_name);
@@ -495,7 +495,7 @@ static void update(void* data, obs_data_t* s)
 
             if (old_sidechain)
             {
-                source.source = NULL;
+                source.source = nullptr;
                 obs_source_remove_audio_capture_callback(old_sidechain, asmd_capture, asmd);
                 obs_source_release(old_sidechain);
             }
@@ -520,7 +520,7 @@ static void* asmd_create(obs_data_t* settings, obs_source_t* source)
 
     update(asmd, settings);
 
-    obs_add_raw_audio_callback(0, NULL, audio_output_callback, asmd);
+    obs_add_raw_audio_callback(0, nullptr, audio_output_callback, asmd);
 
     UNUSED_PARAMETER(settings);
     return asmd;
@@ -541,11 +541,11 @@ static void asmd_tick(void* data, float seconds)
 
     for (auto& source : *asmd->sources)
     {
-        char* new_name = NULL;
+        char* new_name = nullptr;
         asmd->sidechain_update_mutex.lock();
 
-        if (t - source.last_callback_time.load(std::memory_order_acquire) >
-            (2.0 * source.frames.load()) / sampleRate * 1000000000)
+        if (t - source.last_callback_time.load(std::memory_order_acquire)
+            > (2.0 * source.frames.load()) / sampleRate * 1000000000)
             source.isActive.store(false, std::memory_order_release);
 
         if (source.sidechain_name && !source.weak_sidechain)
@@ -561,8 +561,8 @@ static void asmd_tick(void* data, float seconds)
 
         if (new_name)
         {
-            obs_source_t* sidechain = *new_name ? obs_get_source_by_name(new_name) : NULL;
-            obs_weak_source_t* weak_sidechain = sidechain ? obs_source_get_weak_source(sidechain) : NULL;
+            obs_source_t* sidechain = *new_name ? obs_get_source_by_name(new_name) : nullptr;
+            obs_weak_source_t* weak_sidechain = sidechain ? obs_source_get_weak_source(sidechain) : nullptr;
 
             for (auto& source : *asmd->sources)
             {
@@ -570,8 +570,8 @@ static void asmd_tick(void* data, float seconds)
                 {
                     obs_weak_source_release(weak_sidechain);
                     obs_source_release(sidechain);
-                    weak_sidechain = NULL;
-                    sidechain = NULL;
+                    weak_sidechain = nullptr;
+                    sidechain = nullptr;
                     break;
                 }
             }
@@ -581,7 +581,7 @@ static void asmd_tick(void* data, float seconds)
             if (source.sidechain_name && strcmp(source.sidechain_name, new_name) == 0)
             {
                 source.weak_sidechain = weak_sidechain;
-                weak_sidechain = NULL;
+                weak_sidechain = nullptr;
             }
 
             asmd->sidechain_update_mutex.unlock();

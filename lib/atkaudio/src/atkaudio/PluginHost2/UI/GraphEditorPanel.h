@@ -112,7 +112,20 @@ public:
         }
         cpuLoadPrev = cpuLoad;
 
-        cpuLoadLabel.setText("CPU: " + juce::String(cpuLoad, 2).replace("0.", "."), juce::dontSendNotification);
+        auto latencySamples = graph->graph.getLatencySamples();
+        auto latencyMs =
+            latencySamples > 0
+                ? (int)std::round(
+                      (float)latencySamples / deviceManager.getCurrentAudioDevice()->getCurrentSampleRate() * 1000.0f
+                  )
+                : 0;
+
+        cpuLoadLabel.setText(
+            "dly: "
+                // + juce::String(latencySamples) + "smp/"
+                + juce::String(latencyMs) + "ms, " + "cpu: " + juce::String(cpuLoad, 2).replace("0.", "."),
+            juce::dontSendNotification
+        );
     }
 
     void timerCallback() override

@@ -2,8 +2,8 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
-constexpr auto ATK_CORRECTION_RATE = 1 + 1000.0f / 1000000; // 1000 ppm
-constexpr auto ATK_SMOOTHING_TIME = 1.0f;                   // 1 second
+constexpr auto ATK_CORRECTION_RATE = 1 + 300.0f / 1000000; // 300 ppm
+constexpr auto ATK_SMOOTHING_TIME = 1.0f;                  // 1 second
 
 class FifoBuffer2 : public juce::Timer
 {
@@ -221,8 +221,8 @@ public:
 
         isPrepared.store(false, std::memory_order_release);
 
-        if (readerNumChannels < 1 || writerNumChannels < 1 || readerBufferSize < 1 || writerBufferSize < 1 ||
-            readerSampleRate <= 0.0 || writerSampleRate <= 0.0)
+        if (readerNumChannels < 1 || writerNumChannels < 1 || readerBufferSize < 1 || writerBufferSize < 1
+            || readerSampleRate <= 0.0 || writerSampleRate <= 0.0)
         {
             return;
         }
@@ -330,9 +330,10 @@ public:
         if (writerSamples < writerSamplesNeeded)
         {
 #ifdef JUCE_DEBUG
-            DBG("got " << writerSamples << " needed " << writerSamplesNeeded << " ratio " << ratio);
+            DBG(juce::Time::getCurrentTime().toString(true, true)
+                << " got " << writerSamples << " needed " << writerSamplesNeeded << " ratio " << ratio);
 #endif
-            return false;
+            // return false;
         }
 
         if (!addToBuffer)
@@ -360,6 +361,8 @@ public:
                     tempBuffer.getReadPointer(i) + totalSamplesConsumed,
                     dest[ch] + j,
                     1,
+                    samplesAvailable,
+                    0,
                     1.0f
                 );
                 samplesAvailable -= samplesConsumed;
@@ -368,8 +371,8 @@ public:
         }
 
 #ifdef JUCE_DEBUG
-        if (!juce::approximatelyEqual(finalRatio, prevFinalRatio) &&
-            juce::approximatelyEqual(finalRatio, (float)(writerSampleRate / readerSampleRate)))
+        if (!juce::approximatelyEqual(finalRatio, prevFinalRatio)
+            && juce::approximatelyEqual(finalRatio, (float)(writerSampleRate / readerSampleRate)))
             DBG("time: " << juce::Time::getCurrentTime().toString(true, true)
                          << juce::String(" final ratio ") + juce::String(finalRatio));
 #endif

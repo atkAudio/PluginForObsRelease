@@ -28,9 +28,9 @@ struct GraphEditorPanel::PinComponent final
                 auto channel = processor.getOffsetInBusBufferForAbsoluteChannelIndex(isInput, pin.channelIndex, busIdx);
 
                 if (auto* bus = processor.getBus(isInput, busIdx))
-                    tip =
-                        bus->getName() + ": " +
-                        AudioChannelSet::getAbbreviatedChannelTypeName(bus->getCurrentLayout().getTypeOfChannel(channel)
+                    tip = bus->getName() + ": "
+                        + AudioChannelSet::getAbbreviatedChannelTypeName(
+                              bus->getCurrentLayout().getTypeOfChannel(channel)
                         );
                 else
                     tip = (isInput ? "Main Input: " : "Main Output: ") + String(pin.channelIndex + 1);
@@ -212,8 +212,8 @@ struct GraphEditorPanel::PluginComponent final
                     const int total = isInput ? numIns : numOuts;
                     const int index = pin->pin.isMIDI() ? (total - 1) : channelIndex;
 
-                    auto totalSpaces = static_cast<float>(total) +
-                                       (static_cast<float>(jmax(0, processor->getBusCount(isInput) - 1)) * 0.5f);
+                    auto totalSpaces = static_cast<float>(total)
+                                     + (static_cast<float>(jmax(0, processor->getBusCount(isInput) - 1)) * 0.5f);
                     auto indexPos = static_cast<float>(index) + (static_cast<float>(busIdx) * 0.5f);
 
                     pin->setBounds(
@@ -1181,7 +1181,7 @@ GraphDocumentComponent::~GraphDocumentComponent()
 void GraphDocumentComponent::resized()
 {
     auto area = getLocalBounds();
-    cpuLoadLabel.setBounds(area.removeFromTop(24).removeFromRight(120));
+    cpuLoadLabel.setBounds(area.removeFromTop(24).removeFromRight(180));
 
     auto r = [this]
     {
@@ -1230,8 +1230,8 @@ void GraphDocumentComponent::releaseGraph()
 bool GraphDocumentComponent::isInterestedInDragSource(const SourceDetails& details)
 {
     return (
-        (dynamic_cast<ListBox*>(details.sourceComponent.get()) != nullptr) &&
-        details.description.toString().startsWith("PLUGIN")
+        (dynamic_cast<ListBox*>(details.sourceComponent.get()) != nullptr)
+        && details.description.toString().startsWith("PLUGIN")
     );
 }
 
