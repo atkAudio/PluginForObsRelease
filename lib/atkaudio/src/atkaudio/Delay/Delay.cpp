@@ -41,7 +41,7 @@ struct atk::Delay::Impl : public juce::Timer
         {
             i.prepare(juce::dsp::ProcessSpec({newSampleRate, (uint32_t)newNumSamples, (uint32_t)1}));
             i.reset();
-            i.setMaximumDelayInSamples((int)newSampleRate);
+            i.setMaximumDelayInSamples(10 * (int)newSampleRate);
             i.setDelay(0.0f);
         }
 
@@ -55,8 +55,8 @@ struct atk::Delay::Impl : public juce::Timer
 
     void process(float** buffer, int newNumChannels, int newNumSamples, double newSampleRate)
     {
-        if (this->numChannels != newNumChannels || this->numSamples != newNumSamples ||
-            this->sampleRate != newSampleRate)
+        if (this->numChannels != newNumChannels || this->numSamples != newNumSamples
+            || this->sampleRate != newSampleRate)
         {
             this->numChannels = newNumChannels;
             this->numSamples = newNumSamples;

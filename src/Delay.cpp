@@ -3,6 +3,7 @@
 
 #define FILTER_NAME "atkAudio Delay"
 #define FILTER_ID "atkaudio_delay"
+#define MAX_DELAY_MS 10000.0
 
 #define S_GAIN_DB "ms"
 
@@ -73,7 +74,7 @@ static obs_properties_t* delay_properties(void* data)
 {
     obs_properties_t* ppts = obs_properties_create();
 
-    obs_property_t* p = obs_properties_add_float_slider(ppts, S_GAIN_DB, TEXT_GAIN_DB, 0.0, 1000.0, 0.1);
+    obs_property_t* p = obs_properties_add_float_slider(ppts, S_GAIN_DB, TEXT_GAIN_DB, 0.0, MAX_DELAY_MS, 0.1);
     obs_property_float_set_suffix(p, " ms");
 
     UNUSED_PARAMETER(data);

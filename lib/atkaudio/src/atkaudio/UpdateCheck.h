@@ -59,6 +59,18 @@ public:
 
     void checkForUpdate()
     {
+        juce::File lastVersionFile = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+                                         .getChildFile(PLUGIN_DISPLAY_NAME)
+                                         .getChildFile("version_check");
+        if (!lastVersionFile.existsAsFile())
+            lastVersionFile.create();
+        else if (juce::Time::getCurrentTime().toMilliseconds()
+                     - lastVersionFile.getLastModificationTime().toMilliseconds()
+                 < 7 * 24 * 60 * 60 * 1000)
+            return;
+
+        lastVersionFile.setLastModificationTime(juce::Time::getCurrentTime());
+
         juce::URL versionURL("https://api.github.com/repos/" + owner + "/" + repo + "/releases/latest");
 
         std::unique_ptr<juce::InputStream> inStream(versionURL.createInputStream(
