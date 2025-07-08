@@ -25,3 +25,17 @@ Plugin Host2 can interface directly with audio and MIDI hardware, OBS audio sour
 - Mix audio from up to 8 OBS sources into a new OBS audio source
 - E.g. allows creating new submixes
 - Can be used as 'dummy' source to host Device IO 
+
+
+## Build instructions
+Project is based on [OBS Plugin Template](https://github.com/obsproject/obs-plugintemplate) and depends on [JUCE Framework](https://github.com/juce-framework/JUCE). Install JUCE Framework [Minimum System Requirements](https://github.com/juce-framework/JUCE#minimum-system-requirements) and OBS Plugin Template [Supported Build Environment](https://github.com/obsproject/obs-plugintemplate#supported-build-environments) and follow OBS Plugin Template [Quick Start Guide](https://github.com/obsproject/obs-plugintemplate/wiki/Quick-Start-Guide).
+
+In short, after installing all dependencies (Ubuntu example):
+```
+git clone https://github.com/atkaudio/pluginforobsrelease
+cd pluginforobsrelease
+cmake --preset ubuntu-x86_64
+cmake --build --preset ubuntu-x86_64 
+```
+Find `atkaudio-pluginforobs.so` and copy it to OBS plugins directory. 
+See `CMakePresets.json` for Windows, macOS and other build presets.

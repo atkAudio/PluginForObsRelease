@@ -85,7 +85,6 @@ public:
         if (remoteVersionString.isEmpty())
             return;
 
-        auto currentVersionString = VERSION;
         remoteVersionString = getValueFromJson(remoteVersionString, JSON_VALUE);
 
         auto isRemoteVersionNewer = isNewerVersionThanCurrent(remoteVersionString);
