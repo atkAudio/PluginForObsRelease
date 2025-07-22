@@ -344,7 +344,7 @@ public:
         auto totalSamplesConsumed = 0;
 
         auto finalRatio = 0.0f;
-        for (int i = 0; i < interpolators.size(); i++)
+        for (int i = 0; i < numChannels; i++)
         {
             totalSamplesConsumed = 0;
             int samplesAvailable = writerSamples;
