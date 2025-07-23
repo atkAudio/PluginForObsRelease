@@ -27,15 +27,15 @@ public:
         juce::ScopedLock lock2(readLock);
 
         fifo.reset();
-        auto freeSpace = fifo.getFreeSpace();
+        auto fifoTotalSize = fifo.getTotalSize();
 
-        if (freeSpace < (int)std::ceil(minBufferSize))
-            freeSpace = 2 * freeSpace;
+        if (fifoTotalSize < minBufferSize + 1)
+            fifoTotalSize = 2 * minBufferSize;
 
         if (buffer.getNumChannels() < minNumChannels)
             minNumChannels = 2 * minNumChannels;
 
-        setSize(minNumChannels, freeSpace);
+        setSize(minNumChannels, fifoTotalSize);
 
         isPrepared.store(true, std::memory_order_release);
     }
@@ -139,14 +139,31 @@ public:
         }
 
         if (advanceRead)
-            fifo.finishedRead(readCount);
+            this->advanceRead(readCount);
 
         return readCount;
     }
 
     void advanceRead(int numSamples)
     {
-        fifo.finishedRead(numSamples);
+        int start1, size1, start2, size2;
+        int readCount = 0;
+        fifo.prepareToRead(numSamples, start1, size1, start2, size2);
+        if (size1 > 0)
+        {
+            for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+                std::memset(buffer.getWritePointer(ch, start1), 0, sizeof(float) * size1);
+
+            readCount += size1;
+        }
+        if (size2 > 0)
+        {
+            for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+                std::memset(buffer.getWritePointer(ch, start2), 0, sizeof(float) * size2);
+
+            readCount += size2;
+        }
+        fifo.finishedRead(readCount);
     }
 
     auto& getBuffer()
@@ -168,8 +185,12 @@ private:
 
     void setSize(int numChannels, int numSamples)
     {
-        buffer.setSize(numChannels, numSamples + 1, false, false, true);
-        fifo.setTotalSize(numSamples + 1);
+        numSamples = numSamples > 16384 ? numSamples : 16384; // minimum size
+        if (buffer.getNumSamples() < numSamples + 1)
+            buffer.setSize(numChannels, numSamples + 1, false, false, true);
+
+        if (fifo.getTotalSize() < numSamples + 1)
+            fifo.setTotalSize(numSamples + 1);
         reset();
     }
 
@@ -323,6 +344,7 @@ public:
             for (int ch = 0; ch < numChannels; ++ch)
                 std::memset(dest[ch], 0, sizeof(float) * numSamples);
 
+        tempBuffer.clear();
         tempBuffer.setSize(numChannels, writerSamplesNeeded, false, false, true);
         auto writerSamples =
             fifoBuffer.read(tempBuffer.getArrayOfWritePointers(), numChannels, writerSamplesNeeded, false);
@@ -344,7 +366,7 @@ public:
         auto totalSamplesConsumed = 0;
 
         auto finalRatio = 0.0f;
-        for (int i = 0; i < interpolators.size(); i++)
+        for (int i = 0; i < numChannels; i++)
         {
             totalSamplesConsumed = 0;
             int samplesAvailable = writerSamples;

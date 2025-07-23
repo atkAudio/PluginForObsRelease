@@ -52,7 +52,7 @@ public:
         if (inputChannels > 0)
             toObsBuffer.write(
                 bufferToFill.buffer->getArrayOfReadPointers(),
-                bufferToFill.buffer->getNumChannels(),
+                inputChannels,
                 bufferToFill.numSamples,
                 sampleRate
             );
@@ -60,7 +60,7 @@ public:
         if (outputChannels > 0)
             fromObsBuffer.read(
                 bufferToFill.buffer->getArrayOfWritePointers(),
-                bufferToFill.buffer->getNumChannels(),
+                outputChannels,
                 bufferToFill.numSamples,
                 sampleRate
             );
