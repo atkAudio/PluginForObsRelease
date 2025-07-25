@@ -182,9 +182,14 @@ static void asmd_capture(void* param, obs_source_t* sourceIn, const struct audio
     if (!source)
         return;
 
-    std::scoped_lock lock(asmd->captureCallbackMutex);
+    source->isActive.store(false, std::memory_order_release);
+
+    if (muted && source->postMute)
+        return;
 
     source->isActive.store(true, std::memory_order_release);
+
+    std::scoped_lock lock(asmd->captureCallbackMutex);
 
     auto frames = (int)audio_data->frames;
 
@@ -199,16 +204,13 @@ static void asmd_capture(void* param, obs_source_t* sourceIn, const struct audio
     source->tempBuffer.resize(fifoSize, 0.0f);
     source->fifoBuffer.setSize(numChannels, fifoSize);
 
-    if (!(muted && source->postMute))
+    for (int i = 0; i < numChannels; i++)
     {
-        for (int i = 0; i < numChannels; i++)
-        {
-            auto* sourcePtr = (float*)audio_data->data[i];
-            for (size_t j = 0; j < frames; j++)
-                sourcePtr[j] *= source->gain;
+        auto* sourcePtr = (float*)audio_data->data[i];
+        for (size_t j = 0; j < frames; j++)
+            sourcePtr[j] *= source->gain;
 
-            source->fifoBuffer.write(sourcePtr, i, frames, i == numChannels - 1);
-        }
+        source->fifoBuffer.write(sourcePtr, i, frames, i == numChannels - 1);
     }
 
     auto sourcesFrameSize = frames;

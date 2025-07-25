@@ -12,14 +12,25 @@
 #define MIX_INPUT_TEXT "Mix Input"
 #define S_MIX_INPUT "mix_input"
 
+#define IG_ID "input_gain"
+#define OG_ID "output_gain"
+#define IG_NAME "Input Gain"
+#define OG_NAME "Output Gain"
+#define FOLLOW_ID "follow_source_volume"
+#define FOLLOW_NAME "Follow Source Volume/Mute"
+
 struct adio_data
 {
-    obs_source_t* context;
+    obs_source_t* context = nullptr;
+    obs_data_t* settings = nullptr;
 
     int channels;
     double sampleRate = 0.0;
 
     std::atomic_bool mixInput = false;
+    std::atomic_bool followSourceVolume = false;
+    std::atomic<float> inputGain = 1.0f;
+    std::atomic<float> outputGain = 1.0f;
 
     atk::DeviceIo deviceIo;
 };
@@ -49,11 +60,21 @@ static void load(void* data, obs_data_t* settings)
 static void devio_update(void* data, obs_data_t* s)
 {
     struct adio_data* adio = (struct adio_data*)data;
-    auto mix = obs_data_get_bool(s, S_MIX_INPUT);
-    adio->mixInput.store(mix);
+    adio->settings = s;
     adio->channels = (int)audio_output_get_channels(obs_get_audio());
 
-    load(data, s);
+    adio->mixInput.store(obs_data_get_bool(s, S_MIX_INPUT), std::memory_order_release);
+    adio->followSourceVolume.store(obs_data_get_bool(s, FOLLOW_ID), std::memory_order_release);
+
+    auto inputGain = (float)obs_data_get_double(s, IG_ID);
+    inputGain = obs_db_to_mul(inputGain);
+    adio->inputGain.store(inputGain, std::memory_order_release);
+
+    // auto outputGain = (float)obs_data_get_double(s, OG_ID);
+    // outputGain = obs_db_to_mul(outputGain);
+    // adio->outputGain.store(outputGain, std::memory_order_release);
+
+    // load(data, s);
 }
 
 static void* devio_create(obs_data_t* settings, obs_source_t* filter)
@@ -72,21 +93,12 @@ static void* devio_create(obs_data_t* settings, obs_source_t* filter)
     return adio;
 }
 
-static struct obs_audio_data* devio_filter(void* data, struct obs_audio_data* audio)
-{
-    struct adio_data* adio = (struct adio_data*)data;
-    auto channels = adio->channels;
-    auto frames = audio->frames;
-    float** adata = (float**)audio->data;
-
-    adio->deviceIo.process(adata, channels, frames, adio->sampleRate);
-
-    return audio;
-}
-
 static void devio_defaults(obs_data_t* s)
 {
     obs_data_set_default_bool(s, S_MIX_INPUT, false);
+    obs_data_set_default_bool(s, FOLLOW_ID, false);
+    obs_data_set_default_double(s, IG_ID, 0.0);
+    obs_data_set_default_double(s, OG_ID, 0.0);
 }
 
 static bool open_editor_button_clicked(obs_properties_t* props, obs_property_t* property, void* data)
@@ -115,8 +127,6 @@ static obs_properties_t* devio_properties(void* data)
 {
     obs_properties_t* props = obs_properties_create();
 
-    obs_properties_add_bool(props, S_MIX_INPUT, obs_module_text(MIX_INPUT_TEXT));
-
     obs_properties_add_button(props, OPEN_DEVICE_SETTINGS, OPEN_DEVICE_TEXT, open_editor_button_clicked);
     obs_properties_add_button(props, CLOSE_DEVICE_SETTINGS, CLOSE_DEVICE_TEXT, close_editor_button_clicked);
 
@@ -126,8 +136,49 @@ static obs_properties_t* devio_properties(void* data)
     obs_property_set_visible(obs_properties_get(props, OPEN_DEVICE_SETTINGS), open_settings_vis);
     obs_property_set_visible(obs_properties_get(props, CLOSE_DEVICE_SETTINGS), close_settings_vis);
 
+    obs_properties_add_bool(props, S_MIX_INPUT, obs_module_text(MIX_INPUT_TEXT));
+
+    std::string propText = FOLLOW_ID;
+    std::string textLabel = FOLLOW_NAME;
+
+    obs_properties_add_bool(props, propText.c_str(), textLabel.c_str());
+
+    propText = IG_ID;
+    textLabel = IG_NAME;
+    obs_property_t* p = obs_properties_add_float_slider(props, propText.c_str(), textLabel.c_str(), -30.0, 30.0, 0.1);
+    obs_property_float_set_suffix(p, " dB");
+
+    propText = OG_ID;
+    textLabel = OG_NAME;
+    p = obs_properties_add_float_slider(props, propText.c_str(), textLabel.c_str(), -30.0, 30.0, 0.1);
+    obs_property_float_set_suffix(p, " dB");
+
     UNUSED_PARAMETER(data);
     return props;
+}
+
+static struct obs_audio_data* devio_filter(void* data, struct obs_audio_data* audio)
+{
+    struct adio_data* adio = (struct adio_data*)data;
+    auto channels = adio->channels;
+    auto frames = audio->frames;
+    float** adata = (float**)audio->data;
+
+    auto outputGain = adio->outputGain.load(std::memory_order_acquire);
+    for (int i = 0; i < channels; i++)
+        for (size_t j = 0; j < frames; j++)
+            adata[i][j] *= outputGain;
+
+    adio->deviceIo.setMixInput(adio->mixInput.load(std::memory_order_acquire));
+    adio->deviceIo.process(adata, channels, frames, adio->sampleRate);
+
+    auto inputGain = adio->inputGain.load(std::memory_order_acquire);
+    inputGain *= 1 / outputGain; // "remove" output gain from input gain
+    for (int i = 0; i < channels; i++)
+        for (size_t j = 0; j < frames; j++)
+            adata[i][j] *= inputGain;
+
+    return audio;
 }
 
 static void save(void* data, obs_data_t* settings)
@@ -137,6 +188,36 @@ static void save(void* data, obs_data_t* settings)
     adio->deviceIo.getState(s);
 
     obs_data_set_string(settings, FILTER_ID, s.c_str());
+}
+
+static void tick(void* data, float seconds)
+{
+    struct adio_data* adio = (struct adio_data*)data;
+    auto* settings = adio->settings;
+
+    auto outputGain = adio->outputGain.load(std::memory_order_acquire);
+    if (settings)
+        outputGain = (float)obs_data_get_double(settings, OG_ID);
+    outputGain = obs_db_to_mul(outputGain);
+
+    if (adio->followSourceVolume.load(std::memory_order_acquire))
+    {
+        obs_source_t* parent = obs_filter_get_parent(adio->context);
+        if (parent)
+        {
+            auto fader = obs_source_get_volume(parent); // already in linear scale
+
+            auto isMuted = obs_source_muted(parent);
+            if (isMuted)
+                fader = 0.0f;
+
+            outputGain *= fader;
+        }
+    }
+
+    adio->outputGain.store(outputGain, std::memory_order_release);
+
+    UNUSED_PARAMETER(seconds);
 }
 
 struct obs_source_info device_io_filter = {
@@ -149,7 +230,8 @@ struct obs_source_info device_io_filter = {
     .get_defaults = devio_defaults,
     .get_properties = devio_properties,
     .update = devio_update,
+    .video_tick = tick,
     .filter_audio = devio_filter,
     .save = save,
-    // .load = load,
+    .load = load,
 };

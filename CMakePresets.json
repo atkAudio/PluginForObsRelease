@@ -145,6 +145,13 @@
       "configuration": "Debug"
     },
     {
+      "name": "windows-x64-release",
+      "configurePreset": "windows-x64",
+      "displayName": "Windows x64 Release",
+      "description": "Windows build for x64",
+      "configuration": "Release"
+    },
+    {
       "name": "windows-ci-x64",
       "configurePreset": "windows-ci-x64",
       "displayName": "Windows x64 CI",

@@ -2,8 +2,8 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
-constexpr auto ATK_CORRECTION_RATE = 1 + 300.0f / 1000000; // 300 ppm
-constexpr auto ATK_SMOOTHING_TIME = 1.0f;                  // 1 second
+constexpr auto ATK_CORRECTION_RATE = 1 + 1000.0f / 1000000; // 1000 ppm
+constexpr auto ATK_SMOOTHING_TIME = 1.0f;                   // 1 second
 
 class FifoBuffer2 : public juce::Timer
 {
