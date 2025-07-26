@@ -14,7 +14,6 @@ public:
         , buffer(minNumChannels, minBufferSize + 1)
         , fifo(minBufferSize + 1)
     {
-        timerCallback();
         startTimer(10);
     }
 
@@ -405,7 +404,7 @@ public:
     }
 
 private:
-    std::atomic_bool isPrepared;
+    std::atomic_bool isPrepared{false};
     int numChannels{0};
     int bufferSize{0};
 
