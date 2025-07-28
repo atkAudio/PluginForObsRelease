@@ -11,10 +11,6 @@ struct atk::FifoBuffer::Impl
         fifo.reset(new juce::AbstractFifo(1));
     }
 
-    ~Impl()
-    {
-    }
-
     void reset()
     {
         fifo->reset();

@@ -3,7 +3,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 
 constexpr auto ATK_CORRECTION_RATE = 1 + 1000.0f / 1000000; // 1000 ppm
-constexpr auto ATK_SMOOTHING_TIME = 1.0f;                   // 1 second
+constexpr auto ATK_SMOOTHING_TIME = 0.1f;                   //  seconds
 
 class FifoBuffer2 : public juce::Timer
 {
@@ -263,9 +263,8 @@ public:
 
         tempBuffer.setSize(numChannels, 2 * std::max(readerBufferSize, writerBufferSize), false, false, true);
 
-        rateSmoothing.reset(readerSampleRate, ATK_SMOOTHING_TIME);
+        rateSmoothing.reset(readerSampleRate * ATK_SMOOTHING_TIME);
         rateSmoothing.setCurrentAndTargetValue(1.0);
-        rateSmoothingBuffer.setSize(numChannels, readerBufferSize, false, false, true);
 
         tempBuffer.clear();
         fifoBuffer.write(tempBuffer.getArrayOfWritePointers(), numChannels, minBufferSize);
@@ -326,18 +325,7 @@ public:
         else if (maxAvailable > maxBufferSize)
             factor = ATK_CORRECTION_RATE;
 
-        rateSmoothing.setTargetValue(factor);
-        rateSmoothingBuffer.setSize(1, numSamples, false, false, true);
-        float maxFactor = 0.0f;
-        for (int i = 0; i < numSamples; ++i)
-        {
-            auto currentFactor = rateSmoothing.getNextValue();
-            if (currentFactor > maxFactor)
-                maxFactor = currentFactor;
-            rateSmoothingBuffer.getWritePointer(0)[i] = currentFactor;
-        }
-
-        int writerSamplesNeeded = std::ceil(numSamples * ratio * maxFactor);
+        int writerSamplesNeeded = std::ceil(numSamples * ratio * factor);
 
         if (!addToBuffer)
             for (int ch = 0; ch < numChannels; ++ch)
@@ -352,19 +340,21 @@ public:
         {
 #ifdef JUCE_DEBUG
             DBG(juce::Time::getCurrentTime().toString(true, true)
-                << " got " << writerSamples << " needed " << writerSamplesNeeded << " ratio " << ratio);
+                << " got " << writerSamples << " needed " << writerSamplesNeeded << " ratio " << ratio << " factor "
+                << factor);
 #endif
-            // return false;
+            return false;
         }
 
         if (!addToBuffer)
             for (int ch = 0; ch < numChannels; ++ch)
                 std::memset(dest[ch], 0, sizeof(float) * numSamples);
 
-        auto smoothingReadPtr = rateSmoothingBuffer.getReadPointer(0);
         auto totalSamplesConsumed = 0;
 
-        auto finalRatio = 0.0f;
+        auto initialRate = rateSmoothing.getCurrentValue();
+
+        auto finalRatio = 0.0;
         for (int i = 0; i < numChannels; i++)
         {
             totalSamplesConsumed = 0;
@@ -372,10 +362,13 @@ public:
 
             auto ch = i % numChannels;
 
+            rateSmoothing.setCurrentAndTargetValue(initialRate);
+            rateSmoothing.setTargetValue(factor);
+
             for (int j = 0; j < numSamples; ++j)
             {
-                auto currentFactor = smoothingReadPtr[j];
-                finalRatio = ratio * currentFactor;
+                auto smoothingValue = rateSmoothing.getNextValue();
+                finalRatio = ratio * smoothingValue;
 
                 int samplesConsumed = interpolators[i].processAdding(
                     finalRatio,
@@ -393,7 +386,7 @@ public:
 
 #ifdef JUCE_DEBUG
         if (!juce::approximatelyEqual(finalRatio, prevFinalRatio)
-            && juce::approximatelyEqual(finalRatio, (float)(writerSampleRate / readerSampleRate)))
+            && juce::approximatelyEqual(finalRatio, (double)(writerSampleRate / readerSampleRate)))
             DBG("time: " << juce::Time::getCurrentTime().toString(true, true)
                          << juce::String(" final ratio ") + juce::String(finalRatio));
 #endif
@@ -424,11 +417,10 @@ private:
     int minBufferSize{0};
     int maxBufferSize{0};
 
-    juce::LinearSmoothedValue<float> rateSmoothing;
-    juce::AudioBuffer<float> rateSmoothingBuffer;
+    juce::LinearSmoothedValue<double> rateSmoothing;
 
     juce::CriticalSection readLock;
     juce::CriticalSection writeLock;
 
-    float prevFinalRatio{1.0f};
+    double prevFinalRatio{1.0};
 };
