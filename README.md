@@ -30,11 +30,6 @@ Plugin Host2 can interface directly with audio and MIDI hardware, OBS audio sour
 - E.g. allows creating new submixes
 - Can be used as 'dummy' source to host Device IO
 
-## Installation
-
-- Download and install [latest release](https://github.com/atkAudio/PluginForObsRelease/releases/latest)
-- Manual/portable installations: extract `.dll|.dylib|.so` from installer and copy it to OBS plugins directory. For example on major Linux distros, extract `atkaudio-pluginforobs.so` from `.deb` file and copy it to `~/.config/obs-studio/plugins/atkaudio-pluginforobs/bin/64bit/`
-
 ## Build instructions
 
 Project is based on [OBS Plugin Template](https://github.com/obsproject/obs-plugintemplate) and depends on [JUCE Framework](https://github.com/juce-framework/JUCE). Install JUCE Framework [Minimum System Requirements](https://github.com/juce-framework/JUCE#minimum-system-requirements) and OBS Plugin Template [Supported Build Environment](https://github.com/obsproject/obs-plugintemplate#supported-build-environments) and follow OBS Plugin Template [Quick Start Guide](https://github.com/obsproject/obs-plugintemplate/wiki/Quick-Start-Guide).
@@ -50,3 +45,14 @@ cmake --build --preset ubuntu-x86_64
 
 Find `atkaudio-pluginforobs.so` and copy it to OBS plugins directory.
 See `CMakePresets.json` for Windows, macOS and other build presets.
+
+## Donation
+
+[![PayPal](https://www.paypalobjects.com/en_US/i/btn/btn_donateCC_LG.gif)](https://www.paypal.com/donate/?hosted_button_id=ERBKC76F55HZW)
+
+If you find this project useful, please consider making [a donation](https://www.paypal.com/donate/?hosted_button_id=ERBKC76F55HZW) to support its future development and maintenance.
+
+## Installation
+
+- Download and install [latest release](https://github.com/atkAudio/PluginForObsRelease/releases/latest)
+- Manual/portable installations: extract `.dll|.dylib|.so` from installer and copy it to OBS plugins directory. For example on major Linux distros, extract `atkaudio-pluginforobs.so` from `.deb` file and copy it to `~/.config/obs-studio/plugins/atkaudio-pluginforobs/bin/64bit/`
