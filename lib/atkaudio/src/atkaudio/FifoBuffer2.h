@@ -319,13 +319,21 @@ public:
         int maxAvailable = fifoBuffer.getFifo().getNumReady();
         maxAvailable = std::floor(maxAvailable / ratio); // reader domain samples
 
-        auto factor = 1.0f;
+        auto factor = 1.0;
         if (maxAvailable < minBufferSize)
             factor = 1 / ATK_CORRECTION_RATE;
         else if (maxAvailable > maxBufferSize)
             factor = ATK_CORRECTION_RATE;
 
-        int writerSamplesNeeded = std::ceil(numSamples * ratio * factor);
+        auto initialRate = rateSmoothing.getCurrentValue();
+
+        int writerSamplesNeeded = 0;
+        double writerSamplesNeededTemp = 0;
+        rateSmoothing.setTargetValue(factor);
+        for (int i = 0; i < numSamples; ++i)
+            writerSamplesNeededTemp += 1 * rateSmoothing.getNextValue();
+
+        writerSamplesNeeded = (int)std::ceil(writerSamplesNeededTemp);
 
         if (!addToBuffer)
             for (int ch = 0; ch < numChannels; ++ch)
@@ -351,8 +359,6 @@ public:
                 std::memset(dest[ch], 0, sizeof(float) * numSamples);
 
         auto totalSamplesConsumed = 0;
-
-        auto initialRate = rateSmoothing.getCurrentValue();
 
         auto finalRatio = 0.0;
         for (int i = 0; i < numChannels; i++)
