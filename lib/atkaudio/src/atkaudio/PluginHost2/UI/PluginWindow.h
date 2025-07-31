@@ -6,6 +6,8 @@ using namespace juce;
 #include "../Plugins/ARAPlugin.h"
 #include "../Plugins/IOConfigurationWindow.h"
 
+#include <atkaudio/atkaudio.h>
+
 inline String getFormatSuffix(const AudioProcessor* plugin)
 {
     const auto format = [plugin]()
@@ -162,6 +164,9 @@ public:
         {
             setContentOwned(ui, true);
             setResizable(ui->isResizable(), false);
+            // ui->setScaleFactor(
+            //     juce::Desktop::getInstance().getDisplays().getDisplayForRect(getLocalBounds())->dpi / atk::DPI_NORMAL
+            // );
         }
 
         setConstrainer(&constrainer);
@@ -198,6 +203,11 @@ public:
     {
         node->properties.set(getLastXProp(type), getX());
         node->properties.set(getLastYProp(type), getY());
+
+        if (auto* content = dynamic_cast<AudioProcessorEditor*>(getContentComponent()))
+            content->setScaleFactor(
+                juce::Desktop::getInstance().getDisplays().getDisplayForRect(getLocalBounds())->dpi / atk::DPI_NORMAL
+            );
     }
 
     void closeButtonPressed() override
@@ -272,7 +282,8 @@ private:
 
     float getDesktopScaleFactor() const override
     {
-        return 1.0f;
+        auto bounds = getLocalBounds();
+        return juce::Desktop::getInstance().getDisplays().getDisplayForRect(bounds)->dpi / atk::DPI_NORMAL;
     }
 
     static AudioProcessorEditor* createProcessorEditor(AudioProcessor& processor, PluginWindow::Type type)

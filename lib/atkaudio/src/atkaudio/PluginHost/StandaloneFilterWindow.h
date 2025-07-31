@@ -60,16 +60,16 @@ public:
         handleCreatePlugin();
 
         auto inChannels =
-            (channelConfiguration.size() > 0 ? channelConfiguration[0].numIns : processor->getMainBusNumInputChannels()
-            );
+            (channelConfiguration.size() > 0 ? channelConfiguration[0].numIns
+                                             : processor->getMainBusNumInputChannels());
 
         if (preferredSetupOptions != nullptr)
             options.reset(new AudioDeviceManager::AudioDeviceSetup(*preferredSetupOptions));
 
         auto audioInputRequired = (inChannels > 0);
 
-        if (audioInputRequired && RuntimePermissions::isRequired(RuntimePermissions::recordAudio) &&
-            !RuntimePermissions::isGranted(RuntimePermissions::recordAudio))
+        if (audioInputRequired && RuntimePermissions::isRequired(RuntimePermissions::recordAudio)
+            && !RuntimePermissions::isGranted(RuntimePermissions::recordAudio))
             RuntimePermissions::request(
                 RuntimePermissions::recordAudio,
                 [this, preferredDefaultDeviceName](bool granted) { init(granted, preferredDefaultDeviceName); }
@@ -185,8 +185,8 @@ public:
     {
         stateFileChooser =
             std::make_unique<FileChooser>(TRANS("Save current state"), getLastFile(), getFilePatterns(fileSuffix));
-        auto flags = FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
-                     FileBrowserComponent::warnAboutOverwriting;
+        auto flags = FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles
+                   | FileBrowserComponent::warnAboutOverwriting;
 
         stateFileChooser->launchAsync(
             flags,
@@ -737,11 +737,7 @@ private:
         auto* content = new MainContentComponent(*this);
         decoratorConstrainer.setMainContentComponent(content);
 
-#if JUCE_IOS || JUCE_ANDROID
-        constexpr auto resizeAutomatically = false;
-#else
         constexpr auto resizeAutomatically = true;
-#endif
 
         setContentOwned(content, resizeAutomatically);
     }

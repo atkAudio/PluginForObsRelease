@@ -1,6 +1,7 @@
 #pragma once
 #include "../LookAndFeel.h"
 
+#include <atkaudio/atkaudio.h>
 #include <juce_audio_utils/juce_audio_utils.h>
 
 using namespace juce;
@@ -638,6 +639,9 @@ public:
           )
         , scopedCallback(owner.pluginChanged, [this] { pluginChanged(); })
     {
+        currentScaleFactor =
+            juce::Desktop::getInstance().getDisplays().getDisplayForRect(getLocalBounds())->dpi / atk::DPI_NORMAL;
+
         setSize(500, 500);
         setResizable(false, false);
         addAndMakeVisible(closeButton);
@@ -646,6 +650,10 @@ public:
         hostProcessor.pluginChanged();
 
         closeButton.onClick = [this] { clearPlugin(); };
+    }
+
+    void parentSizeChanged() override
+    {
     }
 
     void paint(Graphics& g) override

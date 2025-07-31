@@ -27,7 +27,7 @@ struct atk::PluginHost::Impl : public juce::Timer
         startTimerHz(30);
     }
 
-    ~Impl()
+    ~Impl() override
     {
         stopTimer();
         auto* window = this->mainWindow.release();
@@ -64,8 +64,8 @@ struct atk::PluginHost::Impl : public juce::Timer
 
     void process(float** buffer, int newNumChannels, int newNumSamples, double newSampleRate)
     {
-        if (!buffer || this->numChannels != newNumChannels || this->numSamples < newNumSamples ||
-            this->sampleRate != newSampleRate || isFirstRun.load(std::memory_order_acquire))
+        if (!buffer || this->numChannels != newNumChannels || this->numSamples < newNumSamples
+            || this->sampleRate != newSampleRate || isFirstRun.load(std::memory_order_acquire))
         {
             isFirstRun.store(false, std::memory_order_release);
             this->numChannels = newNumChannels;
