@@ -639,17 +639,14 @@ public:
           )
         , scopedCallback(owner.pluginChanged, [this] { pluginChanged(); })
     {
-        currentScaleFactor =
-            juce::Desktop::getInstance().getDisplays().getDisplayForRect(getLocalBounds())->dpi / atk::DPI_NORMAL;
-
         setSize(500, 500);
         setResizable(false, false);
-        addAndMakeVisible(closeButton);
+        // addAndMakeVisible(closeButton);
         addAndMakeVisible(loader);
 
         hostProcessor.pluginChanged();
 
-        closeButton.onClick = [this] { clearPlugin(); };
+        // closeButton.onClick = [this] { clearPlugin(); };
     }
 
     void parentSizeChanged() override
@@ -663,7 +660,7 @@ public:
 
     void resized() override
     {
-        closeButton.setBounds(getLocalBounds().withSizeKeepingCentre(200, buttonHeight));
+        // closeButton.setBounds(getLocalBounds().withSizeKeepingCentre(200, buttonHeight));
         loader.setBounds(getLocalBounds());
     }
 
@@ -698,7 +695,7 @@ private:
     void pluginChanged()
     {
         loader.setVisible(!hostProcessor.isPluginLoaded());
-        closeButton.setVisible(hostProcessor.isPluginLoaded());
+        // closeButton.setVisible(hostProcessor.isPluginLoaded());
 
         if (hostProcessor.isPluginLoaded())
         {
@@ -758,7 +755,7 @@ private:
     std::unique_ptr<Component> editor;
     PluginEditorComponent* currentEditorComponent = nullptr;
     ScopedValueSetter<std::function<void()>> scopedCallback;
-    TextButton closeButton{"Close Plugin"};
+    // TextButton closeButton{"Close Plugin"};
     float currentScaleFactor = 1.0f;
 
     juce::SharedResourcePointer<atk::LookAndFeel> lookAndFeel;

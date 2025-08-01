@@ -663,6 +663,13 @@ public:
         pluginHolder = nullptr;
     }
 
+    void visibilityChanged() override
+    {
+        clearContentComponent();
+        if (isVisible())
+            updateContent();
+    }
+
     //==============================================================================
     AudioProcessor* getAudioProcessor() const noexcept
     {

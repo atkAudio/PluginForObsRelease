@@ -6,7 +6,8 @@
 
 static std::unique_ptr<ScopedDPIAwarenessDisabler> makeDPIAwarenessDisablerForPlugin(const PluginDescription& desc)
 {
-    return nullptr; // shouldAutoScalePlugin(desc) ? std::make_unique<ScopedDPIAwarenessDisabler>() : nullptr;
+    // return std::make_unique<ScopedDPIAwarenessDisabler>();
+    return nullptr;
 }
 
 //==============================================================================
@@ -402,8 +403,8 @@ void PluginGraph::createNodeFromXml(const XmlElement& xml)
             );
 
 #if JUCE_PLUGINHOST_ARA && (JUCE_MAC || JUCE_WINDOWS || JUCE_LINUX)
-            if (instance && description.useARA == PluginDescriptionAndPreference::UseARA::yes &&
-                description.pluginDescription.hasARAExtension)
+            if (instance && description.useARA == PluginDescriptionAndPreference::UseARA::yes
+                && description.pluginDescription.hasARAExtension)
             {
                 return std::make_unique<ARAPluginInstanceWrapper>(std::move(instance));
             }

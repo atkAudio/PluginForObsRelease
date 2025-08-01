@@ -414,8 +414,8 @@ static void setDPIAwareness()
 
     hasCheckedForDPIAwareness = true;
 
-    if (! JUCEApplicationBase::isStandaloneApp())
-        return;
+    // if (! JUCEApplicationBase::isStandaloneApp())
+    //     return;
 
     loadDPIAwarenessFunctions();
 
