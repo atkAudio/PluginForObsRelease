@@ -8,5 +8,6 @@ namespace atk
 extern "C" void create();
 extern "C" void destroy();
 extern "C" void pump();
+extern "C" void update();
 
 } // namespace atk

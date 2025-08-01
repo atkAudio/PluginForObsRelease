@@ -9,9 +9,17 @@ target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/s
 
 cmake_policy(SET CMP0177 NEW)
 
-add_subdirectory(JUCE EXCLUDE_FROM_ALL)
 set(target ${PROJECT_NAME})
 
+include(FetchContent)
+FetchContent_Declare(
+    juce
+    EXCLUDE_FROM_ALL
+    GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
+    GIT_TAG        master
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(juce)
 _juce_initialise_target(${target} ${target})
 
 target_link_libraries(${PROJECT_NAME}
