@@ -266,7 +266,7 @@ public:
                 owner.knownPluginList,
                 deadMansPedalFile,
                 owner.getAppProperties().getUserSettings(),
-                true
+                false // sync scan
             ),
             true
         );

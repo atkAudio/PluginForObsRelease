@@ -4,9 +4,11 @@
 
 namespace atk
 {
-
-extern "C" void create();
-extern "C" void destroy();
-extern "C" void pump();
-
+extern "C"
+{
+    void create();
+    void destroy();
+    void pump();
+    void update();
+}
 } // namespace atk

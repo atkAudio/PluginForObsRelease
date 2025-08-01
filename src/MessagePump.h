@@ -1,7 +1,7 @@
 #pragma once
 #include <atkaudio/atkaudio.h>
 
-#if defined(JUCE_MAC) || defined(JUCE_WINDOWS)
+#if defined(JUCE_WINDOWS) && defined(JUCE_DEBUG)
 #define NO_MESSAGE_PUMP
 #endif
 #ifndef NO_MESSAGE_PUMP

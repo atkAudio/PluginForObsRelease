@@ -51,12 +51,12 @@ bool obs_module_load(void)
 {
     obs_log(LOG_INFO, "plugin loaded successfully (version %s)", plugin_version);
 
-#ifdef NO_MESSAGE_PUMP
     atk::create();
-#else
+#ifndef NO_MESSAGE_PUMP
     auto* mainWindow = (QObject*)obs_frontend_get_main_window();
     messagePump = new MessagePump(mainWindow); // parent handles lifetime
 #endif
+    atk::update();
 
     // obs_register_source(&autoreset_filter);
     obs_register_source(&delay_filter);
