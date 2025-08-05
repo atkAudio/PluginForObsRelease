@@ -44,6 +44,7 @@ public:
         sampleRate = newSampleRate;
 
         toObsBuffer.clearPrepared();
+        fromObsBuffer.clearPrepared();
     }
 
     // processBlock

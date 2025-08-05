@@ -241,8 +241,12 @@ public:
 
         isPrepared.store(false, std::memory_order_release);
 
-        if (readerNumChannels < 1 || writerNumChannels < 1 || readerBufferSize < 1 || writerBufferSize < 1
-            || readerSampleRate <= 0.0 || writerSampleRate <= 0.0)
+        if ((readerNumChannels < 1)
+            || (writerNumChannels < 1)
+            || (readerBufferSize < 1)
+            || (writerBufferSize < 1)
+            || (readerSampleRate <= 0.0)
+            || (writerSampleRate <= 0.0))
         {
             return;
         }
@@ -267,6 +271,7 @@ public:
         rateSmoothing.setCurrentAndTargetValue(1.0);
 
         tempBuffer.clear();
+        fifoBuffer.getFifo().reset();
         fifoBuffer.write(tempBuffer.getArrayOfWritePointers(), numChannels, minBufferSize);
 
         isPrepared.store(true, std::memory_order_release);
@@ -340,15 +345,22 @@ public:
                 std::memset(dest[ch], 0, sizeof(float) * numSamples);
 
         tempBuffer.clear();
-        tempBuffer.setSize(numChannels, writerSamplesNeeded, false, false, true);
+
+        tempBuffer.setSize(writerNumChannels, writerSamplesNeeded, false, false, true);
         auto writerSamples =
-            fifoBuffer.read(tempBuffer.getArrayOfWritePointers(), numChannels, writerSamplesNeeded, false);
+            fifoBuffer.read(tempBuffer.getArrayOfWritePointers(), writerNumChannels, writerSamplesNeeded, false);
 
         if (writerSamples < writerSamplesNeeded)
         {
 #ifdef JUCE_DEBUG
             DBG(juce::Time::getCurrentTime().toString(true, true)
-                << " got " << writerSamples << " needed " << writerSamplesNeeded << " ratio " << ratio << " factor "
+                << " got "
+                << writerSamples
+                << " needed "
+                << writerSamplesNeeded
+                << " ratio "
+                << ratio
+                << " factor "
                 << factor);
 #endif
             return false;
@@ -361,7 +373,7 @@ public:
         auto totalSamplesConsumed = 0;
 
         auto finalRatio = 0.0;
-        for (int i = 0; i < numChannels; i++)
+        for (int i = 0; i < writerNumChannels; i++)
         {
             totalSamplesConsumed = 0;
             int samplesAvailable = writerSamples;
@@ -371,6 +383,8 @@ public:
             rateSmoothing.setCurrentAndTargetValue(initialRate);
             rateSmoothing.setTargetValue(factor);
 
+            auto outputGain =
+                1.0f * numChannels / writerNumChannels < 1.0f ? 1.0f * numChannels / writerNumChannels : 1.0f;
             for (int j = 0; j < numSamples; ++j)
             {
                 auto smoothingValue = rateSmoothing.getNextValue();
@@ -383,7 +397,7 @@ public:
                     1,
                     samplesAvailable,
                     0,
-                    1.0f
+                    outputGain
                 );
                 samplesAvailable -= samplesConsumed;
                 totalSamplesConsumed += samplesConsumed;
@@ -393,8 +407,10 @@ public:
 #ifdef JUCE_DEBUG
         if (!juce::approximatelyEqual(finalRatio, prevFinalRatio)
             && juce::approximatelyEqual(finalRatio, (double)(writerSampleRate / readerSampleRate)))
-            DBG("time: " << juce::Time::getCurrentTime().toString(true, true)
-                         << juce::String(" final ratio ") + juce::String(finalRatio));
+            DBG("time: "
+                << juce::Time::getCurrentTime().toString(true, true)
+                << juce::String(" final ratio ")
+                + juce::String(finalRatio));
 #endif
         prevFinalRatio = finalRatio;
         fifoBuffer.advanceRead(totalSamplesConsumed);
