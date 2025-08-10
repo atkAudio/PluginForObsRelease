@@ -55,4 +55,4 @@ If you find this project useful, please consider making [a donation](https://www
 ## Installation
 
 - Download and install [latest release](https://github.com/atkAudio/PluginForObsRelease/releases/latest)
-- Manual/portable installations: extract `.dll|.dylib|.so` from installer and copy it to OBS plugins directory. For example on major Linux distros, extract `atkaudio-pluginforobs.so` from `.deb` file and copy it to `~/.config/obs-studio/plugins/atkaudio-pluginforobs/bin/64bit/`
+- Manual/portable installations e.g. on major Linux distros: extract `portable-Linux.zip` file and copy the directory `atkaudio-pluginforobs` into `~/.config/obs-studio/plugins/`.

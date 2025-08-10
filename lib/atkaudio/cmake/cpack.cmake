@@ -55,7 +55,7 @@ set(CPACK_PACKAGE_ABSOLUTE_PATH ${CPACK_PACKAGE_DIRECTORY}/${CPACK_PACKAGE_FILE_
 
 if(NOT DEFINED ENV{CI})
   set(BUILD_TYPE_FOR_CPACK "Debug")
-  return()
+  # return()
 endif()
 if(NOT WIN32)
   return()
@@ -65,7 +65,7 @@ include(CPack)
 
 if(NOT EXISTS ${CPACK_PACKAGE_ABSOLUTE_PATH})
   add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
-        COMMAND cpack --config CPackConfig.cmake -C ${BUILD_TYPE_FOR_CPACK}
+        COMMAND cpack --config CPackConfig.cmake -C $<CONFIG>
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     )
 endif()
