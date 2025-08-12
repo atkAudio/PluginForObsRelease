@@ -24,7 +24,7 @@ struct adio_data
     obs_source_t* context = nullptr;
     obs_data_t* settings = nullptr;
 
-    int channels;
+    int channels = 0;
     double sampleRate = 0.0;
 
     std::atomic_bool mixInput = false;
@@ -33,6 +33,8 @@ struct adio_data
     std::atomic<float> outputGain = 1.0f;
 
     atk::DeviceIo deviceIo;
+
+    bool hasInitUpdateLoad = false;
 };
 
 static const char* devio_name(void* unused)
@@ -73,8 +75,11 @@ static void devio_update(void* data, obs_data_t* s)
     // auto outputGain = (float)obs_data_get_double(s, OG_ID);
     // outputGain = obs_db_to_mul(outputGain);
     // adio->outputGain.store(outputGain, std::memory_order_release);
-
-    // load(data, s);
+    if (!adio->hasInitUpdateLoad)
+    {
+        adio->hasInitUpdateLoad = true;
+        load(data, s);
+    }
 }
 
 static void* devio_create(obs_data_t* settings, obs_source_t* filter)

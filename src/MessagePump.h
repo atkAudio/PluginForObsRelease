@@ -18,11 +18,14 @@ public:
     MessagePump(QObject* parent = nullptr);
     ~MessagePump();
 
+    void stopPump();
+
 private slots:
 
     void onTimeout();
 
 private:
+    std::atomic_bool needsToStop{false};
     QTimer* timer;
 };
 #endif

@@ -409,8 +409,7 @@ public:
             && juce::approximatelyEqual(finalRatio, (double)(writerSampleRate / readerSampleRate)))
             DBG("time: "
                 << juce::Time::getCurrentTime().toString(true, true)
-                << juce::String(" final ratio ")
-                + juce::String(finalRatio));
+                << juce::String(" final ratio ") + juce::String(finalRatio));
 #endif
         prevFinalRatio = finalRatio;
         fifoBuffer.advanceRead(totalSamplesConsumed);

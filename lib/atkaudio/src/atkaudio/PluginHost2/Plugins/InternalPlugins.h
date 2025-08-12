@@ -6,6 +6,7 @@ using namespace juce;
 #include "../ObsOutput.h"
 #include "../ObsSource.h"
 #include "../Ph2DeviceIo/Ph2DeviceIo.h"
+#include "MidiGainPlugin.h"
 #include "PluginGraph.h"
 
 //==============================================================================

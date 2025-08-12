@@ -26,7 +26,10 @@ void atk::pump()
 void atk::destroy()
 {
     juce::MessageManager::getInstance()->setCurrentThreadAsMessageThread();
+    auto numComponents = juce::Desktop::getInstance().getNumComponents();
     juce::shutdownJuce_GUI();
+    DBG("waiting components: " << numComponents);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100 * numComponents > 1000 ? 1000 : 100 * numComponents));
 }
 
 void atk::update()

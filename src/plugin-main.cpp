@@ -42,9 +42,11 @@ extern struct obs_source_info ph2helper_source_info;
 void obs_log(int log_level, const char* format, ...);
 
 #include "MessagePump.h"
+
 #ifndef NO_MESSAGE_PUMP
 #include <obs-frontend-api.h>
 MessagePump* messagePump = nullptr;
+
 #endif
 
 bool obs_module_load(void)
@@ -71,9 +73,11 @@ bool obs_module_load(void)
 
 void obs_module_unload(void)
 {
-#ifdef NO_MESSAGE_PUMP
-    atk::destroy();
+#ifndef NO_MESSAGE_PUMP
+    if (messagePump)
+        messagePump->stopPump();
 #endif
+    atk::destroy();
     obs_log(LOG_INFO, "plugin unloaded");
 }
 

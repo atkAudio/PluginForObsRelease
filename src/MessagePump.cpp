@@ -15,8 +15,16 @@ MessagePump::~MessagePump()
     atk::destroy();
 }
 
+void MessagePump::stopPump()
+{
+    needsToStop.store(true, std::memory_order_release);
+}
+
 void MessagePump::onTimeout()
 {
+    if (needsToStop.load(std::memory_order_acquire))
+        return;
+
     atk::pump();
 }
 #endif

@@ -678,6 +678,7 @@ InternalPluginFormat::InternalPluginFormat()
           [] { return std::make_unique<InternalPlugin>(std::make_unique<Ph2DeviceIoProcessor>()); },
           [] { return std::make_unique<InternalPlugin>(std::make_unique<SineWaveSynth>()); },
           [] { return std::make_unique<InternalPlugin>(std::make_unique<ReverbPlugin>()); },
+          [] { return std::make_unique<InternalPlugin>(std::make_unique<MidiGainPlugin>()); }
       }
 {
 }
