@@ -10,9 +10,11 @@
 
 ## Plugin Host2
 
-- Build filter graphs (plugin chains) with multiple plugin instances
-- Saving and loading of filter graphs as files
+- Includes features of regular Plugin Host plus:
+- Build filter graphs (plugin chains/network) with multiple VST3 plugin instances
+- Saving and loading of graphs as files
 - MIDI support (e.g. for using MIDI keyboard and a sampler plugin as soundboard)
+- Route audio and MIDI between plugins and hardware (ASIO/CoreAudio included)
 - etc
 
 Plugin Host2 can interface directly with audio and MIDI hardware, OBS audio sources, and output audio as new OBS sources, allowing for complex audio processing setups. E.g. use ASIO interface as audio device, take additional audio from OBS sources, route monitoring to ASIO outputs and/or different audio drivers/hardware, use plugins and create final mix, and output the processed audio as a new OBS source for recording and streaming. Or just create a simple soundboard with a sampler plugin and a MIDI keyboard.

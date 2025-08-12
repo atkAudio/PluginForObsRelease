@@ -275,13 +275,13 @@ public:
         setResizeLimits(300, 400, 800, 1500);
         setTopLeftPosition(60, 60);
 
-        restoreWindowStateFromString(owner.getAppProperties().getUserSettings()->getValue("listWindowPos"));
+        // restoreWindowStateFromString(owner.getAppProperties().getUserSettings()->getValue("listWindowPos"));
         setVisible(true);
     }
 
     ~PluginListWindow() override
     {
-        owner.getAppProperties().getUserSettings()->setValue("listWindowPos", getWindowStateAsString());
+        // owner.getAppProperties().getUserSettings()->setValue("listWindowPos", getWindowStateAsString());
         clearContentComponent();
     }
 
@@ -786,7 +786,7 @@ void MainHostWindow::getCommandInfo(const CommandID commandID, ApplicationComman
         break;
 
     case CommandIDs::showPluginListEditor:
-        result.setInfo("Edit List of Available Plug-ins...", {}, category, 0);
+        result.setInfo("Edit/Scan List of Available Plug-ins...", {}, category, 0);
         result.addDefaultKeypress('p', ModifierKeys::commandModifier);
         break;
 

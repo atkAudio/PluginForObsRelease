@@ -17,7 +17,7 @@ class HostAudioProcessorImpl
     : public AudioProcessor
     , private ChangeListener
 {
-    static inline juce::InterProcessLock appPropertiesLock{"pluginHostAppPropertiesLock"};
+    static inline juce::InterProcessLock appPropertiesLock{"atkAudioPluginHostLock"};
 
 public:
     HostAudioProcessorImpl()
@@ -40,6 +40,7 @@ public:
                 opt.ignoreCaseOfKeyNames = false;
                 opt.storageFormat = PropertiesFile::StorageFormat::storeAsXML;
                 opt.osxLibrarySubFolder = "Application Support";
+                opt.folderName = "atkAudio Plugin";
                 opt.processLock = &appPropertiesLock;
                 return opt;
             }()
@@ -431,8 +432,19 @@ class PluginLoaderComponent final : public Component
 {
 public:
     template <typename Callback>
-    PluginLoaderComponent(AudioPluginFormatManager& manager, KnownPluginList& list, Callback&& callback)
-        : pluginListComponent(manager, list, {}, {})
+    PluginLoaderComponent(
+        AudioPluginFormatManager& manager,
+        KnownPluginList& list,
+        PropertiesFile* props,
+        Callback&& callback
+    )
+        : pluginListComponent(
+              manager,
+              list,
+              props != nullptr ? props->getFile().getSiblingFile("RecentlyCrashedPluginsList") : File{},
+              props,
+              false
+          )
     {
         pluginListComponent.getTableListBox().setMultipleSelectionEnabled(false);
 
@@ -635,6 +647,7 @@ public:
         , loader(
               owner.pluginFormatManager,
               owner.pluginList,
+              owner.appProperties.getUserSettings(),
               [&owner](const PluginDescription& pd, EditorStyle editorStyle) { owner.setNewPlugin(pd, editorStyle); }
           )
         , scopedCallback(owner.pluginChanged, [this] { pluginChanged(); })

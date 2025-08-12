@@ -55,7 +55,7 @@ set(CPACK_PACKAGE_ABSOLUTE_PATH ${CPACK_PACKAGE_DIRECTORY}/${CPACK_PACKAGE_FILE_
 
 if(NOT DEFINED ENV{CI})
   set(BUILD_TYPE_FOR_CPACK "Debug")
-  # return()
+  return()
 endif()
 if(NOT WIN32)
   return()
