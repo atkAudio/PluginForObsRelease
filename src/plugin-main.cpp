@@ -16,6 +16,7 @@ You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
+#include "CompareVersionStrings.h"
 #include "config.h"
 
 #include <atkaudio/atkaudio.h>
@@ -51,6 +52,20 @@ MessagePump* messagePump = nullptr;
 
 bool obs_module_load(void)
 {
+    std::string obsCurrentVersion = obs_get_version_string();
+    std::string requiredVersion = PLUGIN_OBS_VERSION_REQUIRED;
+
+    if (CompareVersionStrings(obsCurrentVersion, requiredVersion) < 0)
+    {
+        obs_log(
+            LOG_ERROR,
+            "Incompatible OBS version: %s (required: %s)",
+            obsCurrentVersion.c_str(),
+            requiredVersion.c_str()
+        );
+        return false;
+    }
+
     obs_log(LOG_INFO, "plugin loaded successfully (version %s)", plugin_version);
 
     atk::create();

@@ -49,6 +49,7 @@ add_subdirectory(lib/atkaudio)
 file(READ "${CMAKE_SOURCE_DIR}/buildspec.json" buildspec)
 string(JSON PLUGIN_DISPLAY_NAME GET ${buildspec} displayName)
 string(JSON PLUGIN_AUTHOR GET ${buildspec} author)
+string(JSON PLUGIN_OBS_VERSION_REQUIRED GET ${buildspec} dependencies obs-studio version)
 string(TIMESTAMP PLUGIN_YEAR "%Y")
 set(PLUGIN_AUTHOR "${PLUGIN_AUTHOR}")
 

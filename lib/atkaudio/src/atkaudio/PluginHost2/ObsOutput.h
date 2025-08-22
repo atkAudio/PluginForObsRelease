@@ -38,6 +38,7 @@ public:
 
     ~ObsOutputAudioProcessor() override
     {
+        numInstances.fetch_sub(1, std::memory_order_acquire);
         if (privateSource)
         {
             obs_source_release(privateSource);
@@ -64,8 +65,8 @@ public:
 
         audioSourceData.frames = static_cast<uint32_t>(buffer.getNumSamples());
         audioSourceData.speakers = getMainBusNumInputChannels() <= MAX_AUDIO_CHANNELS
-                                       ? static_cast<enum speaker_layout>(getMainBusNumInputChannels())
-                                       : SPEAKERS_UNKNOWN;
+                                     ? static_cast<enum speaker_layout>(getMainBusNumInputChannels())
+                                     : SPEAKERS_UNKNOWN;
         audioSourceData.format = AUDIO_FORMAT_FLOAT_PLANAR;
         audioSourceData.samples_per_sec = static_cast<uint32_t>(getSampleRate());
         audioSourceData.timestamp = os_gettime_ns();
@@ -142,7 +143,7 @@ public:
     }
 
 private:
-    std::atomic_int numInstances{0};
+    static inline std::atomic_int numInstances{0};
     juce::AudioProcessorValueTreeState apvts;
 
     obs_source_t* privateSource = nullptr;
