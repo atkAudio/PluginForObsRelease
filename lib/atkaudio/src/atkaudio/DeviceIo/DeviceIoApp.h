@@ -118,6 +118,10 @@ public:
     {
         setContentOwned(&demo, true);
         setResizable(true, false);
+
+        // Position title bar buttons on the right (Windows-style), like Plugin Host
+        setTitleBarButtonsRequired(DocumentWindow::minimiseButton | DocumentWindow::closeButton, false);
+
         centreWithSize(demo.getWidth(), demo.getHeight());
         setVisible(false);
     }

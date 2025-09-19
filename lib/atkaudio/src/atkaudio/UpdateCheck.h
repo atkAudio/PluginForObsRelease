@@ -59,9 +59,21 @@ public:
 
     void checkForUpdate()
     {
-        juce::File lastVersionFile = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-                                         .getChildFile(PLUGIN_DISPLAY_NAME)
-                                         .getChildFile("version_check");
+        auto appDir =
+            juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory).getChildFile(PLUGIN_DISPLAY_NAME);
+        appDir.createDirectory();
+
+        juce::File lastVersionFile = appDir.getChildFile("version_check");
+
+        if (lastVersionFile.existsAsFile())
+        {
+            auto creationTime = lastVersionFile.getCreationTime();
+            auto now = juce::Time::getCurrentTime();
+            auto threeMonthsMs = (long long)3 * 30 * 24 * 60 * 60 * 1000;
+            if (now.toMilliseconds() - creationTime.toMilliseconds() > threeMonthsMs)
+                lastVersionFile.deleteFile();
+        }
+
         if (!lastVersionFile.existsAsFile())
             lastVersionFile.create();
         else if (juce::Time::getCurrentTime().toMilliseconds()
@@ -87,15 +99,23 @@ public:
 
         remoteVersionString = getValueFromJson(remoteVersionString, JSON_VALUE);
 
+        latestRemoteVersion = remoteVersionString;
+
+        // If user previously chose to skip this exact version, don't prompt again.
+        auto skippedVersion = lastVersionFile.loadFileAsString().trim();
+        if (skippedVersion.isNotEmpty() && skippedVersion == latestRemoteVersion)
+            return;
+
         auto isRemoteVersionNewer = isNewerVersionThanCurrent(remoteVersionString);
 
         if (isRemoteVersionNewer)
         {
-            auto res = juce::AlertWindow::showOkCancelBox(
+            juce::AlertWindow::showYesNoCancelBox(
                 juce::AlertWindow::InfoIcon,
                 PLUGIN_DISPLAY_NAME,
-                "A new version is available: " + remoteVersionString + "\nWould you like to download it?",
+                "A new version is available: " + remoteVersionString,
                 "Download",
+                "Skip this version",
                 "Cancel",
                 nullptr,
                 this
@@ -106,13 +126,25 @@ public:
 private:
     void modalStateFinished(int returnValue) override
     {
-        if (returnValue != 0)
+        if (returnValue == 1)
+        {
             juce::URL("https://github.com/" + owner + "/" + repo + "/releases/latest/download/" + FILENAME)
                 .launchInDefaultBrowser();
+        }
+        else if (returnValue == 2)
+        {
+            auto appDir = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+                              .getChildFile(PLUGIN_DISPLAY_NAME);
+            appDir.createDirectory();
+            auto lastVersionFile = appDir.getChildFile("version_check");
+            if (!latestRemoteVersion.isEmpty())
+                lastVersionFile.replaceWithText(latestRemoteVersion);
+        }
     }
 
     juce::String owner;
     juce::String repo;
+    juce::String latestRemoteVersion;
 
     JUCE_DECLARE_SINGLETON(UpdateCheck, true)
 };

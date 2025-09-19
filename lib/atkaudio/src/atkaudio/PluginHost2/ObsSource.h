@@ -9,6 +9,10 @@
 
 #define PROPERTY_NAME "source"
 #define CHILD_NAME "SelectedSource"
+#define FOLLOW_VOLUME_PROPERTY "followVolume"
+#define FOLLOW_VOLUME_CHILD "FollowVolumeSettings"
+#define FOLLOW_MUTE_PROPERTY "followMute"
+#define FOLLOW_MUTE_CHILD "FollowMuteSettings"
 
 static void drawTextLayout(
     juce::Graphics& g,
@@ -32,25 +36,25 @@ static void drawTextLayout(
     textLayout.draw(g, textBounds.toFloat());
 }
 
-static juce::StringArray GetObsAudioSources(obs_source_t* parentSource = nullptr)
+static std::vector<std::string> GetObsAudioSources(obs_source_t* parentSource = nullptr)
 {
-    juce::StringArray sourceNames;
+    std::vector<std::string> sourceNames;
 
     obs_enum_sources(
         [](void* param, obs_source_t* src)
         {
-            auto* names = static_cast<juce::StringArray*>(param);
+            auto* names = static_cast<std::vector<std::string>*>(param);
             const char* name = obs_source_get_name(src);
             uint32_t caps = obs_source_get_output_flags(src);
 
             if ((caps & OBS_SOURCE_AUDIO) == 0)
                 return true;
 
-            if (name && juce::String(name).containsIgnoreCase("ph2out"))
+            if (name && std::string(name).find("ph2out") != std::string::npos)
                 return true;
 
             if (name)
-                names->add(juce::String(name));
+                names->push_back(std::string(name));
             return true;
         },
         &sourceNames
@@ -152,14 +156,19 @@ public:
         return apvts;
     }
 
+    obs_source_t* getCurrentObsSource() const
+    {
+        return currentObsSource;
+    }
+
     void removeObsAudioCaptureCallback()
     {
-        auto sourceName =
-            apvts.state.getOrCreateChildWithName(CHILD_NAME, nullptr).getProperty(PROPERTY_NAME).toString();
-        if (sourceName.isEmpty())
+        auto sourceNameRaw =
+            apvts.state.getOrCreateChildWithName(CHILD_NAME, nullptr).getProperty(PROPERTY_NAME).toString().toRawUTF8();
+        if (strlen(sourceNameRaw) == 0)
             return;
 
-        obs_source_t* source = obs_get_source_by_name(sourceName.toRawUTF8());
+        obs_source_t* source = obs_get_source_by_name(sourceNameRaw);
         if (source)
         {
             obs_source_remove_audio_capture_callback(source, obs_capture_callback, this);
@@ -175,14 +184,21 @@ public:
     void addObsAudioCaptureCallback()
     {
         removeObsAudioCaptureCallback();
-        auto sourceName =
-            apvts.state.getOrCreateChildWithName(CHILD_NAME, nullptr).getProperty(PROPERTY_NAME).toString();
+        auto sourceNameRaw = apvts.state.getOrCreateChildWithName(CHILD_NAME, nullptr)
+                                 .getProperty(PROPERTY_NAME)
+                                 .toString()
+                                 .toStdString();
 
-        obs_source_t* source = obs_get_source_by_name(sourceName.toRawUTF8());
+        obs_source_t* source = obs_get_source_by_name(sourceNameRaw.c_str());
         if (source)
         {
             obs_source_add_audio_capture_callback(source, obs_capture_callback, this);
-            obs_source_set_muted(source, true);
+
+            auto followVolume = apvts.state.getOrCreateChildWithName(FOLLOW_VOLUME_CHILD, nullptr)
+                                    .getProperty(FOLLOW_VOLUME_PROPERTY, false);
+            if (!followVolume)
+                obs_source_set_muted(source, true);
+
             currentObsSource = source;
         }
     }
@@ -195,6 +211,26 @@ public:
             buffer.getNumSamples(),
             getSampleRate()
         );
+
+        auto followVolume = apvts.state.getOrCreateChildWithName(FOLLOW_VOLUME_CHILD, nullptr)
+                                .getProperty(FOLLOW_VOLUME_PROPERTY, false);
+
+        if (followVolume && currentObsSource)
+        {
+            float obsVolume = obs_source_get_volume(currentObsSource);
+            if (obsVolume != 1.0f)
+                buffer.applyGain(obsVolume);
+        }
+
+        auto followMute =
+            apvts.state.getOrCreateChildWithName(FOLLOW_MUTE_CHILD, nullptr).getProperty(FOLLOW_MUTE_PROPERTY, false);
+
+        if (followMute && currentObsSource)
+        {
+            bool obsMuted = obs_source_muted(currentObsSource);
+            if (obsMuted)
+                buffer.clear();
+        }
     }
 
 private:
@@ -237,13 +273,67 @@ public:
         : juce::AudioProcessorEditor(&p)
         , processor(p)
         , listBox(p)
+        , followVolumeToggle("Follow Source Volume")
+        , followMuteToggle("Follow Source Mute")
     {
         auto sources = GetObsAudioSources();
-        auto savedSource =
-            processor.getApvts().state.getOrCreateChildWithName(CHILD_NAME, nullptr).getProperty(PROPERTY_NAME);
+        auto savedSourceRaw = processor.getApvts()
+                                  .state.getOrCreateChildWithName(CHILD_NAME, nullptr)
+                                  .getProperty(PROPERTY_NAME)
+                                  .toString()
+                                  .toRawUTF8();
+
+        followVolumeToggle.setButtonText("Follow Source Volume");
+        auto followVolumeState = processor.getApvts()
+                                     .state.getOrCreateChildWithName(FOLLOW_VOLUME_CHILD, nullptr)
+                                     .getProperty(FOLLOW_VOLUME_PROPERTY, false);
+        followVolumeToggle.setToggleState(followVolumeState, juce::dontSendNotification);
+
+        followVolumeToggle.onClick = [this]()
+        {
+            auto& state = processor.getApvts().state;
+            bool newState = followVolumeToggle.getToggleState();
+            state.getOrCreateChildWithName(FOLLOW_VOLUME_CHILD, nullptr)
+                .setProperty(FOLLOW_VOLUME_PROPERTY, newState, nullptr);
+
+            obs_source_t* currentSource = processor.getCurrentObsSource();
+            if (currentSource)
+            {
+                if (newState)
+                    obs_source_set_muted(currentSource, false);
+                else
+                    obs_source_set_muted(currentSource, true);
+            }
+        };
+
+        // Setup follow mute toggle checkbox
+        followMuteToggle.setButtonText("Follow Source Mute");
+        auto followMuteState = processor.getApvts()
+                                   .state.getOrCreateChildWithName(FOLLOW_MUTE_CHILD, nullptr)
+                                   .getProperty(FOLLOW_MUTE_PROPERTY, false);
+        followMuteToggle.setToggleState(followMuteState, juce::dontSendNotification);
+
+        followMuteToggle.onClick = [this]()
+        {
+            auto& state = processor.getApvts().state;
+            bool newState = followMuteToggle.getToggleState();
+            state.getOrCreateChildWithName(FOLLOW_MUTE_CHILD, nullptr)
+                .setProperty(FOLLOW_MUTE_PROPERTY, newState, nullptr);
+        };
+
+        addAndMakeVisible(followVolumeToggle);
+        addAndMakeVisible(followMuteToggle);
         addAndMakeVisible(listBox);
 
-        auto selectedIdx = sources.indexOf(savedSource.toString(), false);
+        auto selectedIdx = -1;
+        for (size_t i = 0; i < sources.size(); ++i)
+        {
+            if (sources[i] == savedSourceRaw)
+            {
+                selectedIdx = static_cast<int>(i);
+                break;
+            }
+        }
 
         setSize(300, 200);
         setResizable(true, true);
@@ -253,6 +343,15 @@ public:
     void resized() override
     {
         auto area = getLocalBounds().reduced(8);
+
+        auto checkboxHeight = 24;
+        followVolumeToggle.setBounds(area.removeFromTop(checkboxHeight));
+
+        area.removeFromTop(4);
+
+        followMuteToggle.setBounds(area.removeFromTop(checkboxHeight));
+
+        area.removeFromTop(8);
 
         listBox.setBounds(area);
     }
@@ -269,28 +368,28 @@ private:
             , processor(p)
         {
             for (const auto& item : GetObsAudioSources())
-                items.add(item);
+                items.push_back(item);
             setModel(this);
             setOutlineThickness(1);
         }
 
         int getNumRows() override
         {
-            return items.size();
+            return static_cast<int>(items.size());
         }
 
         void paintListBoxItem(int row, Graphics& g, int width, int height, bool rowIsSelected) override
         {
             auto& state = processor.getApvts().state;
-            auto selectedSource =
-                state.getOrCreateChildWithName(CHILD_NAME, nullptr).getProperty(PROPERTY_NAME).toString();
-            if (isPositiveAndBelow(row, items.size()))
+            auto selectedSourceRaw =
+                state.getOrCreateChildWithName(CHILD_NAME, nullptr).getProperty(PROPERTY_NAME).toString().toRawUTF8();
+            if (isPositiveAndBelow(row, static_cast<int>(items.size())))
             {
                 if (rowIsSelected)
                     g.fillAll(findColour(TextEditor::highlightColourId).withMultipliedAlpha(0.3f));
 
-                auto item = items[row];
-                bool enabled = (item == selectedSource);
+                auto itemRaw = items[row];
+                bool enabled = (itemRaw == selectedSourceRaw);
 
                 auto x = getTickX();
                 auto tickW = (float)height * 0.75f;
@@ -308,7 +407,8 @@ private:
                     false
                 );
 
-                drawTextLayout(g, *this, item, {x + 5, 0, width - x - 5, height}, enabled);
+                juce::String displayText = juce::String::fromUTF8(itemRaw.c_str());
+                drawTextLayout(g, *this, displayText, {x + 5, 0, width - x - 5, height}, enabled);
             }
         }
 
@@ -334,7 +434,7 @@ private:
         {
             ListBox::paint(g);
 
-            if (items.isEmpty())
+            if (items.empty())
             {
                 g.setColour(Colours::grey);
                 g.setFont(0.5f * (float)getRowHeight());
@@ -351,20 +451,22 @@ private:
 
     private:
         ObsSourceAudioProcessor& processor;
-        juce::Array<juce::String> items;
+        std::vector<std::string> items;
 
         void flipEnablement(const int row)
         {
-            if (isPositiveAndBelow(row, items.size()))
+            if (isPositiveAndBelow(row, static_cast<int>(items.size())))
             {
-                auto sourceName = items[row];
+                auto sourceNameRaw = items[row];
                 auto& state = processor.getApvts().state;
-                auto currentSelected =
-                    state.getOrCreateChildWithName(CHILD_NAME, nullptr).getProperty(PROPERTY_NAME).toString();
+                auto currentSelectedRaw = state.getOrCreateChildWithName(CHILD_NAME, nullptr)
+                                              .getProperty(PROPERTY_NAME)
+                                              .toString()
+                                              .toRawUTF8();
 
-                if (sourceName.isNotEmpty())
+                if (!sourceNameRaw.empty())
                 {
-                    if (currentSelected == sourceName)
+                    if (currentSelectedRaw == sourceNameRaw)
                     {
                         processor.removeObsAudioCaptureCallback();
                         state.getOrCreateChildWithName(CHILD_NAME, nullptr).removeProperty(PROPERTY_NAME, nullptr);
@@ -372,7 +474,7 @@ private:
                     else
                     {
                         state.getOrCreateChildWithName(CHILD_NAME, nullptr)
-                            .setProperty(PROPERTY_NAME, sourceName, nullptr);
+                            .setProperty(PROPERTY_NAME, juce::String(sourceNameRaw), nullptr);
                         processor.addObsAudioCaptureCallback();
                     }
                 }
@@ -390,9 +492,10 @@ private:
 
     ObsSourceAudioProcessor& processor;
     MidiInputSelectorComponentListBox listBox;
+    juce::ToggleButton followVolumeToggle;
+    juce::ToggleButton followMuteToggle;
 };
 
-// Implementation of createEditor
 inline juce::AudioProcessorEditor* ObsSourceAudioProcessor::createEditor()
 {
     return new ObsSourceAudioProcessorEditor(*this);

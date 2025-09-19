@@ -329,7 +329,8 @@ MainHostWindow::MainHostWindow()
 
     setContentNonOwned(graphHolder.get(), false);
 
-    // setUsingNativeTitleBar(true);
+    // Position title bar buttons on the right (Windows-style), like Plugin Host
+    setTitleBarButtonsRequired(DocumentWindow::allButtons, false);
 
     restoreWindowStateFromString(getAppProperties().getUserSettings()->getValue("mainWindowPos"));
 

@@ -22,14 +22,14 @@
     "qt6": {
       "baseUrl": "https://github.com/obsproject/obs-deps/releases/download",
       "debugSymbols": {
-        "windows-x64": "11b7be92cf66a273299b8f3515c07a5cfb61614b59a4e67f7fc5ecba5e2bdf21"
+        "windows-x64": "aae88a17e0211cb37db6a8602f2e20d69255be1f9700c699008ca5adbce1dde2"
       },
       "hashes": {
-        "macos": "d3f5f04b6ea486e032530bdf0187cbda9a54e0a49621a4c8ba984c5023998867",
-        "windows-x64": "0e76bf0555dd5382838850b748d3dcfab44a1e1058441309ab54e1a65b156d0a"
+        "macos": "990f11638b80a4509e14e8c315f6e4caa0861e37fcd3113a256fbff835ffca29",
+        "windows-x64": "c62e82483bc7c0bf199e8ac3220c66a85a6e8a0cd69a05b6d44f873b830e415f"
       },
       "label": "Pre-Built Qt6",
-      "version": "2025-07-11"
+      "version": "2025-08-23"
     }
   },
   "displayName": "atkAudio Plugin",
@@ -43,6 +43,6 @@
   "uuids": {
     "windowsApp": "ad885c58-5ca9-44de-8f4f-1c12676626a9"
   },
-  "version": "0.20.1",
+  "version": "0.23.1",
   "website": "https://www.atkaudio.com"
 }
