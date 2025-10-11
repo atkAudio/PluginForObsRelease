@@ -64,8 +64,11 @@ struct atk::PluginHost::Impl : public juce::Timer
 
     void process(float** buffer, int newNumChannels, int newNumSamples, double newSampleRate)
     {
-        if (!buffer || this->numChannels != newNumChannels || this->numSamples < newNumSamples
-            || this->sampleRate != newSampleRate || isFirstRun.load(std::memory_order_acquire))
+        if (!buffer
+            || this->numChannels != newNumChannels
+            || this->numSamples < newNumSamples
+            || this->sampleRate != newSampleRate
+            || isFirstRun.load(std::memory_order_acquire))
         {
             isFirstRun.store(false, std::memory_order_release);
             this->numChannels = newNumChannels;
@@ -93,12 +96,22 @@ struct atk::PluginHost::Impl : public juce::Timer
 
     void setVisible(bool visible)
     {
-        if (!mainWindow->isOnDesktop())
-            mainWindow->addToDesktop();
+        auto doUi = [this, visible]
+        {
+            if (visible && !mainWindow->isOnDesktop())
+            {
+                mainWindow->addToDesktop();
+                mainWindow->toFront(true);
+            }
+            mainWindow->setVisible(visible);
+            if (visible && mainWindow->isMinimised())
+                mainWindow->setMinimised(false);
+        };
 
-        mainWindow->setVisible(visible);
-        if (visible && mainWindow->isMinimised())
-            mainWindow->setMinimised(false);
+        if (juce::MessageManager::getInstance()->isThisTheMessageThread())
+            doUi();
+        else
+            juce::MessageManager::callAsync(doUi);
     }
 
     // some plugins dont export state if audio is not playing

@@ -13,6 +13,7 @@ struct atk::PluginHost2::Impl : public juce::Timer
 
     ~Impl()
     {
+        // Follow the same clean pattern as regular PluginHost
         auto* window = this->mainHostWindow.release();
         auto lambda = [window] { delete window; };
         juce::MessageManager::callAsync(lambda);
@@ -24,12 +25,20 @@ struct atk::PluginHost2::Impl : public juce::Timer
 
     void setVisible(bool visible)
     {
-        if (!mainHostWindow->isOnDesktop() && visible)
+        auto doUi = [this, visible]
         {
-            mainHostWindow->addToDesktop();
-            mainHostWindow->toFront(true);
-        }
-        mainHostWindow->setVisible(visible);
+            if (visible && !mainHostWindow->isOnDesktop())
+            {
+                mainHostWindow->addToDesktop();
+                mainHostWindow->toFront(true);
+            }
+            mainHostWindow->setVisible(visible);
+        };
+
+        if (juce::MessageManager::getInstance()->isThisTheMessageThread())
+            doUi();
+        else
+            juce::MessageManager::callAsync(doUi);
     }
 
     void getState(std::string& s)
@@ -111,7 +120,6 @@ struct atk::PluginHost2::Impl : public juce::Timer
 
 private:
     std::unique_ptr<MainHostWindow> mainHostWindow;
-    std::unique_ptr<juce::AudioDeviceManager> deviceManager;
 
     juce::AudioBuffer<float> outputData{MAX_AUDIO_CHANNELS, AUDIO_OUTPUT_FRAMES};
     uint64_t hostTimeNs;

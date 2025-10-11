@@ -126,6 +126,11 @@ public:
         setVisible(false);
     }
 
+    ~AudioAppMainWindow() override
+    {
+        // Note: setVisible(false) is handled by atk::destroy() force-hide before this destructor runs
+    }
+
     void closeButtonPressed() override
     {
         setVisible(false);

@@ -18,6 +18,7 @@ public:
         using namespace juce;
         apvts = std::make_unique<AudioProcessorValueTreeState>(*this, nullptr, "state", createParameterLayout());
         gainValue = apvts->getRawParameterValue("gain");
+        gain2Value = apvts->getRawParameterValue("gain2");
         midiEnabled = apvts->getRawParameterValue("midi");
         midiChannel = apvts->getRawParameterValue("ch");
         midiCc = apvts->getRawParameterValue("cc");
@@ -56,7 +57,8 @@ public:
     void prepareToPlay(double sampleRate, int samplesPerBlock) override
     {
         juce::ignoreUnused(sampleRate, samplesPerBlock);
-        gainValueSmoothed.reset(sampleRate, 0.05f); // Smooth the gain value with a time constant of 50ms
+        gainValueSmoothed.reset(sampleRate, 0.05f);  // Smooth the gain value with a time constant of 50ms
+        gain2ValueSmoothed.reset(sampleRate, 0.05f); // Smooth the gain2 value with a time constant of 50ms
     }
 
     void releaseResources() override
@@ -66,6 +68,8 @@ public:
     void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiBuffer) override
     {
         auto gain = gainValue->load(std::memory_order_acquire);
+        auto gain2Db = gain2Value->load(std::memory_order_acquire);
+        auto gain2Linear = juce::Decibels::decibelsToGain(gain2Db);
 
         if (midiEnabled->load(std::memory_order_acquire) > 0.5f)
         {
@@ -89,10 +93,15 @@ public:
         for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
         {
             gainValueSmoothed.setTargetValue(gain);
+            gain2ValueSmoothed.setTargetValue(gain2Linear);
             auto* readPtr = buffer.getReadPointer(channel);
             auto* writePtr = buffer.getWritePointer(channel);
             for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
-                writePtr[sample] = readPtr[sample] * gainValueSmoothed.getNextValue();
+            {
+                auto currentGain = gainValueSmoothed.getNextValue();
+                auto currentGain2 = gain2ValueSmoothed.getNextValue();
+                writePtr[sample] = readPtr[sample] * currentGain * currentGain2;
+            }
         }
 
         if (midiLearn->load(std::memory_order_acquire) > 0.5f)
@@ -218,17 +227,25 @@ private:
 
         params.push_back(std::make_unique<AudioParameterBool>(ParameterID{"learn", 1}, "Learn", false));
 
+        // Gain2 parameter with -30 to +30 dB range
+        auto gain2Range = NormalisableRange<float>(-30.0f, 30.0f, 0.1f, 1.0f);
+        params.push_back(
+            std::make_unique<AudioParameterFloat>(ParameterID{"gain2", 1}, "Gainsborough", gain2Range, 0.0f)
+        );
+
         return {params.begin(), params.end()};
     }
 
     std::unique_ptr<juce::AudioProcessorValueTreeState> apvts;
     std::atomic<float>* gainValue = nullptr;
+    std::atomic<float>* gain2Value = nullptr;
     std::atomic<float>* midiEnabled = nullptr;
     std::atomic<float>* midiChannel = nullptr;
     std::atomic<float>* midiCc = nullptr;
     std::atomic<float>* midiLearn = nullptr;
 
     juce::LinearSmoothedValue<float> gainValueSmoothed;
+    juce::LinearSmoothedValue<float> gain2ValueSmoothed;
 
     juce::RangedAudioParameter* gainParam = nullptr;
     juce::RangedAudioParameter* channelParam = nullptr;

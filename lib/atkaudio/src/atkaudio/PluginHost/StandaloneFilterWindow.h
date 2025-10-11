@@ -68,7 +68,8 @@ public:
 
         auto audioInputRequired = (inChannels > 0);
 
-        if (audioInputRequired && RuntimePermissions::isRequired(RuntimePermissions::recordAudio)
+        if (audioInputRequired
+            && RuntimePermissions::isRequired(RuntimePermissions::recordAudio)
             && !RuntimePermissions::isGranted(RuntimePermissions::recordAudio))
             RuntimePermissions::request(
                 RuntimePermissions::recordAudio,
@@ -185,7 +186,8 @@ public:
     {
         stateFileChooser =
             std::make_unique<FileChooser>(TRANS("Save current state"), getLastFile(), getFilePatterns(fileSuffix));
-        auto flags = FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles
+        auto flags = FileBrowserComponent::saveMode
+                   | FileBrowserComponent::canSelectFiles
                    | FileBrowserComponent::warnAboutOverwriting;
 
         stateFileChooser->launchAsync(
@@ -650,6 +652,8 @@ public:
 
     ~StandaloneFilterWindow() override
     {
+        // Note: setVisible(false) is handled by atk::destroy() force-hide before this destructor runs
+
 #if (!JUCE_IOS) && (!JUCE_ANDROID)
         if (auto* props = pluginHolder->settings.get())
         {

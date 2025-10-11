@@ -20,11 +20,13 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "config.h"
 
 #include <atkaudio/atkaudio.h>
+#include <chrono>
 #include <obs-module.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <thread>
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
@@ -90,9 +92,18 @@ void obs_module_unload(void)
 {
 #ifndef NO_MESSAGE_PUMP
     if (messagePump)
+    {
         messagePump->stopPump();
+        // Give some time for the message pump to stop cleanly
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
 #endif
     atk::destroy();
+#ifndef NO_MESSAGE_PUMP
+    // Clean up message pump after JUCE shutdown
+    if (messagePump)
+        messagePump = nullptr; // Parent (OBS main window) handles deletion
+#endif
     obs_log(LOG_INFO, "plugin unloaded");
 }
 

@@ -33,6 +33,7 @@ public:
 
             obs_source_set_audio_active(privateSource, true);
             obs_source_set_enabled(privateSource, true);
+            obs_source_release(sceneSource);
         }
     }
 

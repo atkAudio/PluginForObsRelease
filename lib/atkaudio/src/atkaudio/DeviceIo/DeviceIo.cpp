@@ -17,9 +17,10 @@ struct atk::DeviceIo::Impl : public juce::Timer
 
     ~Impl()
     {
+        // Follow the same clean pattern as regular PluginHost
         auto* window = this->mainWindow;
         auto* manager = this->deviceManager;
-        auto lambda = [window, manager]()
+        auto lambda = [window, manager]
         {
             delete window;
             delete manager;
@@ -43,12 +44,22 @@ struct atk::DeviceIo::Impl : public juce::Timer
 
     void setVisible(bool visible)
     {
-        if (!mainWindow->isOnDesktop())
-            mainWindow->addToDesktop();
+        auto doUi = [this, visible]
+        {
+            if (visible && !mainWindow->isOnDesktop())
+            {
+                mainWindow->addToDesktop();
+                mainWindow->toFront(true);
+            }
+            mainWindow->setVisible(visible);
+            if (visible && mainWindow->isMinimised())
+                mainWindow->setMinimised(false);
+        };
 
-        mainWindow->setVisible(visible);
-        if (visible && mainWindow->isMinimised())
-            mainWindow->setMinimised(false);
+        if (juce::MessageManager::getInstance()->isThisTheMessageThread())
+            doUi();
+        else
+            juce::MessageManager::callAsync(doUi);
     }
 
     void getState(std::string& s)

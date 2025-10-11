@@ -334,7 +334,7 @@ MainHostWindow::MainHostWindow()
 
     restoreWindowStateFromString(getAppProperties().getUserSettings()->getValue("mainWindowPos"));
 
-    setVisible(false);
+    setVisible(true);
 
     InternalPluginFormat internalFormat;
     internalTypes = internalFormat.getAllTypes();
@@ -409,48 +409,15 @@ struct AsyncQuitRetrier final : private Timer
 
 void MainHostWindow::tryToQuitApplication()
 {
-    if (graphHolder->closeAnyOpenPluginWindows())
-    {
-        // Really important thing to note here: if the last call just deleted any plugin windows,
-        // we won't exit immediately - instead we'll use our AsyncQuitRetrier to let the message
-        // loop run for another brief moment, then try again. This will give any plugins a chance
-        // to flush any GUI events that may have been in transit before the app forces them to
-        // be unloaded
-        new AsyncQuitRetrier();
-        return;
-    }
-
-    if (ModalComponentManager::getInstance()->cancelAllModalComponents())
-    {
-        new AsyncQuitRetrier();
-        return;
-    }
-
+    // In plugin context, we don't quit the host application (OBS).
+    // Instead, attempt to close plugin windows and hide our window.
     if (graphHolder != nullptr)
-    {
-        auto releaseAndQuit = [this]
-        {
-            // Some plug-ins do not want [NSApp stop] to be called
-            // before the plug-ins are not deallocated.
-            graphHolder->releaseGraph();
-        };
+        (void)graphHolder->closeAnyOpenPluginWindows();
 
-        SafePointer<MainHostWindow> parent{this};
-        graphHolder->graph->saveIfNeededAndUserAgreesAsync(
-            [parent, releaseAndQuit](FileBasedDocument::SaveResult r)
-            {
-                if (parent == nullptr)
-                    return;
+    if (ModalComponentManager::getInstance() != nullptr)
+        (void)ModalComponentManager::getInstance()->cancelAllModalComponents();
 
-                if (r == FileBasedDocument::savedOk)
-                    releaseAndQuit();
-            }
-        );
-
-        return;
-    }
-
-    JUCEApplication::quit();
+    setVisible(false);
 }
 
 void MainHostWindow::changeListenerCallback(ChangeBroadcaster* changed)
