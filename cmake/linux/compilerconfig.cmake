@@ -2,7 +2,6 @@
 
 include_guard(GLOBAL)
 
-include(ccache)
 include(compiler_common)
 
 option(ENABLE_COMPILER_TRACE "Enable Clang time-trace (required Clang and Ninja)" OFF)
@@ -61,10 +60,6 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL GNU)
   # * Also disable warnings for stringop-overflow due to https://gcc.gnu.org/bugzilla/show_bug.cgi?id=106297
   if(CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL 12.0.0)
     add_compile_options(-Winfinite-recursion -Wno-stringop-overflow)
-  endif()
-
-  if(CMAKE_SYSTEM_PROCESSOR STREQUAL aarch64)
-    add_compile_options(-Wno-error=type-limits)
   endif()
 endif()
 

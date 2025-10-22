@@ -121,7 +121,9 @@ static void audio_output_callback(void* param, size_t mix_idx, struct audio_data
             if (numReady < frames)
                 continue;
 
-            auto maxFrames = std::max(asmd->frames.load(), source.frames.load());
+            int asmdFrames = asmd->frames.load();
+            int sourceFrames = source.frames.load();
+            auto maxFrames = (std::max)(asmdFrames, sourceFrames);
             maxFrames = maxFrames * 2;
 
             if (numReady > maxFrames)
@@ -131,7 +133,7 @@ static void audio_output_callback(void* param, size_t mix_idx, struct audio_data
                 continue;
             }
 
-            numChannels = std::min((int)numChannels, source.fifoBuffer.getNumChannels());
+            numChannels = (std::min)((int)numChannels, source.fifoBuffer.getNumChannels());
             for (int i = 0; i < numChannels; i++)
             {
                 auto* targetPtr = asmd->tempBuffer[i].data();
@@ -302,7 +304,7 @@ static void asmd_capture(void* param, obs_source_t* sourceIn, const struct audio
                 continue;
             }
 
-            numChannels = std::min(numChannels, source.fifoBuffer.getNumChannels());
+            numChannels = (std::min)((int)numChannels, source.fifoBuffer.getNumChannels());
 
             for (int i = 0; i < numChannels; i++)
             {

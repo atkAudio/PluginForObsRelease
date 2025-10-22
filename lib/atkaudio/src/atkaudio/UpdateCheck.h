@@ -81,8 +81,6 @@ public:
                  < 7 * 24 * 60 * 60 * 1000)
             return;
 
-        lastVersionFile.setLastModificationTime(juce::Time::getCurrentTime());
-
         juce::URL versionURL("https://api.github.com/repos/" + owner + "/" + repo + "/releases/latest");
 
         std::unique_ptr<juce::InputStream> inStream(versionURL.createInputStream(
@@ -101,15 +99,19 @@ public:
 
         latestRemoteVersion = remoteVersionString;
 
-        // If user previously chose to skip this exact version, don't prompt again.
         auto skippedVersion = lastVersionFile.loadFileAsString().trim();
         if (skippedVersion.isNotEmpty() && skippedVersion == latestRemoteVersion)
+        {
+            lastVersionFile.setLastModificationTime(juce::Time::getCurrentTime());
             return;
+        }
 
         auto isRemoteVersionNewer = isNewerVersionThanCurrent(remoteVersionString);
 
         if (isRemoteVersionNewer)
         {
+            lastVersionFile.setLastModificationTime(juce::Time::getCurrentTime());
+
             juce::AlertWindow::showYesNoCancelBox(
                 juce::AlertWindow::InfoIcon,
                 PLUGIN_DISPLAY_NAME,

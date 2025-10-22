@@ -1,12 +1,12 @@
 #pragma once
 
-#include "../atkaudio.h"
+#include "../AudioModule.h"
 
 #include <string>
 
 namespace atk
 {
-class DeviceIo
+class DeviceIo : public atkAudioModule
 {
 public:
     DeviceIo();
@@ -14,11 +14,14 @@ public:
 
     void process(float** buffer, int numChannels, int numSamples, double sampleRate);
 
-    void setVisible(bool visible);
     void setMixInput(bool mixInput);
 
-    void getState(std::string& s);
-    void setState(std::string& s);
+    void getState(std::string& s) override;
+    void setState(std::string& s) override;
+
+protected:
+    // AudioModule interface - only need to provide the window component
+    juce::Component* getWindowComponent() override;
 
 private:
     struct Impl;

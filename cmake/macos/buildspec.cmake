@@ -11,7 +11,8 @@ function(_check_dependencies_macos)
 
   file(READ "${CMAKE_CURRENT_SOURCE_DIR}/buildspec.json" buildspec)
 
-  set(dependencies_dir "${CMAKE_CURRENT_SOURCE_DIR}/.deps")
+  # Use build-directory-specific dependency directory
+  set(dependencies_dir "${CMAKE_BINARY_DIR}/obs-deps")
   set(prebuilt_filename "macos-deps-VERSION-ARCH_REVISION.tar.xz")
   set(prebuilt_destination "obs-deps-VERSION-ARCH")
   set(qt6_filename "macos-deps-qt6-VERSION-ARCH-REVISION.tar.xz")

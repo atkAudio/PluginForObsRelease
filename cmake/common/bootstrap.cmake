@@ -64,7 +64,6 @@ list(GET _version_canonical 1 PLUGIN_VERSION_MINOR)
 list(GET _version_canonical 2 PLUGIN_VERSION_PATCH)
 unset(_version_canonical)
 
-include(buildnumber)
 include(osconfig)
 
 # Allow selection of common build types via UI

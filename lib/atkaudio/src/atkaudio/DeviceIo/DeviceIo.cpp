@@ -17,7 +17,7 @@ struct atk::DeviceIo::Impl : public juce::Timer
 
     ~Impl()
     {
-        // Follow the same clean pattern as regular PluginHost
+        // Clean up asynchronously on the message thread
         auto* window = this->mainWindow;
         auto* manager = this->deviceManager;
         auto lambda = [window, manager]
@@ -42,24 +42,9 @@ struct atk::DeviceIo::Impl : public juce::Timer
         toObsBuffer.read(buffer, numChannels, numSamples, sampleRate, this->mixInput);
     }
 
-    void setVisible(bool visible)
+    juce::Component* getWindowComponent()
     {
-        auto doUi = [this, visible]
-        {
-            if (visible && !mainWindow->isOnDesktop())
-            {
-                mainWindow->addToDesktop();
-                mainWindow->toFront(true);
-            }
-            mainWindow->setVisible(visible);
-            if (visible && mainWindow->isMinimised())
-                mainWindow->setMinimised(false);
-        };
-
-        if (juce::MessageManager::getInstance()->isThisTheMessageThread())
-            doUi();
-        else
-            juce::MessageManager::callAsync(doUi);
+        return mainWindow;
     }
 
     void getState(std::string& s)
@@ -109,11 +94,6 @@ void atk::DeviceIo::process(float** buffer, int numChannels, int numSamples, dou
     pImpl->process(buffer, numChannels, numSamples, sampleRate);
 }
 
-void atk::DeviceIo::setVisible(bool visible)
-{
-    pImpl->setVisible(visible);
-}
-
 void atk::DeviceIo::setMixInput(bool mixInput)
 {
     pImpl->setMixInput(mixInput);
@@ -127,6 +107,11 @@ void atk::DeviceIo::getState(std::string& s)
 void atk::DeviceIo::setState(std::string& s)
 {
     pImpl->setState(s);
+}
+
+juce::Component* atk::DeviceIo::getWindowComponent()
+{
+    return pImpl->getWindowComponent();
 }
 
 atk::DeviceIo::DeviceIo()

@@ -1,25 +1,41 @@
 #include "atkaudio.h"
 
 #include "JuceApp.h"
-START_JUCE_APPLICATION(Application)
+#include "LookAndFeel.h"
 #include "UpdateCheck.h"
 
 #include <juce_audio_utils/juce_audio_utils.h>
+
+#ifdef ENABLE_QT
+#include <QColor>
+#include <QPalette>
+#include <QWidget>
+#include <QWindow>
+#endif
+
+#include <obs-frontend-api.h>
+
 UpdateCheck* updateCheck = nullptr;
+
+// Store Qt main window handle for per-instance parent creation (lazy-initialized)
+static void* g_qtMainWindowHandle = nullptr;
+static bool g_qtMainWindowInitialized = false;
 
 void atk::create()
 {
-#ifdef JUCE_WINDOWS
+#ifndef JUCE_MAC
     juce::JUCEApplicationBase::createInstance = []() -> juce::JUCEApplicationBase* { return new Application(); };
 #endif
-#ifndef NO_MESSAGE_PUMP
     juce::initialiseJuce_GUI();
     juce::MessageManager::getInstance()->setCurrentThreadAsMessageThread();
-#endif
+
+    // Initialize LookAndFeel singleton
+    juce::SharedResourcePointer<atk::LookAndFeel> lookAndFeel;
 }
 
 void atk::pump()
 {
+    juce::MessageManager::getInstance()->setCurrentThreadAsMessageThread();
     juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
 }
 
@@ -45,33 +61,95 @@ void atk::destroy()
         }
     }
 
-    // Process any pending messages after hiding components
-    for (int i = 0; i < 100; ++i)
-    {
-        juce::MessageManager::getInstance()->runDispatchLoopUntil(1);
-        if (juce::Desktop::getInstance().getNumComponents() == 0)
-            break;
-    }
-
     auto numComponents = juce::Desktop::getInstance().getNumComponents();
     DBG("shutting down with " << numComponents << " remaining components");
 
+    // Clear any DeletedAtShutdown objects before JUCE shutdown
+    juce::DeletedAtShutdown::deleteAll();
+
+    // Don't pump messages after hiding components - this can cause crashes
+    // when VST3 plugins try to unregister event handlers during destruction
     juce::shutdownJuce_GUI();
 
-    // Brief wait only if components remain - they should be mostly cleaned up by now
-    if (numComponents > 0)
-    {
-        int waitMs = jmin(1000, 100 * numComponents); // Reduced from 200ms per component
-        std::this_thread::sleep_for(std::chrono::milliseconds(waitMs));
-    }
+// Clear leak detectors to prevent false positives during plugin shutdown
+// VST3 plugins may have circular references that are cleaned up by the OS
+#if JUCE_DEBUG
+    juce::juce_clearLeakDetectorObjects();
+#endif
 }
 
 void atk::update()
 {
-#ifndef JUCE_WINDOWS
-    juce::JUCEApplicationBase::createInstance = []() -> juce::JUCEApplicationBase* { return new Application(); };
-#endif
-
     if (updateCheck == nullptr)
         updateCheck = new UpdateCheck(); // deleted at shutdown
+}
+
+void* atk::getQtMainWindowHandle()
+{
+    // Fully lazy initialization: get Qt window, extract handle, and apply colors on first access
+    if (!g_qtMainWindowInitialized)
+    {
+        g_qtMainWindowInitialized = true;
+
+#ifdef ENABLE_QT
+        // Get Qt main window from OBS frontend API
+        QWidget* mainQWidget = (QWidget*)obs_frontend_get_main_window();
+        if (!mainQWidget)
+        {
+            DBG("getQtMainWindowHandle: obs_frontend_get_main_window() returned null");
+            return nullptr;
+        }
+
+        // Extract native window handle
+        void* nativeHandle = nullptr;
+#ifdef _WIN32
+        nativeHandle = reinterpret_cast<void*>(mainQWidget->winId());
+#elif defined(__APPLE__)
+        if (auto* window = mainQWidget->windowHandle())
+            nativeHandle = reinterpret_cast<void*>(window->winId());
+#elif defined(__linux__)
+        nativeHandle = reinterpret_cast<void*>(mainQWidget->winId());
+#endif
+
+        if (nativeHandle)
+        {
+            g_qtMainWindowHandle = nativeHandle;
+            DBG("getQtMainWindowHandle: Extracted native handle on first access");
+            DBG("  Native handle: " + juce::String::toHexString((juce::pointer_sized_int)nativeHandle));
+        }
+        else
+        {
+            DBG("getQtMainWindowHandle: Failed to extract native handle");
+        }
+
+        // Apply OBS theme colors to JUCE
+        QPalette palette = mainQWidget->palette();
+        QColor bgColor = palette.color(QPalette::Window);
+        QColor fgColor = palette.color(QPalette::WindowText);
+
+        auto bgColour = juce::Colour(bgColor.red(), bgColor.green(), bgColor.blue());
+        auto fgColour = juce::Colour(fgColor.red(), fgColor.green(), fgColor.blue());
+        atk::LookAndFeel::applyColorsToInstance(bgColour, fgColour);
+
+        DBG("getQtMainWindowHandle: Applied OBS theme colors");
+#endif
+    }
+
+    // Return the cached Qt main window handle
+    return g_qtMainWindowHandle;
+}
+
+void atk::setWindowOwnership(juce::Component* component)
+{
+    // With the invisible parent component attached to Qt, JUCE automatically
+    // handles the window hierarchy. No manual platform-specific code needed!
+    // All JUCE windows are now children of our parent component.
+    (void)component; // Unused - kept for API compatibility
+}
+
+void atk::applyColors(uint8_t bgR, uint8_t bgG, uint8_t bgB, uint8_t fgR, uint8_t fgG, uint8_t fgB)
+{
+    auto bgColour = juce::Colour(bgR, bgG, bgB);
+    auto fgColour = juce::Colour(fgR, fgG, fgB);
+    atk::LookAndFeel::applyColorsToInstance(bgColour, fgColour);
 }

@@ -28,7 +28,8 @@ struct GraphEditorPanel::PinComponent final
                 auto channel = processor.getOffsetInBusBufferForAbsoluteChannelIndex(isInput, pin.channelIndex, busIdx);
 
                 if (auto* bus = processor.getBus(isInput, busIdx))
-                    tip = bus->getName() + ": "
+                    tip = bus->getName()
+                        + ": "
                         + AudioChannelSet::getAbbreviatedChannelTypeName(
                               bus->getCurrentLayout().getTypeOfChannel(channel)
                         );
@@ -517,10 +518,10 @@ struct GraphEditorPanel::ConnectorComponent final
 
     void resizeToFit()
     {
-        Point<float> p1, p2;
+        juce::Point<float> p1, p2;
         getPoints(p1, p2);
 
-        auto newBounds = Rectangle<float>(p1, p2).expanded(4.0f).getSmallestIntegerContainer();
+        auto newBounds = juce::Rectangle<float>(p1, p2).expanded(4.0f).getSmallestIntegerContainer();
 
         if (newBounds != getBounds())
             setBounds(newBounds);

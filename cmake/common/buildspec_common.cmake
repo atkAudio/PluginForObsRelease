@@ -226,9 +226,9 @@ function(_check_dependencies)
 
 
 # atkaudio
-# Find compilerconfig.cmake under .deps folder with 'macos' in its path
+# Find compilerconfig.cmake under dependencies directory with 'macos' in its path
   file(GLOB_RECURSE _compilerconfig_candidates
-    "${CMAKE_SOURCE_DIR}/.deps/**/compilerconfig.cmake"
+    "${dependencies_dir}/**/compilerconfig.cmake"
   )
 
   if(_compilerconfig_candidates)
@@ -248,7 +248,7 @@ function(_check_dependencies)
       file(WRITE "${_file}" "${_file_content}")
     endforeach()
   else()
-    message(FATAL_ERROR "compilerconfig.cmake with 'macos' in path not found under .deps")
+    message(FATAL_ERROR "compilerconfig.cmake with 'macos' in path not found under ${dependencies_dir}")
   endif()
 
   _setup_obs_studio()

@@ -1,12 +1,12 @@
 #pragma once
 
-#include "../atkaudio.h"
+#include "../AudioModule.h"
 
 #include <string>
 
 namespace atk
 {
-class PluginHost2
+class PluginHost2 : public atkAudioModule
 {
 public:
     PluginHost2();
@@ -14,10 +14,13 @@ public:
 
     void process(float** buffer, int numChannels, int numSamples, double sampleRate);
 
-    void setVisible(bool visible);
+    // WindowModule interface
+    void getState(std::string& s) override;
+    void setState(std::string& s) override;
 
-    void getState(std::string& s);
-    void setState(std::string& s);
+protected:
+    // AudioModule interface - only need to provide the window component
+    juce::Component* getWindowComponent() override;
 
 private:
     struct Impl;

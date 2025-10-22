@@ -60,3 +60,9 @@ If you find this project useful, please consider making [a donation](https://www
 
 - Download and install [latest release](https://github.com/atkAudio/PluginForObsRelease/releases/latest)
 - Manual/portable installations e.g. on major Linux distros: extract `portable-Linux.zip` file and copy the directory `atkaudio-pluginforobs` into `~/.config/obs-studio/plugins/`.
+
+## Development
+
+For developers working on this project:
+
+- **Release Process**: Releases are automatically created when tags matching `x.y.z` or `x.y.z-beta.n` format are pushed

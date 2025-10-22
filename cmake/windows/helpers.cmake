@@ -31,6 +31,19 @@ function(set_target_properties_plugin target)
     OPTIONAL
   )
 
+  # Additional install for portable component with custom directory structure
+  if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(_portable_arch "64bit")
+  else()
+    set(_portable_arch "32bit")
+  endif()
+  
+  install(
+    TARGETS ${target}
+    RUNTIME DESTINATION obs-plugins/${_portable_arch}
+    LIBRARY DESTINATION obs-plugins/${_portable_arch}
+  )
+
   if(TARGET plugin-support)
     target_link_libraries(${target} PRIVATE plugin-support)
   endif()
@@ -97,7 +110,7 @@ endfunction()
 function(target_add_resource target resource)
   message(DEBUG "Add resource '${resource}' to target ${target} at destination '${target_destination}'...")
 
-  install(FILES "${resource}" DESTINATION "${target}/data" COMPONENT Runtime)
+  install(FILES "${resource}" DESTINATION "${target}/data")
 
   add_custom_command(
     TARGET ${target}

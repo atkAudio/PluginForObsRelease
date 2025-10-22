@@ -26,7 +26,6 @@ function(set_target_properties_plugin target)
       BUNDLE_EXTENSION plugin
       XCODE_ATTRIBUTE_PRODUCT_NAME ${target}
       XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER ${MACOS_BUNDLEID}
-      XCODE_ATTRIBUTE_CURRENT_PROJECT_VERSION ${PLUGIN_BUILD_NUMBER}
       XCODE_ATTRIBUTE_MARKETING_VERSION ${PLUGIN_VERSION}
       XCODE_ATTRIBUTE_GENERATE_INFOPLIST_FILE YES
       XCODE_ATTRIBUTE_INFOPLIST_FILE ""
@@ -67,9 +66,17 @@ function(set_target_properties_plugin target)
   install(TARGETS ${target} LIBRARY DESTINATION .)
   install(FILES "$<TARGET_BUNDLE_DIR:${target}>.dsym" CONFIGURATIONS Release DESTINATION . OPTIONAL)
 
-  configure_file(cmake/macos/resources/distribution.in "${CMAKE_CURRENT_BINARY_DIR}/distribution" @ONLY)
-  configure_file(cmake/macos/resources/create-package.cmake.in "${CMAKE_CURRENT_BINARY_DIR}/create-package.cmake" @ONLY)
-  install(SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/create-package.cmake")
+  # Additional install for portable component with custom directory structure
+  if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(_portable_arch "64bit")
+  else()
+    set(_portable_arch "32bit")
+  endif()
+  
+  install(
+    TARGETS ${target}
+    LIBRARY DESTINATION obs-plugins/${_portable_arch}
+  )
 endfunction()
 
 # target_install_resources: Helper function to add resources into bundle

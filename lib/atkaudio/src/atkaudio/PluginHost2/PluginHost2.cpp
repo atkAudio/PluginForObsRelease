@@ -13,7 +13,7 @@ struct atk::PluginHost2::Impl : public juce::Timer
 
     ~Impl()
     {
-        // Follow the same clean pattern as regular PluginHost
+        // Clean up window asynchronously on the message thread
         auto* window = this->mainHostWindow.release();
         auto lambda = [window] { delete window; };
         juce::MessageManager::callAsync(lambda);
@@ -23,22 +23,9 @@ struct atk::PluginHost2::Impl : public juce::Timer
     {
     }
 
-    void setVisible(bool visible)
+    juce::Component* getWindowComponent()
     {
-        auto doUi = [this, visible]
-        {
-            if (visible && !mainHostWindow->isOnDesktop())
-            {
-                mainHostWindow->addToDesktop();
-                mainHostWindow->toFront(true);
-            }
-            mainHostWindow->setVisible(visible);
-        };
-
-        if (juce::MessageManager::getInstance()->isThisTheMessageThread())
-            doUi();
-        else
-            juce::MessageManager::callAsync(doUi);
+        return mainHostWindow.get();
     }
 
     void getState(std::string& s)
@@ -131,11 +118,6 @@ void atk::PluginHost2::process(float** buffer, int numChannels, int numSamples, 
     pImpl->process(buffer, numChannels, numSamples, sampleRate);
 }
 
-void atk::PluginHost2::setVisible(bool visible)
-{
-    pImpl->setVisible(visible);
-}
-
 void atk::PluginHost2::getState(std::string& s)
 {
     pImpl->getState(s);
@@ -144,6 +126,11 @@ void atk::PluginHost2::getState(std::string& s)
 void atk::PluginHost2::setState(std::string& s)
 {
     pImpl->setState(s);
+}
+
+juce::Component* atk::PluginHost2::getWindowComponent()
+{
+    return pImpl->getWindowComponent();
 }
 
 atk::PluginHost2::PluginHost2()

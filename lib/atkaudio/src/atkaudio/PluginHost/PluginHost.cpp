@@ -13,7 +13,7 @@ static std::unique_ptr<StandalonePluginHolder2> createPluginHolder()
     return std::make_unique<StandalonePluginHolder2>(nullptr);
 }
 
-struct atk::PluginHost::Impl : public juce::Timer
+struct atk::PluginHost::Impl
 {
     Impl()
         : mainWindow(
@@ -24,99 +24,117 @@ struct atk::PluginHost::Impl : public juce::Timer
               )
           )
     {
-        startTimerHz(30);
     }
 
-    ~Impl() override
+    ~Impl()
     {
-        stopTimer();
+        // Release resources before destruction
+        if (isPrepared)
+        {
+            juce::ScopedLock lock(mainWindow->getPluginHolderLock());
+            auto* processor = mainWindow->getAudioProcessor();
+            juce::ScopedLock callbackLock(processor->getCallbackLock());
+            processor->releaseResources();
+        }
+
         auto* window = this->mainWindow.release();
         auto lambda = [window] { delete window; };
         juce::MessageManager::callAsync(lambda);
     }
 
-    void timerCallback() override
+    void prepareProcessor(int channels, int samples, double rate)
     {
-        if (!isPrepared.load(std::memory_order_acquire))
+        juce::ScopedLock lock(mainWindow->getPluginHolderLock());
+        auto* processor = mainWindow->getAudioProcessor();
+        juce::ScopedLock callbackLock(processor->getCallbackLock());
+
+        // Release previous configuration if needed
+        if (isPrepared)
+            processor->releaseResources();
+
+        // Configure bus layout: main bus + sidechain bus
+        auto layout = juce::AudioProcessor::BusesLayout();
+        layout.inputBuses.add(juce::AudioChannelSet::canonicalChannelSet(channels));
+        layout.outputBuses.add(juce::AudioChannelSet::canonicalChannelSet(channels));
+        layout.inputBuses.add(juce::AudioChannelSet::canonicalChannelSet(channels));
+
+        // Apply layout and prepare
+        if (processor->checkBusesLayoutSupported(layout))
         {
-            auto* processor = mainWindow->getAudioProcessor();
-            if (needsRelease)
-                processor->releaseResources();
-
-            processor->setPlayConfigDetails(numChannels, numChannels, sampleRate, numSamples);
-            processor->prepareToPlay(sampleRate, numSamples);
-            needsRelease = true;
-
-            auto layout = juce::AudioProcessor::BusesLayout();
-
-            layout.inputBuses.add(juce::AudioChannelSet::canonicalChannelSet(numChannels));
-            layout.outputBuses.add(juce::AudioChannelSet::canonicalChannelSet(numChannels));
-            layout.inputBuses.add(juce::AudioChannelSet::canonicalChannelSet(numChannels));
-
-            if (processor->checkBusesLayoutSupported(layout))
-            {
-                processor->setBusesLayout(layout);
-                processor->setRateAndBufferSizeDetails(sampleRate, numSamples);
-            }
-            isPrepared.store(true, std::memory_order_release);
+            processor->setBusesLayout(layout);
+            processor->setRateAndBufferSizeDetails(rate, samples);
+            processor->prepareToPlay(rate, samples);
+            isPrepared = true;
         }
     }
 
     void process(float** buffer, int newNumChannels, int newNumSamples, double newSampleRate)
     {
-        if (!buffer
-            || this->numChannels != newNumChannels
-            || this->numSamples < newNumSamples
-            || this->sampleRate != newSampleRate
-            || isFirstRun.load(std::memory_order_acquire))
+        if (!buffer)
+            return;
+
+        // Check if we need to reconfigure the processor
+        // Note: numSamples can vary between calls, only reallocate if we need MORE space
+        bool needsReconfiguration =
+            !isPrepared || numChannels != newNumChannels || numSamples < newNumSamples || sampleRate != newSampleRate;
+
+        if (needsReconfiguration)
         {
-            isFirstRun.store(false, std::memory_order_release);
-            this->numChannels = newNumChannels;
-            this->numSamples = newNumSamples;
-            this->sampleRate = newSampleRate;
-            isPrepared.store(false, std::memory_order_release);
+            numChannels = newNumChannels;
+            numSamples = juce::jmax(numSamples, newNumSamples); // Allocate for the largest size seen
+            sampleRate = newSampleRate;
+
+            // Schedule async preparation (can't block OBS audio thread)
+            // Note: This is different from standalone JUCE apps where audioDeviceAboutToStart
+            // is called before audio begins. In OBS plugins, we must handle dynamic changes.
+            juce::MessageManager::callAsync(
+                [this, channels = newNumChannels, samples = numSamples, rate = newSampleRate]
+                { prepareProcessor(channels, samples, rate); }
+            );
+
+            // Skip this buffer while preparing
             return;
         }
 
-        if (!isPrepared.load(std::memory_order_acquire))
+        // Skip processing if not yet prepared
+        if (!isPrepared)
             return;
 
+        // Try to acquire lock without blocking (real-time safe)
         if (!mainWindow->getPluginHolderLock().tryEnter())
             return;
 
         auto* processor = mainWindow->getAudioProcessor();
 
-        audioBuffer.setDataToReferTo(buffer, newNumChannels * 2, newNumSamples);
-        processor->getCallbackLock().enter();
-        processor->processBlock(audioBuffer, midiBuffer);
-        processor->getCallbackLock().exit();
+        // Try to acquire callback lock (real-time safe)
+        if (!processor->getCallbackLock().tryEnter())
+        {
+            mainWindow->getPluginHolderLock().exit();
+            return;
+        }
 
+        // Process audio
+        audioBuffer.setDataToReferTo(buffer, newNumChannels * 2, newNumSamples);
+
+        // Clear MIDI buffer (we don't provide MIDI input, so ensure it's empty)
+        midiBuffer.clear();
+
+        if (!processor->isSuspended())
+            processor->processBlock(audioBuffer, midiBuffer);
+
+        processor->getCallbackLock().exit();
         mainWindow->getPluginHolderLock().exit();
     }
 
-    void setVisible(bool visible)
+    juce::Component* getWindowComponent()
     {
-        auto doUi = [this, visible]
-        {
-            if (visible && !mainWindow->isOnDesktop())
-            {
-                mainWindow->addToDesktop();
-                mainWindow->toFront(true);
-            }
-            mainWindow->setVisible(visible);
-            if (visible && mainWindow->isMinimised())
-                mainWindow->setMinimised(false);
-        };
-
-        if (juce::MessageManager::getInstance()->isThisTheMessageThread())
-            doUi();
-        else
-            juce::MessageManager::callAsync(doUi);
+        return mainWindow.get();
     }
 
     // some plugins dont export state if audio is not playing
     void getState(std::string& s)
     {
+        juce::ScopedLock lock(mainWindow->getPluginHolderLock());
         auto* processor = mainWindow->getAudioProcessor();
         juce::MemoryBlock state;
         processor->getStateInformation(state);
@@ -129,10 +147,18 @@ struct atk::PluginHost::Impl : public juce::Timer
     {
         if (s.empty())
             return;
-        juce::ScopedLock lock(mainWindow->getPluginHolderLock());
-        auto* processor = mainWindow->getAudioProcessor();
-        juce::MemoryBlock stateData(s.data(), s.size());
-        processor->setStateInformation(stateData.getData(), (int)stateData.getSize());
+
+        // Defer state restoration to ensure plugin list and formats are fully initialized
+        juce::MessageManager::callAsync(
+            [this, stateString = s]() mutable
+            {
+                juce::ScopedLock lock(mainWindow->getPluginHolderLock());
+                auto* processor = mainWindow->getAudioProcessor();
+                juce::ScopedLock callbackLock(processor->getCallbackLock());
+                juce::MemoryBlock stateData(stateString.data(), stateString.size());
+                processor->setStateInformation(stateData.getData(), (int)stateData.getSize());
+            }
+        );
     }
 
 private:
@@ -141,23 +167,16 @@ private:
     juce::AudioBuffer<float> audioBuffer;
     juce::MidiBuffer midiBuffer;
 
-    int numChannels = 2;
-    int numSamples = 256;
-    double sampleRate = 48000.0;
+    int numChannels = 0;
+    int numSamples = 0;
+    double sampleRate = 0.0;
 
-    std::atomic_bool isPrepared{false};
-    std::atomic_bool isFirstRun{true};
-    bool needsRelease = false;
+    bool isPrepared = false;
 };
 
 void atk::PluginHost::process(float** buffer, int numChannels, int numSamples, double sampleRate)
 {
     pImpl->process(buffer, numChannels, numSamples, sampleRate);
-}
-
-void atk::PluginHost::setVisible(bool visible)
-{
-    pImpl->setVisible(visible);
 }
 
 void atk::PluginHost::getState(std::string& s)
@@ -168,6 +187,11 @@ void atk::PluginHost::getState(std::string& s)
 void atk::PluginHost::setState(std::string& s)
 {
     pImpl->setState(s);
+}
+
+juce::Component* atk::PluginHost::getWindowComponent()
+{
+    return pImpl->getWindowComponent();
 }
 
 atk::PluginHost::PluginHost()

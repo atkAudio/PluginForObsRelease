@@ -1,12 +1,6 @@
 #pragma once
-#include <atkaudio/atkaudio.h>
-
-#if defined(JUCE_WINDOWS) && defined(JUCE_DEBUG)
-#define NO_MESSAGE_PUMP
-#endif
-#ifndef NO_MESSAGE_PUMP
-
 #include <QTimer>
+#include <atkaudio/atkaudio.h>
 
 // parent handles lifetime
 
@@ -28,4 +22,3 @@ private:
     std::atomic_bool needsToStop{false};
     QTimer* timer;
 };
-#endif

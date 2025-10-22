@@ -27,5 +27,10 @@
 # Exclude macOS legacy resource forks
 .DS_Store
 
-# Exclude CMake build number cache
-/cmake/.CMakeBuildNumber
+
+
+# Exclude generated packages
+/packages
+
+# Exclude dependency cache (now in build directories)
+/.deps

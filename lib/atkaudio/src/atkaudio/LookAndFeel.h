@@ -11,39 +11,92 @@ public:
     LookAndFeel()
     {
         juce::LookAndFeel::setDefaultLookAndFeel(this);
+        instance = this;
 
-        auto bgColour = findColour(juce::ResizableWindow::backgroundColourId);
-        // bgColour = juce::Colours::black.withBrightness(0.1f);
-        bgColour = juce::Colour::fromString("ff272a33");
-        auto highlightColour = juce::Colour::fromString("ff464b69");
-        auto r = bgColour.getRed();
-        auto g = bgColour.getGreen();
-        auto b = bgColour.getBlue();
-        auto inverseColour = juce::Colour(255 - r, 255 - g, 255 - b);
-        inverseColour = inverseColour.withBrightness(1.0f - bgColour.getBrightness());
+        // Apply saved colors if they exist, otherwise use defaults
+        if (customColorsSet)
+            setColors(savedBackgroundColor, savedTextColor);
+        else
+            applyDefaultColors();
+    }
 
-        this->setColour(juce::ResizableWindow::backgroundColourId, bgColour);
+    /**
+     * Apply custom colors to the look and feel
+     * @param background Background color
+     * @param text Text/foreground color
+     */
+    void setColors(juce::Colour background, juce::Colour text)
+    {
+        // Save colors globally for future instances
+        savedBackgroundColor = background;
+        savedTextColor = text;
+        customColorsSet = true;
+
+        auto highlightColour = background.brighter(0.3f);
+
+        this->setColour(juce::ResizableWindow::backgroundColourId, background);
 
         auto scheme = this->getCurrentColourScheme();
-        scheme.setUIColour(juce::LookAndFeel_V4::ColourScheme::widgetBackground, bgColour);
-        scheme.setUIColour(juce::LookAndFeel_V4::ColourScheme::windowBackground, bgColour);
-        scheme.setUIColour(juce::LookAndFeel_V4::ColourScheme::menuBackground, bgColour);
-        scheme.setUIColour(juce::LookAndFeel_V4::ColourScheme::outline, inverseColour);
-        scheme.setUIColour(juce::LookAndFeel_V4::ColourScheme::defaultText, inverseColour);
-        scheme.setUIColour(juce::LookAndFeel_V4::ColourScheme::highlightedText, inverseColour);
-        scheme.setUIColour(juce::LookAndFeel_V4::ColourScheme::menuText, inverseColour);
-
-        // scheme.setUIColour(juce::LookAndFeel_V4::ColourScheme::defaultFill, highlightColour);
+        scheme.setUIColour(juce::LookAndFeel_V4::ColourScheme::widgetBackground, background);
+        scheme.setUIColour(juce::LookAndFeel_V4::ColourScheme::windowBackground, background);
+        scheme.setUIColour(juce::LookAndFeel_V4::ColourScheme::menuBackground, background);
+        scheme.setUIColour(juce::LookAndFeel_V4::ColourScheme::outline, text);
+        scheme.setUIColour(juce::LookAndFeel_V4::ColourScheme::defaultText, text);
+        scheme.setUIColour(juce::LookAndFeel_V4::ColourScheme::highlightedText, text);
+        scheme.setUIColour(juce::LookAndFeel_V4::ColourScheme::menuText, text);
         scheme.setUIColour(juce::LookAndFeel_V4::ColourScheme::highlightedFill, highlightColour);
         this->setColourScheme(scheme);
+
+        // Notify all existing components to refresh with new colors
+        auto& desktop = juce::Desktop::getInstance();
+        for (int i = 0; i < desktop.getNumComponents(); ++i)
+            if (auto* comp = desktop.getComponent(i))
+                comp->sendLookAndFeelChange();
+    }
+
+    /**
+     * Static method to apply colors to the current instance
+     */
+    static void applyColorsToInstance(juce::Colour background, juce::Colour text)
+    {
+        if (instance != nullptr)
+            instance->setColors(background, text);
+        else
+        {
+            // Save colors for when instance is created
+            savedBackgroundColor = background;
+            savedTextColor = text;
+            customColorsSet = true;
+        }
     }
 
     ~LookAndFeel() override
-
     {
+        if (instance == this)
+            instance = nullptr;
         juce::LookAndFeel::setDefaultLookAndFeel(nullptr);
     }
 
+private:
+    // Static members for tracking instance and saved colors
+    static inline LookAndFeel* instance = nullptr;
+    static inline bool customColorsSet = false;
+    static inline juce::Colour savedBackgroundColor;
+    static inline juce::Colour savedTextColor;
+
+    void applyDefaultColors()
+    {
+        auto bgColour = juce::Colour::fromString("ff272a33");
+        auto r = bgColour.getRed();
+        auto g = bgColour.getGreen();
+        auto b = bgColour.getBlue();
+        auto textColour = juce::Colour(255 - r, 255 - g, 255 - b);
+        textColour = textColour.withBrightness(1.0f - bgColour.getBrightness());
+
+        setColors(bgColour, textColour);
+    }
+
+public:
     Component* getParentComponentForMenuOptions(const PopupMenu::Options& options) override
     {
         if (auto* target = options.getTopLevelTargetComponent())
@@ -67,7 +120,7 @@ public:
         auto outline = slider.findColour(Slider::rotarySliderOutlineColourId);
         auto fill = slider.findColour(Slider::rotarySliderFillColourId);
 
-        auto bounds = Rectangle<int>(x, y, width, height).toFloat().reduced(10);
+        auto bounds = juce::Rectangle<int>(x, y, width, height).toFloat().reduced(10);
 
         auto radius = jmin(bounds.getWidth(), bounds.getHeight()) / 2.0f;
         auto toAngle = rotaryStartAngle + sliderPos * (rotaryEndAngle - rotaryStartAngle);
@@ -114,7 +167,7 @@ public:
         );
 
         g.setColour(slider.findColour(Slider::thumbColourId));
-        g.fillEllipse(Rectangle<float>(thumbWidth, thumbWidth).withCentre(thumbPoint));
+        g.fillEllipse(juce::Rectangle<float>(thumbWidth, thumbWidth).withCentre(thumbPoint));
     }
 
     void drawMenuBarItem(

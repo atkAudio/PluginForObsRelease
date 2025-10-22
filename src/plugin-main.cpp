@@ -46,11 +46,9 @@ void obs_log(int log_level, const char* format, ...);
 
 #include "MessagePump.h"
 
-#ifndef NO_MESSAGE_PUMP
 #include <obs-frontend-api.h>
-MessagePump* messagePump = nullptr;
 
-#endif
+MessagePump* messagePump = nullptr;
 
 bool obs_module_load(void)
 {
@@ -71,10 +69,9 @@ bool obs_module_load(void)
     obs_log(LOG_INFO, "plugin loaded successfully (version %s)", plugin_version);
 
     atk::create();
-#ifndef NO_MESSAGE_PUMP
+
     auto* mainWindow = (QObject*)obs_frontend_get_main_window();
-    messagePump = new MessagePump(mainWindow); // parent handles lifetime
-#endif
+    messagePump = new MessagePump(mainWindow);
     atk::update();
 
     // obs_register_source(&autoreset_filter);
@@ -90,21 +87,23 @@ bool obs_module_load(void)
 
 void obs_module_unload(void)
 {
-#ifndef NO_MESSAGE_PUMP
+    obs_log(LOG_INFO, "Plugin unload started");
+
     if (messagePump)
     {
         messagePump->stopPump();
         // Give some time for the message pump to stop cleanly
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
-#endif
+
+    // This will clean up all JUCE singletons
     atk::destroy();
-#ifndef NO_MESSAGE_PUMP
+
     // Clean up message pump after JUCE shutdown
     if (messagePump)
         messagePump = nullptr; // Parent (OBS main window) handles deletion
-#endif
-    obs_log(LOG_INFO, "plugin unloaded");
+
+    obs_log(LOG_INFO, "Plugin unloaded successfully");
 }
 
 void obs_log(int log_level, const char* format, ...)

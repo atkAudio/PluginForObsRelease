@@ -210,7 +210,15 @@ public:
         if (inner != nullptr)
         {
             xml.setAttribute(editorStyleTag, (int)editorStyle);
-            xml.addChildElement(inner->getPluginDescription().createXml().release());
+
+            // Get plugin description and fix VST3 path on Linux
+            auto pd = inner->getPluginDescription();
+
+            // Ensure we always save the .vst3 bundle path, not the internal .so path
+            if (pd.pluginFormatName == "VST3" && pd.fileOrIdentifier.contains("/Contents/"))
+                pd.fileOrIdentifier = pd.fileOrIdentifier.upToLastOccurrenceOf(".vst3", true, false);
+
+            xml.addChildElement(pd.createXml().release());
             xml.addChildElement(
                 [this]
                 {
@@ -238,6 +246,10 @@ public:
         {
             PluginDescription pd;
             pd.loadFromXml(*pluginNode);
+
+            // Fix VST3 path on Linux: JUCE expects the .vst3 bundle path, not the .so inside
+            if (pd.pluginFormatName == "VST3" && pd.fileOrIdentifier.contains("/Contents/"))
+                pd.fileOrIdentifier = pd.fileOrIdentifier.upToLastOccurrenceOf(".vst3", true, false);
 
             MemoryBlock innerState;
             innerState.fromBase64Encoding(xml->getChildElementAllSubText(innerStateTag, {}));

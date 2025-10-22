@@ -29,6 +29,7 @@ target_link_libraries(${PROJECT_NAME}
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
         # juce::juce_recommended_warning_flags
+        OBS::obs-frontend-api
        )
 
 target_compile_definitions(
@@ -68,7 +69,19 @@ if(MSVC)
         PRIVATE 
         /wd4244
         /wd4267
+        /wd4390
         /wd5105
+        )
+endif()
+
+if(NOT WIN32)
+    target_compile_options(
+        ${PROJECT_NAME} 
+        PRIVATE 
+        -Wno-unused-parameter
+        -Wno-sign-compare
+        -Wno-unused-variable
+        -Wno-newline-eof
         )
 endif()
 
@@ -118,3 +131,8 @@ if(BUILD_WITH_ASIO)
     target_compile_definitions(${PROJECT_NAME} PRIVATE JUCE_ASIO=1)
 endif()
 
+target_compile_definitions(${PROJECT_NAME} PRIVATE JUCE_ASIO=1)
+
+file(COPY_FILE ${CMAKE_SOURCE_DIR}/LICENSE-AGPL3 ${CMAKE_BINARY_DIR}/INSTALLER-LICENSE)
+
+file(COPY_FILE ${CMAKE_CURRENT_SOURCE_DIR}/LICENSE-GPL3 ${CMAKE_SOURCE_DIR}/LICENSE-GPL3)
