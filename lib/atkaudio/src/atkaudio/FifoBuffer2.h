@@ -2,10 +2,10 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
-constexpr auto ATK_CORRECTION_RATE = 1 + 1000.0f / 1000000; // 1000 ppm
-constexpr auto ATK_SMOOTHING_TIME = 0.1f;                   //  seconds
+constexpr double ATK_CORRECTION_RATE = 1.0 + 1000.0 / 1000000.0;
+constexpr double ATK_SMOOTHING_TIME = 0.1;
 
-class FifoBuffer2 : public juce::Timer
+class FifoBuffer2
 {
 public:
     FifoBuffer2()
@@ -14,16 +14,19 @@ public:
         , buffer(minNumChannels, minBufferSize + 1)
         , fifo(minBufferSize + 1)
     {
-        startTimer(10);
+        isPrepared.store(true, std::memory_order_release);
     }
 
-    void timerCallback() override
+    void ensurePrepared()
     {
         if (isPrepared.load(std::memory_order_acquire))
             return;
 
         juce::ScopedLock lock1(writeLock);
         juce::ScopedLock lock2(readLock);
+
+        if (isPrepared.load(std::memory_order_acquire))
+            return;
 
         fifo.reset();
         auto fifoTotalSize = fifo.getTotalSize();
@@ -41,19 +44,22 @@ public:
 
     int write(const float* const* src, int numChannels, int numSamples)
     {
-        juce::ScopedTryLock lock(writeLock);
-        if (!lock.isLocked())
-            return 0;
-
         if (minBufferSize < numSamples || minNumChannels < numChannels)
         {
             isPrepared.store(false, std::memory_order_release);
-
             minBufferSize = std::max(minBufferSize, numSamples);
             minNumChannels = std::max(minNumChannels, numChannels);
+
+            juce::MessageManager::callAsync([this]() { ensurePrepared(); });
+
+            return 0;
         }
 
         if (!isPrepared.load(std::memory_order_acquire))
+            return 0;
+
+        juce::ScopedTryLock lock(writeLock);
+        if (!lock.isLocked())
             return 0;
 
         numChannels = std::min(numChannels, buffer.getNumChannels());
@@ -64,18 +70,16 @@ public:
 
         if (size1 > 0)
         {
-            for (int ch = 0; ch < numChannels && ch < buffer.getNumChannels(); ++ch)
+            for (int ch = 0; ch < numChannels; ++ch)
                 buffer.copyFrom(ch, start1, src[ch], size1);
             written += size1;
         }
         if (size2 > 0)
         {
-            for (int ch = 0; ch < numChannels && ch < buffer.getNumChannels(); ++ch)
+            for (int ch = 0; ch < numChannels; ++ch)
                 buffer.copyFrom(ch, start2, src[ch] + size1, size2);
             written += size2;
         }
-
-        // jassert(written == numSamples);
 
         fifo.finishedWrite(written);
         return written;
@@ -83,19 +87,22 @@ public:
 
     int read(float* const* dest, int numChannels, int numSamples, bool advanceRead = true, bool addToBuffer = false)
     {
-        juce::ScopedTryLock lock(readLock);
-        if (!lock.isLocked())
-            return 0;
-
         if (minBufferSize < numSamples || minNumChannels < numChannels)
         {
             isPrepared.store(false, std::memory_order_release);
-
             minBufferSize = std::max(minBufferSize, numSamples);
             minNumChannels = std::max(minNumChannels, numChannels);
+
+            juce::MessageManager::callAsync([this]() { ensurePrepared(); });
+
+            return 0;
         }
 
         if (!isPrepared.load(std::memory_order_acquire))
+            return 0;
+
+        juce::ScopedTryLock lock(readLock);
+        if (!lock.isLocked())
             return 0;
 
         numChannels = std::min(numChannels, buffer.getNumChannels());
@@ -108,14 +115,14 @@ public:
         {
             if (addToBuffer)
             {
-                for (int ch = 0; ch < numChannels && ch < buffer.getNumChannels(); ++ch)
+                for (int ch = 0; ch < numChannels; ++ch)
                     for (int i = 0; i < size1; ++i)
-                        dest[ch][readCount + i] += buffer.getReadPointer(ch, start1)[i];
+                        dest[ch][i] += buffer.getReadPointer(ch, start1)[i];
             }
             else
             {
-                for (int ch = 0; ch < numChannels && ch < buffer.getNumChannels(); ++ch)
-                    std::memcpy(dest[ch], buffer.getReadPointer(ch, start1), sizeof(float) * size1);
+                for (int ch = 0; ch < numChannels; ++ch)
+                    juce::FloatVectorOperations::copy(dest[ch], buffer.getReadPointer(ch, start1), size1);
             }
 
             readCount += size1;
@@ -124,14 +131,14 @@ public:
         {
             if (addToBuffer)
             {
-                for (int ch = 0; ch < numChannels && ch < buffer.getNumChannels(); ++ch)
+                for (int ch = 0; ch < numChannels; ++ch)
                     for (int i = 0; i < size2; ++i)
                         dest[ch][readCount + i] += buffer.getReadPointer(ch, start2)[i];
             }
             else
             {
-                for (int ch = 0; ch < numChannels && ch < buffer.getNumChannels(); ++ch)
-                    std::memcpy(dest[ch] + readCount, buffer.getReadPointer(ch, start2), sizeof(float) * size2);
+                for (int ch = 0; ch < numChannels; ++ch)
+                    juce::FloatVectorOperations::copy(dest[ch] + readCount, buffer.getReadPointer(ch, start2), size2);
             }
 
             readCount += size2;
@@ -145,24 +152,7 @@ public:
 
     void advanceRead(int numSamples)
     {
-        int start1, size1, start2, size2;
-        int readCount = 0;
-        fifo.prepareToRead(numSamples, start1, size1, start2, size2);
-        if (size1 > 0)
-        {
-            for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
-                std::memset(buffer.getWritePointer(ch, start1), 0, sizeof(float) * size1);
-
-            readCount += size1;
-        }
-        if (size2 > 0)
-        {
-            for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
-                std::memset(buffer.getWritePointer(ch, start2), 0, sizeof(float) * size2);
-
-            readCount += size2;
-        }
-        fifo.finishedRead(readCount);
+        fifo.finishedRead(numSamples);
     }
 
     auto& getBuffer()
@@ -184,7 +174,7 @@ private:
 
     void setSize(int numChannels, int numSamples)
     {
-        numSamples = numSamples > 16384 ? numSamples : 16384; // minimum size
+        numSamples = numSamples > 16384 ? numSamples : 16384;
         if (buffer.getNumSamples() < numSamples + 1)
             buffer.setSize(numChannels, numSamples + 1, false, false, true);
 
@@ -205,7 +195,8 @@ private:
     std::atomic_bool isPrepared{false};
 };
 
-class SyncBuffer : public juce::Timer
+// SyncBuffer: Sample rate converting buffer with dynamic rate correction
+class SyncBuffer
 {
 public:
     SyncBuffer()
@@ -213,15 +204,6 @@ public:
         , readerBufferSize(-1)
         , writerBufferSize(-1)
     {
-        startTimer(10);
-    }
-
-    void timerCallback() override
-    {
-        if (isPrepared.load(std::memory_order_acquire))
-            return;
-
-        prepare();
     }
 
     void clearPrepared()
@@ -253,47 +235,79 @@ public:
 
         numChannels = std::max(readerNumChannels, writerNumChannels);
 
-        interpolators.resize(numChannels);
+        interpolators.resize(writerNumChannels);
         for (auto& interp : interpolators)
             interp.reset();
 
         auto ratio = writerSampleRate / readerSampleRate;
 
-        minBufferSize = 2 * readerBufferSize;
-        maxBufferSize = std::max(
-            3 * readerBufferSize,
-            (int)std::ceil((2 * writerBufferSize) / ratio) // reader domain
-        );
+        minBufferSize = static_cast<int>(std::ceil(1.0 * readerBufferSize * ratio));
 
-        tempBuffer.setSize(numChannels, 2 * std::max(readerBufferSize, writerBufferSize), false, false, true);
+        int maxBasedOnReader = static_cast<int>(std::ceil(3.0 * readerBufferSize * ratio));
+        int maxBasedOnWriter = static_cast<int>(std::ceil(2.0 * writerBufferSize));
+        maxBufferSize = std::max(maxBasedOnReader, maxBasedOnWriter);
 
-        rateSmoothing.reset(readerSampleRate * ATK_SMOOTHING_TIME);
+        int maxTempBufferNeeded = static_cast<int>(maxBufferSize);
+        tempBuffer.setSize(numChannels, maxTempBufferNeeded, false, false, true);
+
+        rateSmoothing.reset(static_cast<int>(readerSampleRate * ATK_SMOOTHING_TIME));
         rateSmoothing.setCurrentAndTargetValue(1.0);
 
         tempBuffer.clear();
         fifoBuffer.getFifo().reset();
-        fifoBuffer.write(tempBuffer.getArrayOfWritePointers(), numChannels, minBufferSize);
+
+        int preFillSize = minBufferSize;
+        fifoBuffer.write(tempBuffer.getArrayOfWritePointers(), numChannels, preFillSize);
 
         isPrepared.store(true, std::memory_order_release);
     }
 
     int write(const float* const* src, int numChannels, int numSamples, double sampleRate)
     {
-        juce::ScopedTryLock lock(writeLock);
-        if (!lock.isLocked())
-            return 0;
-
         auto newMinBufferSize = numSamples;
         if (writerNumChannels < numChannels || writerBufferSize < newMinBufferSize || writerSampleRate != sampleRate)
         {
-            isPrepared.store(false, std::memory_order_release);
+            bool expected = false;
+            if (isPreparing.compare_exchange_strong(expected, true, std::memory_order_acquire))
+            {
+                isPrepared.store(false, std::memory_order_release);
 
-            writerNumChannels = numChannels;
-            writerBufferSize = newMinBufferSize;
-            writerSampleRate = sampleRate;
+                writerNumChannels = numChannels;
+                writerBufferSize = newMinBufferSize;
+                writerSampleRate = sampleRate;
+
+                prepare();
+
+                isPreparing.store(false, std::memory_order_release);
+
+                if (!isPrepared.load(std::memory_order_acquire))
+                    return 0;
+            }
+            else
+            {
+                return 0;
+            }
         }
 
         if (!isPrepared.load(std::memory_order_acquire))
+        {
+            bool expected = false;
+            if (isPreparing.compare_exchange_strong(expected, true, std::memory_order_acquire))
+            {
+                prepare();
+                isPreparing.store(false, std::memory_order_release);
+
+                if (!isPrepared.load(std::memory_order_acquire))
+                    return 0;
+            }
+            else
+            {
+                return 0;
+            }
+        }
+
+        juce::ScopedTryLock lock(writeLock);
+        if (!lock.isLocked())
             return 0;
 
         auto written = fifoBuffer.write(src, numChannels, numSamples);
@@ -303,122 +317,227 @@ public:
 
     bool read(float* const* dest, int numChannels, int numSamples, double sampleRate, bool addToBuffer = false)
     {
+        if (readerNumChannels < numChannels || readerSampleRate != sampleRate || readerBufferSize < numSamples)
+        {
+            bool expected = false;
+            if (isPreparing.compare_exchange_strong(expected, true, std::memory_order_acquire))
+            {
+                isPrepared.store(false, std::memory_order_release);
+
+                readerBufferSize = numSamples;
+                readerNumChannels = numChannels;
+                readerSampleRate = sampleRate;
+
+                prepare();
+
+                isPreparing.store(false, std::memory_order_release);
+
+                if (!isPrepared.load(std::memory_order_acquire))
+                    return false;
+            }
+            else
+            {
+                return false;
+            }
+        }
+
+        if (!isPrepared.load(std::memory_order_acquire))
+        {
+            bool expected = false;
+            if (isPreparing.compare_exchange_strong(expected, true, std::memory_order_acquire))
+            {
+                prepare();
+                isPreparing.store(false, std::memory_order_release);
+
+                if (!isPrepared.load(std::memory_order_acquire))
+                    return false;
+            }
+            else
+            {
+                return false;
+            }
+        }
+
         juce::ScopedTryLock lock(readLock);
         if (!lock.isLocked())
             return false;
 
-        if (readerNumChannels < numChannels || readerSampleRate != sampleRate || readerBufferSize < numSamples)
-        {
-            isPrepared.store(false, std::memory_order_release);
-
-            readerBufferSize = numSamples;
-            readerNumChannels = numChannels;
-            readerSampleRate = sampleRate;
-        }
-
-        if (!isPrepared.load(std::memory_order_acquire))
-            return 0;
-
         auto ratio = writerSampleRate / readerSampleRate;
 
-        int maxAvailable = fifoBuffer.getFifo().getNumReady();
-        maxAvailable = std::floor(maxAvailable / ratio); // reader domain samples
+        int samplesInFifo = fifoBuffer.getFifo().getNumReady();
+
+        int targetBufferSize = minBufferSize;
 
         auto factor = 1.0;
-        if (maxAvailable < minBufferSize)
-            factor = 1 / ATK_CORRECTION_RATE;
-        else if (maxAvailable > maxBufferSize)
+        static bool wasUnderflow = false;
+        static bool wasOverflow = false;
+
+        if (samplesInFifo < minBufferSize)
+        {
+            double availableRatio = static_cast<double>(samplesInFifo) / static_cast<double>(numSamples * ratio);
+            factor = std::max(0.5, availableRatio);
+            wasUnderflow = true;
+        }
+        else if (samplesInFifo > maxBufferSize)
+        {
             factor = ATK_CORRECTION_RATE;
+            wasOverflow = true;
+        }
+        else
+        {
+            if (wasUnderflow)
+            {
+                DBG("SyncBuffer: Recovered from UNDERFLOW at "
+                    << juce::Time::getCurrentTime().toString(true, true, true, true)
+                    << ", samples in FIFO: "
+                    << samplesInFifo);
+                wasUnderflow = false;
+            }
+            if (wasOverflow)
+            {
+                DBG("SyncBuffer: Recovered from OVERFLOW at "
+                    << juce::Time::getCurrentTime().toString(true, true, true, true)
+                    << ", samples in FIFO: "
+                    << samplesInFifo);
+                wasOverflow = false;
+            }
+        }
 
         auto initialRate = rateSmoothing.getCurrentValue();
+
+        auto savedSmoothing = rateSmoothing;
 
         int writerSamplesNeeded = 0;
         double writerSamplesNeededTemp = 0;
         rateSmoothing.setTargetValue(factor);
         for (int i = 0; i < numSamples; ++i)
-            writerSamplesNeededTemp += 1 * rateSmoothing.getNextValue();
+            writerSamplesNeededTemp += ratio * rateSmoothing.getNextValue();
 
-        writerSamplesNeeded = (int)std::ceil(writerSamplesNeededTemp);
+        writerSamplesNeeded = static_cast<int>(std::ceil(writerSamplesNeededTemp));
+
+        rateSmoothing = savedSmoothing;
 
         if (!addToBuffer)
             for (int ch = 0; ch < numChannels; ++ch)
                 std::memset(dest[ch], 0, sizeof(float) * numSamples);
 
+        if (tempBuffer.getNumSamples() < writerSamplesNeeded)
+            tempBuffer.setSize(writerNumChannels, writerSamplesNeeded, true, false, true);
+
         tempBuffer.clear();
 
-        tempBuffer.setSize(writerNumChannels, writerSamplesNeeded, false, false, true);
         auto writerSamples =
             fifoBuffer.read(tempBuffer.getArrayOfWritePointers(), writerNumChannels, writerSamplesNeeded, false);
 
         if (writerSamples < writerSamplesNeeded)
         {
-#ifdef JUCE_DEBUG
-            DBG(juce::Time::getCurrentTime().toString(true, true)
-                << " got "
+            DBG("SyncBuffer: UNDERRUN - got "
                 << writerSamples
-                << " needed "
+                << " samples, needed "
                 << writerSamplesNeeded
-                << " ratio "
+                << ", ratio "
                 << ratio
-                << " factor "
+                << ", factor "
                 << factor);
-#endif
             return false;
         }
 
-        if (!addToBuffer)
-            for (int ch = 0; ch < numChannels; ++ch)
-                std::memset(dest[ch], 0, sizeof(float) * numSamples);
-
-        auto totalSamplesConsumed = 0;
+        rateSmoothing.setCurrentAndTargetValue(initialRate);
+        rateSmoothing.setTargetValue(factor);
 
         auto finalRatio = 0.0;
-        for (int i = 0; i < writerNumChannels; i++)
+        int maxSamplesConsumed = 0;
+
+        auto channelGain = 1.0f;
+        if (writerNumChannels > numChannels)
+            channelGain = static_cast<float>(std::sqrt(static_cast<double>(numChannels) / writerNumChannels));
+
+        for (int destCh = 0; destCh < numChannels; ++destCh)
         {
-            totalSamplesConsumed = 0;
+            int totalSamplesConsumed = 0;
             int samplesAvailable = writerSamples;
 
-            auto ch = i % numChannels;
+            int srcCh = destCh % writerNumChannels;
 
             rateSmoothing.setCurrentAndTargetValue(initialRate);
             rateSmoothing.setTargetValue(factor);
 
-            auto outputGain =
-                1.0f * numChannels / writerNumChannels < 1.0f ? 1.0f * numChannels / writerNumChannels : 1.0f;
             for (int j = 0; j < numSamples; ++j)
             {
                 auto smoothingValue = rateSmoothing.getNextValue();
                 finalRatio = ratio * smoothingValue;
 
-                int samplesConsumed = interpolators[i].processAdding(
+                int samplesConsumed = interpolators[srcCh].process(
                     finalRatio,
-                    tempBuffer.getReadPointer(i) + totalSamplesConsumed,
-                    dest[ch] + j,
+                    tempBuffer.getReadPointer(srcCh) + totalSamplesConsumed,
+                    dest[destCh] + j,
                     1,
                     samplesAvailable,
-                    0,
-                    outputGain
+                    0
                 );
+
+                dest[destCh][j] *= channelGain;
+
                 samplesAvailable -= samplesConsumed;
                 totalSamplesConsumed += samplesConsumed;
             }
+
+            maxSamplesConsumed = std::max(maxSamplesConsumed, totalSamplesConsumed);
         }
 
-#ifdef JUCE_DEBUG
+        if (writerNumChannels > numChannels)
+        {
+            for (int i = numChannels; i < writerNumChannels; ++i)
+            {
+                int totalSamplesConsumed = 0;
+                int samplesAvailable = writerSamples;
+
+                auto destCh = i % numChannels;
+
+                rateSmoothing.setCurrentAndTargetValue(initialRate);
+                rateSmoothing.setTargetValue(factor);
+
+                for (int j = 0; j < numSamples; ++j)
+                {
+                    auto smoothingValue = rateSmoothing.getNextValue();
+                    finalRatio = ratio * smoothingValue;
+
+                    float sample = 0.0f;
+                    int samplesConsumed = interpolators[i].process(
+                        finalRatio,
+                        tempBuffer.getReadPointer(i) + totalSamplesConsumed,
+                        &sample,
+                        1,
+                        samplesAvailable,
+                        0
+                    );
+
+                    dest[destCh][j] += sample * channelGain;
+
+                    samplesAvailable -= samplesConsumed;
+                    totalSamplesConsumed += samplesConsumed;
+                }
+
+                maxSamplesConsumed = std::max(maxSamplesConsumed, totalSamplesConsumed);
+            }
+        }
+
         if (!juce::approximatelyEqual(finalRatio, prevFinalRatio)
-            && juce::approximatelyEqual(finalRatio, (double)(writerSampleRate / readerSampleRate)))
-            DBG("time: "
+            && juce::approximatelyEqual(finalRatio, writerSampleRate / readerSampleRate))
+            DBG("SyncBuffer: Rate stabilized at "
                 << juce::Time::getCurrentTime().toString(true, true)
-                << juce::String(" final ratio ") + juce::String(finalRatio));
-#endif
+                << ", final ratio: "
+                << finalRatio);
+
         prevFinalRatio = finalRatio;
-        fifoBuffer.advanceRead(totalSamplesConsumed);
+        fifoBuffer.advanceRead(maxSamplesConsumed);
 
         return true;
     }
 
 private:
     std::atomic_bool isPrepared{false};
+    std::atomic_bool isPreparing{false};
     int numChannels{0};
     int bufferSize{0};
 

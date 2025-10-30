@@ -17,6 +17,8 @@
 !README.md
 !LICENSE*
 !*.cmake
+!cross-compile.sh
+!linux-dependencies.sh
 
 !/lib
 !.vscode

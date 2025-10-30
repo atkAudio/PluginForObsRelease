@@ -34,7 +34,6 @@ OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 const char* plugin_version = PLUGIN_VERSION;
 const char* plugin_name = PLUGIN_NAME;
 
-extern struct obs_source_info autoreset_filter;
 extern struct obs_source_info delay_filter;
 extern struct obs_source_info device_io_filter;
 extern struct obs_source_info pluginhost_filter;
@@ -44,11 +43,7 @@ extern struct obs_source_info ph2helper_source_info;
 
 void obs_log(int log_level, const char* format, ...);
 
-#include "MessagePump.h"
-
 #include <obs-frontend-api.h>
-
-MessagePump* messagePump = nullptr;
 
 bool obs_module_load(void)
 {
@@ -71,10 +66,10 @@ bool obs_module_load(void)
     atk::create();
 
     auto* mainWindow = (QObject*)obs_frontend_get_main_window();
-    messagePump = new MessagePump(mainWindow);
+    atk::startMessagePump(mainWindow);
+
     atk::update();
 
-    // obs_register_source(&autoreset_filter);
     obs_register_source(&delay_filter);
     obs_register_source(&device_io_filter);
     obs_register_source(&pluginhost2_filter);
@@ -89,19 +84,7 @@ void obs_module_unload(void)
 {
     obs_log(LOG_INFO, "Plugin unload started");
 
-    if (messagePump)
-    {
-        messagePump->stopPump();
-        // Give some time for the message pump to stop cleanly
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-
-    // This will clean up all JUCE singletons
     atk::destroy();
-
-    // Clean up message pump after JUCE shutdown
-    if (messagePump)
-        messagePump = nullptr; // Parent (OBS main window) handles deletion
 
     obs_log(LOG_INFO, "Plugin unloaded successfully");
 }
@@ -114,7 +97,7 @@ void obs_log(int log_level, const char* format, ...)
 
     snprintf(templ, length, "[%s] %s", plugin_name, format);
 
-    va_list(args);
+    va_list args;
 
     va_start(args, format);
     blogva(log_level, templ, args);

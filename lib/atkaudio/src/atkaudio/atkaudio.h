@@ -2,6 +2,8 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
+class QObject;
+
 #define MAX_OBS_AUDIO_BUFFER_SIZE 1024
 
 namespace atk
@@ -12,6 +14,10 @@ extern "C"
     void destroy();
     void pump();
     void update();
+
+    // Start message pump with Qt parent (typically Qt main window)
+    // Must be called after create() and before any JUCE GUI operations
+    void startMessagePump(QObject* qtParent);
 
     // Get Qt main window native handle for per-instance parent creation (fully lazy-initialized)
     void* getQtMainWindowHandle();

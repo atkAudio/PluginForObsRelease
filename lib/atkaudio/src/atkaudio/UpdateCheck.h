@@ -75,12 +75,17 @@ public:
         }
 
         if (!lastVersionFile.existsAsFile())
+        {
             lastVersionFile.create();
+        }
         else if (juce::Time::getCurrentTime().toMilliseconds()
                      - lastVersionFile.getLastModificationTime().toMilliseconds()
                  < 7 * 24 * 60 * 60 * 1000)
+        {
             return;
+        }
 
+        // Past 7 days - do the check
         juce::URL versionURL("https://api.github.com/repos/" + owner + "/" + repo + "/releases/latest");
 
         std::unique_ptr<juce::InputStream> inStream(versionURL.createInputStream(
@@ -99,19 +104,18 @@ public:
 
         latestRemoteVersion = remoteVersionString;
 
+        // Update mod time now that we've checked
+        lastVersionFile.setLastModificationTime(juce::Time::getCurrentTime());
+
+        // If this version was previously skipped, don't show the alert again
         auto skippedVersion = lastVersionFile.loadFileAsString().trim();
         if (skippedVersion.isNotEmpty() && skippedVersion == latestRemoteVersion)
-        {
-            lastVersionFile.setLastModificationTime(juce::Time::getCurrentTime());
             return;
-        }
 
         auto isRemoteVersionNewer = isNewerVersionThanCurrent(remoteVersionString);
 
         if (isRemoteVersionNewer)
         {
-            lastVersionFile.setLastModificationTime(juce::Time::getCurrentTime());
-
             juce::AlertWindow::showYesNoCancelBox(
                 juce::AlertWindow::InfoIcon,
                 PLUGIN_DISPLAY_NAME,
@@ -135,6 +139,7 @@ private:
         }
         else if (returnValue == 2)
         {
+            // User clicked "Skip this version"
             auto appDir = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
                               .getChildFile(PLUGIN_DISPLAY_NAME);
             appDir.createDirectory();

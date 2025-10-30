@@ -2,6 +2,7 @@
 
 #include "JuceApp.h"
 #include "LookAndFeel.h"
+#include "MessagePump.h"
 #include "UpdateCheck.h"
 
 #include <juce_audio_utils/juce_audio_utils.h>
@@ -16,6 +17,7 @@
 #include <obs-frontend-api.h>
 
 UpdateCheck* updateCheck = nullptr;
+atk::MessagePump* g_messagePump = nullptr;
 
 // Store Qt main window handle for per-instance parent creation (lazy-initialized)
 static void* g_qtMainWindowHandle = nullptr;
@@ -23,11 +25,17 @@ static bool g_qtMainWindowInitialized = false;
 
 void atk::create()
 {
-#ifndef JUCE_MAC
+#if JUCE_LINUX
     juce::JUCEApplicationBase::createInstance = []() -> juce::JUCEApplicationBase* { return new Application(); };
 #endif
     juce::initialiseJuce_GUI();
+
+#if JUCE_LINUX
+    // On Linux, we need to explicitly set the message thread and use a timer-based pump
+    // On macOS, JUCE integrates with NSRunLoop automatically
+    // On Windows, JUCE integrates with the Win32 message loop automatically
     juce::MessageManager::getInstance()->setCurrentThreadAsMessageThread();
+#endif
 
     // Initialize LookAndFeel singleton
     juce::SharedResourcePointer<atk::LookAndFeel> lookAndFeel;
@@ -35,12 +43,35 @@ void atk::create()
 
 void atk::pump()
 {
-    juce::MessageManager::getInstance()->setCurrentThreadAsMessageThread();
-    juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+#if JUCE_LINUX
+    // On Linux, pump the JUCE message loop with a timer
+    // On macOS, JUCE integrates with NSRunLoop and doesn't need manual pumping
+    // On Windows, JUCE integrates with Win32 message loop and doesn't need manual pumping
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(5);
+#endif
+}
+
+void atk::startMessagePump(QObject* qtParent)
+{
+#if JUCE_LINUX
+    // On Linux, we need a Qt timer-based message pump for JUCE
+    if (g_messagePump)
+    {
+        DBG("startMessagePump: MessagePump already started");
+        return;
+    }
+
+    g_messagePump = new atk::MessagePump(qtParent);
+#else
+    // On macOS and Windows, we don't need a message pump - JUCE integrates with native event loops
+    (void)qtParent;
+#endif
 }
 
 void atk::destroy()
 {
+    g_messagePump = nullptr;
+
     // Explicitly delete UpdateCheck before shutting down JUCE
     if (updateCheck != nullptr)
     {
@@ -64,17 +95,11 @@ void atk::destroy()
     auto numComponents = juce::Desktop::getInstance().getNumComponents();
     DBG("shutting down with " << numComponents << " remaining components");
 
-    // Clear any DeletedAtShutdown objects before JUCE shutdown
-    juce::DeletedAtShutdown::deleteAll();
-
     // Don't pump messages after hiding components - this can cause crashes
     // when VST3 plugins try to unregister event handlers during destruction
-    juce::shutdownJuce_GUI();
 
-// Clear leak detectors to prevent false positives during plugin shutdown
-// VST3 plugins may have circular references that are cleaned up by the OS
-#if JUCE_DEBUG
-    juce::juce_clearLeakDetectorObjects();
+#ifndef JUCE_LINUX
+    juce::shutdownJuce_GUI();
 #endif
 }
 
