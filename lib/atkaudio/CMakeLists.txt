@@ -44,6 +44,7 @@ target_compile_definitions(
     JUCE_USE_CURL=1
     JUCE_WEB_BROWSER=0
     JUCE_MODAL_LOOPS_PERMITTED=1 # we use QT event loop, so this is needed
+    $<$<CONFIG:RelWithDebInfo>:JUCE_DEBUG=1>  # Enable DBG() in RelWithDebInfo builds
 )
 
 set_target_properties(${PROJECT_NAME} PROPERTIES

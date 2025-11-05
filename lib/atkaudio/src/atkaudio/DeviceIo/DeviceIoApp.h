@@ -113,17 +113,19 @@ class AudioAppMainWindow final : public DocumentWindow
 {
 public:
     AudioAppMainWindow(DeviceIoApp& demo)
-        : DocumentWindow("", Colours::lightgrey, DocumentWindow::minimiseButton | DocumentWindow::closeButton, false)
+        : DocumentWindow(
+              "Audio Device Settings",
+              Colours::lightgrey,
+              DocumentWindow::minimiseButton | DocumentWindow::closeButton,
+              false
+          )
         , audioApp(demo)
     {
-        setContentOwned(&demo, true);
+        setUsingNativeTitleBar(true);
+        setContentOwned(&audioApp, false); // Don't take ownership - Impl owns it
         setResizable(true, false);
 
-        // Position title bar buttons on the right (Windows-style), like Plugin Host
-        setTitleBarButtonsRequired(DocumentWindow::minimiseButton | DocumentWindow::closeButton, false);
-
-        centreWithSize(demo.getWidth(), demo.getHeight());
-        setVisible(false);
+        // Don't add to desktop yet - AudioModule will handle this on first setVisible(true)
     }
 
     ~AudioAppMainWindow() override

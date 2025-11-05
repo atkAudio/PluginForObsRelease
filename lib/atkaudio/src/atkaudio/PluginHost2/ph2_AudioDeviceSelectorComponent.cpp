@@ -464,11 +464,7 @@ public:
     {
         if (auto* device = setup.manager->getCurrentAudioDevice())
         {
-            Component modalWindow;
-            modalWindow.setOpaque(true);
-            modalWindow.addToDesktop(0);
-            modalWindow.enterModalState();
-
+            // Just show the device control panel directly - no need for modal window wrapper
             return device->showControlPanel();
         }
 
@@ -508,8 +504,8 @@ public:
 
         if (auto* currentDevice = setup.manager->getCurrentAudioDevice())
         {
-            if (setup.maxNumOutputChannels > 0 &&
-                setup.minNumOutputChannels < setup.manager->getCurrentAudioDevice()->getOutputChannelNames().size())
+            if (setup.maxNumOutputChannels > 0
+                && setup.minNumOutputChannels < setup.manager->getCurrentAudioDevice()->getOutputChannelNames().size())
             {
                 if (outputChanList == nullptr)
                 {
@@ -532,8 +528,8 @@ public:
                 outputChanList.reset();
             }
 
-            if (setup.maxNumInputChannels > 0 &&
-                setup.minNumInputChannels < setup.manager->getCurrentAudioDevice()->getInputChannelNames().size())
+            if (setup.maxNumInputChannels > 0
+                && setup.minNumInputChannels < setup.manager->getCurrentAudioDevice()->getInputChannelNames().size())
             {
                 if (inputChanList == nullptr)
                 {
@@ -956,8 +952,8 @@ public:
 
         int getBestHeight(int maxHeight)
         {
-            return getRowHeight() * jlimit(2, jmax(2, maxHeight / getRowHeight()), getNumRows()) +
-                   getOutlineThickness() * 2;
+            return getRowHeight() * jlimit(2, jmax(2, maxHeight / getRowHeight()), getNumRows())
+                 + getOutlineThickness() * 2;
         }
 
     private:
@@ -1234,8 +1230,8 @@ void AudioDeviceSelectorComponent::updateAllControls()
         audioDeviceSettingsCompType = deviceManager.getCurrentAudioDeviceType();
         audioDeviceSettingsComp.reset();
 
-        if (auto* type = deviceManager.getAvailableDeviceTypes(
-            )[deviceTypeDropDown == nullptr ? 0 : deviceTypeDropDown->getSelectedId() - 1])
+        if (auto* type = deviceManager.getAvailableDeviceTypes()
+                             [deviceTypeDropDown == nullptr ? 0 : deviceTypeDropDown->getSelectedId() - 1])
         {
             AudioDeviceSetupDetails details;
             details.manager = &deviceManager;

@@ -18,6 +18,8 @@
 #define OG_NAME "Output Gain"
 #define FOLLOW_ID "follow_source_volume"
 #define FOLLOW_NAME "Follow Source Volume/Mute"
+#define OUTPUT_DELAY_ID "output_delay"
+#define OUTPUT_DELAY_NAME "Output Delay"
 
 struct adio_data
 {
@@ -31,6 +33,7 @@ struct adio_data
     std::atomic_bool followSourceVolume = false;
     std::atomic<float> inputGain = 1.0f;
     std::atomic<float> outputGain = 1.0f;
+    std::atomic<float> outputDelay = 0.0f;
 
     atk::DeviceIo deviceIo;
 
@@ -72,6 +75,10 @@ static void devio_update(void* data, obs_data_t* s)
     inputGain = obs_db_to_mul(inputGain);
     adio->inputGain.store(inputGain, std::memory_order_release);
 
+    auto outputDelay = (float)obs_data_get_double(s, OUTPUT_DELAY_ID);
+    adio->outputDelay.store(outputDelay, std::memory_order_release);
+    adio->deviceIo.setOutputDelay(outputDelay);
+
     // auto outputGain = (float)obs_data_get_double(s, OG_ID);
     // outputGain = obs_db_to_mul(outputGain);
     // adio->outputGain.store(outputGain, std::memory_order_release);
@@ -104,6 +111,7 @@ static void devio_defaults(obs_data_t* s)
     obs_data_set_default_bool(s, FOLLOW_ID, false);
     obs_data_set_default_double(s, IG_ID, 0.0);
     obs_data_set_default_double(s, OG_ID, 0.0);
+    obs_data_set_default_double(s, OUTPUT_DELAY_ID, 0.0);
 }
 
 static bool open_editor_button_clicked(obs_properties_t* props, obs_property_t* property, void* data)
@@ -157,6 +165,11 @@ static obs_properties_t* devio_properties(void* data)
     textLabel = OG_NAME;
     p = obs_properties_add_float_slider(props, propText.c_str(), textLabel.c_str(), -30.0, 30.0, 0.1);
     obs_property_float_set_suffix(p, " dB");
+
+    propText = OUTPUT_DELAY_ID;
+    textLabel = OUTPUT_DELAY_NAME;
+    p = obs_properties_add_float_slider(props, propText.c_str(), textLabel.c_str(), 0.0, 10000.0, 0.1);
+    obs_property_float_set_suffix(p, " ms");
 
     UNUSED_PARAMETER(data);
     return props;

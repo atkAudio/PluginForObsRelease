@@ -22,16 +22,7 @@ class atkAudioModule
 {
 public:
     atkAudioModule() = default;
-
-    virtual ~atkAudioModule()
-    {
-        // Clean up parent component on message thread
-        if (parentComponent)
-        {
-            auto* parent = parentComponent.release();
-            juce::MessageManager::callAsync([parent] { delete parent; });
-        }
-    }
+    virtual ~atkAudioModule() = default;
 
     // Disable copy
     atkAudioModule(const atkAudioModule&) = delete;
@@ -68,16 +59,28 @@ public:
             if (!window)
                 return;
 
-            // Lazy initialization - add to desktop on first show
-            if (visible && !window->isOnDesktop())
+            // If window is already on desktop, just toggle visibility
+            if (window->isOnDesktop())
             {
-                ensureParentComponent();
+                window->setVisible(visible);
+                if (visible)
+                    window->toFront(true);
+                return;
+            }
 
-                void* parentHandle = getParentNativeHandle();
-                if (parentHandle)
-                    window->addToDesktop(0, parentHandle);
+            // Lazy initialization - add to desktop on first show
+            if (visible)
+            {
+                // DocumentWindow (TopLevelWindow) requires calling through TopLevelWindow interface
+                if (auto* topLevel = dynamic_cast<juce::TopLevelWindow*>(window))
+                {
+                    topLevel->addToDesktop(); // TopLevelWindow has no-args version
+                }
                 else
-                    window->addToDesktop(0);
+                {
+                    // Regular components can use flags
+                    window->addToDesktop(juce::ComponentPeer::windowAppearsOnTaskbar);
+                }
 
                 // Center the window on screen
                 if (auto* docWindow = dynamic_cast<juce::DocumentWindow*>(window))
@@ -114,43 +117,6 @@ protected:
      * The window is created by derived class (can be lazy or in constructor)
      */
     virtual juce::Component* getWindowComponent() = 0;
-
-    /**
-     * Get the native parent handle for this module instance
-     * Can be used by derived classes for auxiliary windows (e.g., ChannelClient's matrix/settings windows)
-     * Returns the peer handle of the parent component if available
-     */
-    void* getParentNativeHandle()
-    {
-        ensureParentComponent();
-        if (parentComponent && parentComponent->getPeer())
-            return parentComponent->getPeer()->getNativeHandle();
-        return nullptr;
-    }
-
-private:
-    /**
-     * Ensure parent component exists for this module instance
-     */
-    void ensureParentComponent()
-    {
-        if (!parentComponent)
-        {
-            parentComponent = std::make_unique<juce::Component>();
-            parentComponent->setVisible(false);
-
-            // Get native window handle from OBS/Qt
-            void* nativeHandle = atk::getQtMainWindowHandle();
-            if (nativeHandle)
-                parentComponent->addToDesktop(0, nativeHandle);
-            else
-                parentComponent->addToDesktop(0);
-        }
-    }
-
-    // Per-instance parent component for window ownership
-    // Each module has its own parent to avoid shared state and X11 errors
-    std::unique_ptr<juce::Component> parentComponent;
 };
 
 } // namespace atk
