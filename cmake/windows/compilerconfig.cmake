@@ -26,6 +26,10 @@ if(CMAKE_CXX_STANDARD GREATER_EQUAL 20)
   list(APPEND _obs_msvc_cpp_options /Zc:char8_t-)
 endif()
 
+# Configure RelWithDebInfo to behave like Debug (no optimizations)
+# This makes debugging easier while still maintaining a separate configuration
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:Debug>")
+
 add_compile_options(
   /W3
   /utf-8
@@ -35,9 +39,10 @@ add_compile_options(
   "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:${_obs_msvc_cpp_options}>"
   "$<$<COMPILE_LANG_AND_ID:C,Clang>:${_obs_clang_c_options}>"
   "$<$<COMPILE_LANG_AND_ID:CXX,Clang>:${_obs_clang_cxx_options}>"
-  $<$<NOT:$<CONFIG:Debug>>:/Gy>
-  $<$<NOT:$<CONFIG:Debug>>:/GL>
-  $<$<NOT:$<CONFIG:Debug>>:/Oi>
+  $<$<CONFIG:Release>:/Gy>
+  $<$<CONFIG:Release>:/GL>
+  $<$<CONFIG:Release>:/Oi>
+  $<$<CONFIG:RelWithDebInfo>:/Od>  # Disable optimizations for RelWithDebInfo
 )
 
 add_compile_definitions(
@@ -47,13 +52,15 @@ add_compile_definitions(
   _CRT_NONSTDC_NO_WARNINGS
   $<$<CONFIG:DEBUG>:DEBUG>
   $<$<CONFIG:DEBUG>:_DEBUG>
+  $<$<CONFIG:RelWithDebInfo>:_DEBUG>  # Use Debug iterator debug level for RelWithDebInfo
 )
 
 add_link_options(
-  $<$<NOT:$<CONFIG:Debug>>:/OPT:REF>
-  $<$<NOT:$<CONFIG:Debug>>:/OPT:ICF>
-  $<$<NOT:$<CONFIG:Debug>>:/LTCG>
-  $<$<NOT:$<CONFIG:Debug>>:/INCREMENTAL:NO>
+  $<$<CONFIG:Release>:/OPT:REF>
+  $<$<CONFIG:Release>:/OPT:ICF>
+  $<$<CONFIG:Release>:/LTCG>
+  $<$<CONFIG:Release>:/INCREMENTAL:NO>
+  $<$<CONFIG:RelWithDebInfo>:/INCREMENTAL>  # Enable incremental linking for RelWithDebInfo
   /DEBUG
   /Brepro
 )

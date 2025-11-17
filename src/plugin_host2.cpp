@@ -1,6 +1,6 @@
 #include <algorithm>
 #include <atkaudio/FifoBuffer.h>
-#include <atkaudio/PluginHost2/PluginHost2.h>
+#include <atkaudio/PluginHost2/API/PluginHost2.h>
 #include <inttypes.h>
 #include <math.h>
 #include <media-io/audio-math.h>
@@ -10,7 +10,7 @@
 #include <util/platform.h>
 #include <vector>
 
-#define FILTER_NAME "atkAudio Plugin Host2"
+#define FILTER_NAME "atkAudio PluginHost2"
 #define FILTER_ID "atkaudio_plugin_host2"
 
 #define OPEN_PLUGIN_SETTINGS "open_filter_graph"

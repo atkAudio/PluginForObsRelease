@@ -7,9 +7,15 @@ target_sources(${PROJECT_NAME} PRIVATE ${_sources})
 
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
-cmake_policy(SET CMP0177 NEW)
+# CMP0177 is only available in CMake 3.31+
+if(POLICY CMP0177)
+    cmake_policy(SET CMP0177 NEW)
+endif()
 
 set(target ${PROJECT_NAME})
+
+# Always use JUCE modules only (no helper tools)
+set(JUCE_MODULES_ONLY ON CACHE BOOL "Only build JUCE modules" FORCE)
 
 include(FetchContent)
 FetchContent_Declare(
@@ -20,7 +26,7 @@ FetchContent_Declare(
     GIT_SHALLOW    TRUE
 )
 FetchContent_MakeAvailable(juce)
-_juce_initialise_target(${target} ${target})
+# _juce_initialise_target(${target} ${target})
 
 target_link_libraries(${PROJECT_NAME}
     PRIVATE
@@ -44,7 +50,6 @@ target_compile_definitions(
     JUCE_USE_CURL=1
     JUCE_WEB_BROWSER=0
     JUCE_MODAL_LOOPS_PERMITTED=1 # we use QT event loop, so this is needed
-    $<$<CONFIG:RelWithDebInfo>:JUCE_DEBUG=1>  # Enable DBG() in RelWithDebInfo builds
 )
 
 set_target_properties(${PROJECT_NAME} PROPERTIES
@@ -63,8 +68,6 @@ if(UNIX AND NOT APPLE)
 endif()
 
 if(MSVC)
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE INTERNAL "")
-
     target_compile_options(
         ${PROJECT_NAME} 
         PRIVATE 
@@ -86,40 +89,43 @@ if(NOT WIN32)
         )
 endif()
 
-set(ASIO_SDK_URL "https://www.steinberg.net/asiosdk")
-set(ASIO_SDK_TEMPDIR "${CMAKE_CURRENT_BINARY_DIR}/asiosdk_temp")
-set(ASIO_SDK_DIR "${CMAKE_CURRENT_BINARY_DIR}/asiosdk")
+# ASIO SDK is only needed on Windows
+if(WIN32)
+    set(ASIO_SDK_URL "https://www.steinberg.net/asiosdk")
+    set(ASIO_SDK_TEMPDIR "${CMAKE_CURRENT_BINARY_DIR}/asiosdk_temp")
+    set(ASIO_SDK_DIR "${CMAKE_CURRENT_BINARY_DIR}/asiosdk")
 
-if(NOT EXISTS "${ASIO_SDK_DIR}")
-    message(STATUS "Downloading ASIO SDK...")
-    file(DOWNLOAD "${ASIO_SDK_URL}" "${CMAKE_CURRENT_BINARY_DIR}/asiosdk.zip"
-        STATUS download_status
-        SHOW_PROGRESS
-    )
-    if(download_status)
-        message(STATUS "Extracting ASIO SDK...")
-        file(ARCHIVE_EXTRACT 
-            INPUT "${CMAKE_CURRENT_BINARY_DIR}/asiosdk.zip"
-            DESTINATION "${ASIO_SDK_TEMPDIR}"
+    if(NOT EXISTS "${ASIO_SDK_DIR}")
+        message(STATUS "Downloading ASIO SDK...")
+        file(DOWNLOAD "${ASIO_SDK_URL}" "${CMAKE_CURRENT_BINARY_DIR}/asiosdk.zip"
+            STATUS download_status
+            SHOW_PROGRESS
         )
-        file(GLOB ASIO_SDK_DIRS "${ASIO_SDK_TEMPDIR}/*")
-        foreach(dir ${ASIO_SDK_DIRS})
-            if(IS_DIRECTORY ${dir} AND dir MATCHES ".*asiosdk.*")
-            message(STATUS "ASIO SDK extracted to ${dir}")
-            file(RENAME ${dir} ${ASIO_SDK_DIR})
-            break()
-            endif()
-        endforeach()
+        if(download_status)
+            message(STATUS "Extracting ASIO SDK...")
+            file(ARCHIVE_EXTRACT 
+                INPUT "${CMAKE_CURRENT_BINARY_DIR}/asiosdk.zip"
+                DESTINATION "${ASIO_SDK_TEMPDIR}"
+            )
+            file(GLOB ASIO_SDK_DIRS "${ASIO_SDK_TEMPDIR}/*")
+            foreach(dir ${ASIO_SDK_DIRS})
+                if(IS_DIRECTORY ${dir} AND dir MATCHES ".*asiosdk.*")
+                message(STATUS "ASIO SDK extracted to ${dir}")
+                file(RENAME ${dir} ${ASIO_SDK_DIR})
+                break()
+                endif()
+            endforeach()
+        endif()
     endif()
+
+    target_include_directories(
+        ${PROJECT_NAME}
+        PRIVATE
+            ${CMAKE_CURRENT_BINARY_DIR}/asiosdk/common
+    )
+
+    target_include_directories(${PROJECT_NAME} PRIVATE "${ASIO_SDK_DIR}")
 endif()
-
-target_include_directories(
-    ${PROJECT_NAME}
-    PRIVATE
-        ${CMAKE_CURRENT_BINARY_DIR}/asiosdk/common
-)
-
-target_include_directories(${PROJECT_NAME} PRIVATE "${ASIO_SDK_DIR}")
 
 if(WIN32)
     file(TO_CMAKE_PATH "${CMAKE_INSTALL_PREFIX}" _sanitized_prefix)
@@ -134,6 +140,4 @@ endif()
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE JUCE_ASIO=1)
 
-file(COPY_FILE ${CMAKE_SOURCE_DIR}/LICENSE-AGPL3 ${CMAKE_BINARY_DIR}/INSTALLER-LICENSE)
-
-file(COPY_FILE ${CMAKE_CURRENT_SOURCE_DIR}/LICENSE-GPL3 ${CMAKE_SOURCE_DIR}/LICENSE-GPL3)
+file(COPY_FILE ${CMAKE_SOURCE_DIR}/LICENSE ${CMAKE_BINARY_DIR}/INSTALLER-LICENSE)

@@ -36,6 +36,7 @@ const char* plugin_name = PLUGIN_NAME;
 
 extern struct obs_source_info delay_filter;
 extern struct obs_source_info device_io_filter;
+extern struct obs_source_info device_io2_filter;
 extern struct obs_source_info pluginhost_filter;
 extern struct obs_source_info pluginhost2_filter;
 extern struct obs_source_info source_mixer;
@@ -72,6 +73,7 @@ bool obs_module_load(void)
 
     obs_register_source(&delay_filter);
     obs_register_source(&device_io_filter);
+    obs_register_source(&device_io2_filter);
     obs_register_source(&pluginhost2_filter);
     obs_register_source(&pluginhost_filter);
     obs_register_source(&source_mixer);

@@ -1,6 +1,8 @@
 #pragma once
 
-#include "../Plugins/PluginGraph.h"
+#include "../Core/PluginGraph.h"
+// Not using parallel graph implementation
+// #include "../../AudioProcessorGraphMT/AudioProcessorGraphMT_Impl.h"
 
 #include <juce_audio_utils/juce_audio_utils.h>
 using namespace juce;
@@ -40,8 +42,8 @@ public:
 
     //==============================================================================
     void beginConnectorDrag(
-        AudioProcessorGraph::NodeAndChannel source,
-        AudioProcessorGraph::NodeAndChannel dest,
+        AudioProcessorGraphMT::NodeAndChannel source,
+        AudioProcessorGraphMT::NodeAndChannel dest,
         const MouseEvent&
     );
     void dragConnector(const MouseEvent&);
@@ -60,8 +62,8 @@ private:
     std::unique_ptr<ConnectorComponent> draggingConnector;
     std::unique_ptr<PopupMenu> menu;
 
-    PluginComponent* getComponentForPlugin(AudioProcessorGraph::NodeID) const;
-    ConnectorComponent* getComponentForConnection(const AudioProcessorGraph::Connection&) const;
+    PluginComponent* getComponentForPlugin(AudioProcessorGraphMT::NodeID) const;
+    ConnectorComponent* getComponentForConnection(const AudioProcessorGraphMT::Connection&) const;
     PinComponent* findPinAt(Point<float>) const;
 
     //==============================================================================
@@ -84,6 +86,7 @@ class GraphDocumentComponent final
     , public DragAndDropContainer
     , public Timer
     , private ChangeListener
+    , private juce::MidiKeyboardStateListener
 {
 public:
     GraphDocumentComponent(
@@ -123,7 +126,10 @@ public:
         cpuLoadLabel.setText(
             "dly: "
                 // + juce::String(latencySamples) + "smp/"
-                + juce::String(latencyMs) + "ms, " + "cpu: " + juce::String(cpuLoad, 2).replace("0.", "."),
+                + juce::String(latencyMs)
+                + "ms, "
+                + "cpu: "
+                + juce::String(cpuLoad, 2).replace("0.", "."),
             juce::dontSendNotification
         );
     }
@@ -135,7 +141,6 @@ public:
 
     //==============================================================================
     void createNewPlugin(const PluginDescriptionAndPreference&, Point<int> position);
-    void setDoublePrecision(bool doublePrecision);
     bool closeAnyOpenPluginWindows();
 
     //==============================================================================
@@ -159,14 +164,58 @@ public:
     BurgerMenuComponent burgerMenu;
 
 private:
+    //==============================================================================
+    /**
+     * Custom audio callback that drives the plugin graph with full MIDI routing support.
+     * Replaces AudioProcessorPlayer for complete control over MIDI I/O via MidiServer.
+     */
+    class GraphAudioCallback : public juce::AudioIODeviceCallback
+    {
+    public:
+        GraphAudioCallback(GraphDocumentComponent& owner);
+        ~GraphAudioCallback() override;
+
+        void audioDeviceAboutToStart(juce::AudioIODevice* device) override;
+        void audioDeviceStopped() override;
+        void audioDeviceIOCallbackWithContext(
+            const float* const* inputChannelData,
+            int numInputChannels,
+            float* const* outputChannelData,
+            int numOutputChannels,
+            int numSamples,
+            const juce::AudioIODeviceCallbackContext& context
+        ) override;
+
+        // Legacy callback for non-context aware systems (not virtual, but called by JUCE)
+        void audioDeviceIOCallback(
+            const float* const* inputChannelData,
+            int numInputChannels,
+            float* const* outputChannelData,
+            int numOutputChannels,
+            int numSamples
+        );
+
+    private:
+        GraphDocumentComponent& owner;
+        juce::CriticalSection callbackLock;
+        double sampleRate = 44100.0;
+        int blockSize = 512;
+        bool isPrepared = false;
+        juce::AudioIODevice* currentDevice = nullptr;
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(GraphAudioCallback)
+    };
+
     Label cpuLoadLabel;
     //==============================================================================
     AudioDeviceManager& deviceManager;
     KnownPluginList& pluginList;
 
-    AudioProcessorPlayer graphPlayer;
+    std::unique_ptr<GraphAudioCallback> graphAudioCallback;
     MidiKeyboardState keyState;
     MidiOutput* midiOutput = nullptr;
+
+    MainHostWindow& mainHostWindow;
 
     struct TooltipBar;
     std::unique_ptr<TooltipBar> statusBar;
@@ -186,6 +235,10 @@ private:
 
     //==============================================================================
     void changeListenerCallback(ChangeBroadcaster*) override;
+
+    // MidiKeyboardStateListener interface - inject virtual keyboard MIDI into MidiServer
+    void handleNoteOn(juce::MidiKeyboardState* source, int midiChannel, int midiNoteNumber, float velocity) override;
+    void handleNoteOff(juce::MidiKeyboardState* source, int midiChannel, int midiNoteNumber, float velocity) override;
 
     void init();
     void checkAvailableWidth();

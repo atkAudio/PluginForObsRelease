@@ -1,14 +1,149 @@
 #include "GraphEditorPanel.h"
 
-#include "../Plugins/InternalPlugins.h"
+#include "../Core/InternalPlugins.h"
 #include "MainHostWindow.h"
+
+//==============================================================================
+// GraphAudioCallback implementation - custom audio callback for MidiServer integration
+//==============================================================================
+
+GraphDocumentComponent::GraphAudioCallback::GraphAudioCallback(GraphDocumentComponent& owner_)
+    : owner(owner_)
+{
+    // Constructor - no MidiMessageCollector needed, all MIDI goes through MidiServer
+}
+
+GraphDocumentComponent::GraphAudioCallback::~GraphAudioCallback()
+{
+    // Ensure we're stopped before destruction
+    audioDeviceStopped();
+}
+
+void GraphDocumentComponent::GraphAudioCallback::audioDeviceAboutToStart(juce::AudioIODevice* device)
+{
+    const juce::ScopedLock sl(callbackLock);
+
+    currentDevice = device;
+
+    if (device != nullptr)
+    {
+        sampleRate = device->getCurrentSampleRate();
+        blockSize = device->getCurrentBufferSizeSamples();
+    }
+
+    // Prepare the graph if it exists
+    if (owner.graph != nullptr)
+    {
+        auto& graph = owner.graph->graph;
+
+        // Set up the graph with device configuration
+        // This is critical for I/O nodes to work properly
+        graph.setPlayConfigDetails(
+            device ? device->getActiveInputChannels().countNumberOfSetBits() : 0,
+            device ? device->getActiveOutputChannels().countNumberOfSetBits() : 0,
+            sampleRate,
+            blockSize
+        );
+
+        graph.prepareToPlay(sampleRate, blockSize);
+        isPrepared = true;
+    }
+}
+
+void GraphDocumentComponent::GraphAudioCallback::audioDeviceStopped()
+{
+    const juce::ScopedLock sl(callbackLock);
+
+    if (isPrepared && owner.graph != nullptr)
+    {
+        owner.graph->graph.releaseResources();
+        isPrepared = false;
+    }
+
+    currentDevice = nullptr;
+}
+
+void GraphDocumentComponent::GraphAudioCallback::audioDeviceIOCallbackWithContext(
+    const float* const* inputChannelData,
+    int numInputChannels,
+    float* const* outputChannelData,
+    int numOutputChannels,
+    int numSamples,
+    const juce::AudioIODeviceCallbackContext& context
+)
+{
+    juce::ignoreUnused(context);
+
+    const juce::ScopedTryLock stl(callbackLock);
+
+    if (!stl.isLocked() || !isPrepared || owner.graph == nullptr)
+    {
+        // Clear output if we can't process
+        for (int i = 0; i < numOutputChannels; ++i)
+            if (outputChannelData[i] != nullptr)
+                juce::FloatVectorOperations::clear(outputChannelData[i], numSamples);
+        return;
+    }
+
+    auto* graph = owner.graph.get();
+    auto& audioGraph = graph->graph;
+
+    // Prepare MIDI buffer and get MIDI input from MidiServer
+    // This includes MIDI from hardware devices, virtual keyboard, and MidiServer clients
+    juce::MidiBuffer midiMessages;
+    graph->processMidiInput(midiMessages, numSamples, sampleRate);
+
+    // Prepare audio buffer
+    juce::AudioBuffer<float> audioBuffer(outputChannelData, numOutputChannels, numSamples);
+
+    // Copy input to output buffer (for through processing)
+    for (int ch = 0; ch < juce::jmin(numInputChannels, numOutputChannels); ++ch)
+        if (inputChannelData[ch] != nullptr && outputChannelData[ch] != nullptr)
+            juce::FloatVectorOperations::copy(outputChannelData[ch], inputChannelData[ch], numSamples);
+
+    // Clear remaining output channels if we have more outputs than inputs
+    for (int ch = numInputChannels; ch < numOutputChannels; ++ch)
+        if (outputChannelData[ch] != nullptr)
+            juce::FloatVectorOperations::clear(outputChannelData[ch], numSamples);
+
+    // 3. Process through the plugin graph
+    // Process audio (float precision only)
+    audioGraph.processBlock(audioBuffer, midiMessages);
+
+    // 4. Send MIDI output back to MidiServer and external MIDI devices
+    graph->processMidiOutput(midiMessages);
+
+    // 5. Send MIDI output to external MIDI device if configured
+    if (owner.midiOutput != nullptr)
+        owner.midiOutput->sendBlockOfMessagesNow(midiMessages);
+}
+
+void GraphDocumentComponent::GraphAudioCallback::audioDeviceIOCallback(
+    const float* const* inputChannelData,
+    int numInputChannels,
+    float* const* outputChannelData,
+    int numOutputChannels,
+    int numSamples
+)
+{
+    // Call the context-aware version with a dummy context
+    juce::AudioIODeviceCallbackContext dummyContext;
+    audioDeviceIOCallbackWithContext(
+        inputChannelData,
+        numInputChannels,
+        outputChannelData,
+        numOutputChannels,
+        numSamples,
+        dummyContext
+    );
+}
 
 //==============================================================================
 struct GraphEditorPanel::PinComponent final
     : public Component
     , public SettableTooltipClient
 {
-    PinComponent(GraphEditorPanel& p, AudioProcessorGraph::NodeAndChannel pinToUse, bool isIn)
+    PinComponent(GraphEditorPanel& p, AudioProcessorGraphMT::NodeAndChannel pinToUse, bool isIn)
         : panel(p)
         , graph(p.graph)
         , pin(pinToUse)
@@ -60,7 +195,7 @@ struct GraphEditorPanel::PinComponent final
 
     void mouseDown(const MouseEvent& e) override
     {
-        AudioProcessorGraph::NodeAndChannel dummy{{}, 0};
+        AudioProcessorGraphMT::NodeAndChannel dummy{{}, 0};
 
         panel.beginConnectorDrag(isInput ? dummy : pin, isInput ? pin : dummy, e);
     }
@@ -77,7 +212,7 @@ struct GraphEditorPanel::PinComponent final
 
     GraphEditorPanel& panel;
     PluginGraph& graph;
-    AudioProcessorGraph::NodeAndChannel pin;
+    AudioProcessorGraphMT::NodeAndChannel pin;
     const bool isInput;
     int busIdx = 0;
 
@@ -91,7 +226,7 @@ struct GraphEditorPanel::PluginComponent final
     , private AudioProcessorParameter::Listener
     , private AsyncUpdater
 {
-    PluginComponent(GraphEditorPanel& p, AudioProcessorGraph::NodeID id)
+    PluginComponent(GraphEditorPanel& p, AudioProcessorGraphMT::NodeID id)
         : panel(p)
         , graph(p.graph)
         , pluginID(id)
@@ -239,7 +374,7 @@ struct GraphEditorPanel::PluginComponent final
 
     void update()
     {
-        const AudioProcessorGraph::Node::Ptr f(graph.graph.getNodeForId(pluginID));
+        const AudioProcessorGraphMT::Node::Ptr f(graph.graph.getNodeForId(pluginID));
         jassert(f != nullptr);
 
         auto& processor = *f->getProcessor();
@@ -277,16 +412,12 @@ struct GraphEditorPanel::PluginComponent final
 
             pins.clear();
 
-            auto inputsToAdd = processor.getTotalNumInputChannels();
-            if (processor.getName() == "OBS Source")
-                inputsToAdd = 0;
-
-            for (int i = 0; i < inputsToAdd; ++i)
+            for (int i = 0; i < processor.getTotalNumInputChannels(); ++i)
                 addAndMakeVisible(pins.add(new PinComponent(panel, {pluginID, i}, true)));
 
             if (processor.acceptsMidi())
                 addAndMakeVisible(
-                    pins.add(new PinComponent(panel, {pluginID, AudioProcessorGraph::midiChannelIndex}, true))
+                    pins.add(new PinComponent(panel, {pluginID, AudioProcessorGraphMT::midiChannelIndex}, true))
                 );
 
             for (int i = 0; i < processor.getTotalNumOutputChannels(); ++i)
@@ -294,7 +425,7 @@ struct GraphEditorPanel::PluginComponent final
 
             if (processor.producesMidi())
                 addAndMakeVisible(
-                    pins.add(new PinComponent(panel, {pluginID, AudioProcessorGraph::midiChannelIndex}, false))
+                    pins.add(new PinComponent(panel, {pluginID, AudioProcessorGraphMT::midiChannelIndex}, false))
                 );
 
             resized();
@@ -452,7 +583,7 @@ struct GraphEditorPanel::PluginComponent final
 
     GraphEditorPanel& panel;
     PluginGraph& graph;
-    const AudioProcessorGraph::NodeID pluginID;
+    const AudioProcessorGraphMT::NodeID pluginID;
     OwnedArray<PinComponent> pins;
     int numInputs = 0, numOutputs = 0;
     int pinSize = 16;
@@ -477,7 +608,7 @@ struct GraphEditorPanel::ConnectorComponent final
         setAlwaysOnTop(true);
     }
 
-    void setInput(AudioProcessorGraph::NodeAndChannel newSource)
+    void setInput(AudioProcessorGraphMT::NodeAndChannel newSource)
     {
         if (connection.source != newSource)
         {
@@ -486,7 +617,7 @@ struct GraphEditorPanel::ConnectorComponent final
         }
     }
 
-    void setOutput(AudioProcessorGraph::NodeAndChannel newDest)
+    void setOutput(AudioProcessorGraphMT::NodeAndChannel newDest)
     {
         if (connection.destination != newDest)
         {
@@ -590,7 +721,7 @@ struct GraphEditorPanel::ConnectorComponent final
             getDistancesFromEnds(getPosition().toFloat() + e.position, distanceFromStart, distanceFromEnd);
             const bool isNearerSource = (distanceFromStart < distanceFromEnd);
 
-            AudioProcessorGraph::NodeAndChannel dummy{{}, 0};
+            AudioProcessorGraphMT::NodeAndChannel dummy{{}, 0};
 
             panel.beginConnectorDrag(
                 isNearerSource ? dummy : connection.source,
@@ -654,7 +785,7 @@ struct GraphEditorPanel::ConnectorComponent final
 
     GraphEditorPanel& panel;
     PluginGraph& graph;
-    AudioProcessorGraph::Connection connection{
+    AudioProcessorGraphMT::Connection connection{
         {{}, 0},
         {{}, 0}
     };
@@ -705,7 +836,7 @@ void GraphEditorPanel::createNewPlugin(const PluginDescriptionAndPreference& des
     graph.addPlugin(desc, position.toDouble() / Point<double>((double)getWidth(), (double)getHeight()));
 }
 
-GraphEditorPanel::PluginComponent* GraphEditorPanel::getComponentForPlugin(AudioProcessorGraph::NodeID nodeID) const
+GraphEditorPanel::PluginComponent* GraphEditorPanel::getComponentForPlugin(AudioProcessorGraphMT::NodeID nodeID) const
 {
     for (auto* fc : nodes)
         if (fc->pluginID == nodeID)
@@ -715,7 +846,7 @@ GraphEditorPanel::PluginComponent* GraphEditorPanel::getComponentForPlugin(Audio
 }
 
 GraphEditorPanel::ConnectorComponent*
-GraphEditorPanel::getComponentForConnection(const AudioProcessorGraph::Connection& conn) const
+GraphEditorPanel::getComponentForConnection(const AudioProcessorGraphMT::Connection& conn) const
 {
     for (auto* cc : connectors)
         if (cc->connection == conn)
@@ -811,8 +942,8 @@ void GraphEditorPanel::showPopupMenu(Point<int> mousePos)
 }
 
 void GraphEditorPanel::beginConnectorDrag(
-    AudioProcessorGraph::NodeAndChannel source,
-    AudioProcessorGraph::NodeAndChannel dest,
+    AudioProcessorGraphMT::NodeAndChannel source,
+    AudioProcessorGraphMT::NodeAndChannel dest,
     const MouseEvent& e
 )
 {
@@ -846,9 +977,9 @@ void GraphEditorPanel::dragConnector(const MouseEvent& e)
         {
             auto connection = draggingConnector->connection;
 
-            if (connection.source.nodeID == AudioProcessorGraph::NodeID() && !pin->isInput)
+            if (connection.source.nodeID == AudioProcessorGraphMT::NodeID() && !pin->isInput)
                 connection.source = pin->pin;
-            else if (connection.destination.nodeID == AudioProcessorGraph::NodeID() && pin->isInput)
+            else if (connection.destination.nodeID == AudioProcessorGraphMT::NodeID() && pin->isInput)
                 connection.destination = pin->pin;
 
             if (graph.graph.canConnect(connection))
@@ -858,7 +989,7 @@ void GraphEditorPanel::dragConnector(const MouseEvent& e)
             }
         }
 
-        if (draggingConnector->connection.source.nodeID == AudioProcessorGraph::NodeID())
+        if (draggingConnector->connection.source.nodeID == AudioProcessorGraphMT::NodeID())
             draggingConnector->dragStart(pos);
         else
             draggingConnector->dragEnd(pos);
@@ -879,7 +1010,7 @@ void GraphEditorPanel::endDraggingConnector(const MouseEvent& e)
 
     if (auto* pin = findPinAt(e2.position))
     {
-        if (connection.source.nodeID == AudioProcessorGraph::NodeID())
+        if (connection.source.nodeID == AudioProcessorGraphMT::NodeID())
         {
             if (pin->isInput)
                 return;
@@ -1046,7 +1177,7 @@ private:
 
     GraphDocumentComponent& owner;
 
-    Label titleLabel{"titleLabel", "Plugin Host"};
+    Label titleLabel{"titleLabel", "PluginHost"};
     ShapeButton burgerButton{"burgerButton", Colours::lightgrey, Colours::lightgrey, Colours::white};
     ShapeButton pluginButton{"pluginButton", Colours::lightgrey, Colours::lightgrey, Colours::white};
 
@@ -1135,13 +1266,13 @@ GraphDocumentComponent::GraphDocumentComponent(
     : graph(new PluginGraph(mainWindow, fm, kpl))
     , deviceManager(dm)
     , pluginList(kpl)
-    , graphPlayer(mainWindow.getAppProperties().getUserSettings()->getBoolValue("doublePrecisionProcessing", false))
+    , graphAudioCallback(std::make_unique<GraphAudioCallback>(*this))
+    , mainHostWindow(mainWindow)
 {
     init();
 
     deviceManager.addChangeListener(graphPanel.get());
-    deviceManager.addAudioCallback(&graphPlayer);
-    deviceManager.addMidiInputDeviceCallback({}, &graphPlayer.getMidiMessageCollector());
+    deviceManager.addAudioCallback(graphAudioCallback.get());
     deviceManager.addChangeListener(this);
 
     startTimer(100);
@@ -1153,9 +1284,9 @@ void GraphDocumentComponent::init()
 
     graphPanel.reset(new GraphEditorPanel(*graph));
     addAndMakeVisible(graphPanel.get());
-    graphPlayer.setProcessor(&graph->graph);
 
-    keyState.addListener(&graphPlayer.getMidiMessageCollector());
+    // Connect virtual keyboard to inject MIDI into MidiServer
+    keyState.addListener(this);
 
     keyboardComp.reset(new MidiKeyboardComponent(keyState, MidiKeyboardComponent::horizontalKeyboard));
     addAndMakeVisible(keyboardComp.get());
@@ -1174,9 +1305,8 @@ GraphDocumentComponent::~GraphDocumentComponent()
     if (midiOutput != nullptr)
         midiOutput->stopBackgroundThread();
 
+    keyState.removeListener(this);
     releaseGraph();
-
-    keyState.removeListener(&graphPlayer.getMidiMessageCollector());
 }
 
 void GraphDocumentComponent::resized()
@@ -1212,8 +1342,8 @@ void GraphDocumentComponent::createNewPlugin(const PluginDescriptionAndPreferenc
 
 void GraphDocumentComponent::releaseGraph()
 {
-    deviceManager.removeAudioCallback(&graphPlayer);
-    deviceManager.removeMidiInputDeviceCallback({}, &graphPlayer.getMidiMessageCollector());
+    // Remove our custom audio callback
+    deviceManager.removeAudioCallback(graphAudioCallback.get());
 
     if (graphPanel != nullptr)
     {
@@ -1224,7 +1354,6 @@ void GraphDocumentComponent::releaseGraph()
     keyboardComp = nullptr;
     statusBar = nullptr;
 
-    graphPlayer.setProcessor(nullptr);
     graph = nullptr;
 }
 
@@ -1284,11 +1413,6 @@ void GraphDocumentComponent::checkAvailableWidth()
     }
 }
 
-void GraphDocumentComponent::setDoublePrecision(bool doublePrecision)
-{
-    graphPlayer.setDoublePrecisionProcessing(doublePrecision);
-}
-
 bool GraphDocumentComponent::closeAnyOpenPluginWindows()
 {
     return graphPanel->graph.closeAnyOpenPluginWindows();
@@ -1297,6 +1421,20 @@ bool GraphDocumentComponent::closeAnyOpenPluginWindows()
 void GraphDocumentComponent::changeListenerCallback(ChangeBroadcaster*)
 {
     updateMidiOutput();
+
+    // When audio device changes, the graph I/O nodes need to be updated
+    // The AudioProcessorPlayer (graphPlayer) will automatically call prepareToPlay()
+    // on the graph when the device changes, which updates the I/O node channel counts.
+    // We just need to update the UI to reflect any connection changes.
+    if (graphPanel != nullptr)
+    {
+        graphPanel->updateComponents();
+        graphPanel->repaint();
+    }
+
+    // Remove any illegal connections that might have been created due to channel count changes
+    if (graph != nullptr)
+        graph->graph.removeIllegalConnections();
 }
 
 void GraphDocumentComponent::updateMidiOutput()
@@ -1309,7 +1447,37 @@ void GraphDocumentComponent::updateMidiOutput()
 
         if (midiOutput != nullptr)
             midiOutput->startBackgroundThread();
-
-        graphPlayer.setMidiOutput(midiOutput);
     }
+}
+
+void GraphDocumentComponent::handleNoteOn(
+    juce::MidiKeyboardState* source,
+    int midiChannel,
+    int midiNoteNumber,
+    float velocity
+)
+{
+    juce::ignoreUnused(source);
+
+    // Inject virtual keyboard MIDI into MidiServer
+    auto message = juce::MidiMessage::noteOn(midiChannel, midiNoteNumber, velocity);
+    juce::MidiBuffer buffer;
+    buffer.addEvent(message, 0);
+    mainHostWindow.getMidiClient().injectMidi(buffer);
+}
+
+void GraphDocumentComponent::handleNoteOff(
+    juce::MidiKeyboardState* source,
+    int midiChannel,
+    int midiNoteNumber,
+    float velocity
+)
+{
+    juce::ignoreUnused(source);
+
+    // Inject virtual keyboard MIDI into MidiServer
+    auto message = juce::MidiMessage::noteOff(midiChannel, midiNoteNumber, velocity);
+    juce::MidiBuffer buffer;
+    buffer.addEvent(message, 0);
+    mainHostWindow.getMidiClient().injectMidi(buffer);
 }

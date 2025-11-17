@@ -3,8 +3,8 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 using namespace juce;
 
-#include "../Plugins/ARAPlugin.h"
-#include "../Plugins/IOConfigurationWindow.h"
+#include "../Core/ARAPlugin.h"
+#include "IOConfigurationWindow.h"
 
 #include <atkaudio/atkaudio.h>
 
@@ -148,7 +148,7 @@ public:
         numTypes
     };
 
-    PluginWindow(AudioProcessorGraph::Node* n, Type t, OwnedArray<PluginWindow>& windowList)
+    PluginWindow(AudioProcessorGraphMT::Node* n, Type t, OwnedArray<PluginWindow>& windowList)
         : DocumentWindow(
               n->getProcessor()->getName() + getFormatSuffix(n->getProcessor()),
               LookAndFeel::getDefaultLookAndFeel().findColour(ResizableWindow::backgroundColourId),
@@ -224,7 +224,7 @@ public:
     }
 
     OwnedArray<PluginWindow>& activeWindowList;
-    const AudioProcessorGraph::Node::Ptr node;
+    const AudioProcessorGraphMT::Node::Ptr node;
     const Type type;
 
     BorderSize<int> getBorderThickness() const override

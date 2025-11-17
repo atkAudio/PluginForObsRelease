@@ -12,6 +12,7 @@ endif()
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 
 option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" ON)
+option(BUILD_TESTS "Build unit tests" OFF)
 
 include(compilerconfig)
 include(defaults)
@@ -101,6 +102,7 @@ set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CXX_STANDARD 23)
 
 add_subdirectory(lib/atkaudio)
 
+
 string(JSON PLUGIN_DISPLAY_NAME GET ${buildspec} displayName)
 string(JSON PLUGIN_AUTHOR GET ${buildspec} author)
 string(JSON PLUGIN_OBS_VERSION_REQUIRED GET ${buildspec} dependencies obs-studio version)
@@ -110,6 +112,13 @@ set(PLUGIN_AUTHOR "${PLUGIN_AUTHOR}")
 configure_file(src/config.h.in config.h @ONLY)
 
 include(./lib/atkaudio/cmake/cpack.cmake)
+
+# Enable testing and add tests subdirectory
+if(BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+    message(STATUS "Building tests: Enabled")
+endif()
 
 # Automatically run install after build (skip in CI or when installing to system directories without permissions)
 if(NOT DEFINED ENV{CI} OR NOT CMAKE_INSTALL_PREFIX MATCHES "^/usr")
@@ -136,3 +145,4 @@ if(NOT DEFINED ENV{CI} AND UNIX AND NOT APPLE)
         VERBATIM
     )
 endif()
+

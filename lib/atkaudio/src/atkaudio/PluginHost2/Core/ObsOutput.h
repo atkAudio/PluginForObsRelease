@@ -1,0 +1,274 @@
+#pragma once
+
+#include "../../FifoBuffer2.h"
+
+#include <juce_audio_utils/juce_audio_utils.h>
+#include <obs-frontend-api.h>
+#include <obs-module.h>
+#include <string>
+#include <util/platform.h>
+#include <vector>
+
+constexpr auto PROPERTY_NAME = "mixes";
+constexpr auto CHILD_NAME = "SelectedMixes";
+
+class ObsOutputAudioProcessor : public juce::AudioProcessor
+{
+public:
+    ObsOutputAudioProcessor()
+        : apvts(*this, nullptr, "Parameters", {})
+    {
+        // Pairing with helper source is now done in setStateInformation
+        // to support UUID-based tracking
+    }
+
+    ~ObsOutputAudioProcessor() override
+    {
+        if (privateSource)
+        {
+            obs_source_release(privateSource);
+            privateSource = nullptr;
+        }
+    }
+
+    const juce::String getName() const override
+    {
+        return "OBS Output";
+    }
+
+    void prepareToPlay(double sampleRate, int samplesPerBlock) override
+    {
+    }
+
+    void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
+    {
+        // Ensure we have a helper source before processing
+        if (!privateSource)
+            createNewHelperSource();
+
+        if (!privateSource)
+        {
+            // Still no source, skip processing
+            return;
+        }
+
+        for (int i = 0; i < MAX_AUDIO_CHANNELS; ++i)
+            if (i < buffer.getNumChannels())
+                audioSourceData.data[i] = (const uint8_t*)buffer.getReadPointer(i);
+            else
+                audioSourceData.data[i] = nullptr;
+
+        audioSourceData.frames = static_cast<uint32_t>(buffer.getNumSamples());
+        audioSourceData.speakers = getMainBusNumInputChannels() <= MAX_AUDIO_CHANNELS
+                                     ? static_cast<enum speaker_layout>(getMainBusNumInputChannels())
+                                     : SPEAKERS_UNKNOWN;
+        audioSourceData.format = AUDIO_FORMAT_FLOAT_PLANAR;
+        audioSourceData.samples_per_sec = static_cast<uint32_t>(getSampleRate());
+        audioSourceData.timestamp = os_gettime_ns();
+        obs_source_output_audio(privateSource, &audioSourceData);
+    }
+
+    void releaseResources() override
+    {
+    }
+
+    juce::AudioProcessorEditor* createEditor() override;
+
+    bool hasEditor() const override
+    {
+        return true;
+    }
+
+    double getTailLengthSeconds() const override
+    {
+        return 0.0;
+    }
+
+    int getNumPrograms() override
+    {
+        return 1;
+    }
+
+    int getCurrentProgram() override
+    {
+        return 0;
+    }
+
+    void setCurrentProgram(int) override
+    {
+    }
+
+    const juce::String getProgramName(int) override
+    {
+        return {};
+    }
+
+    void changeProgramName(int, const juce::String&) override
+    {
+    }
+
+    void getStateInformation(juce::MemoryBlock& destData) override
+    {
+        auto state = apvts.copyState();
+        std::unique_ptr<juce::XmlElement> xml(state.createXml());
+
+        // Add helper source UUID to state
+        if (privateSource)
+        {
+            const char* uuid = obs_source_get_uuid(privateSource);
+            if (uuid && uuid[0] != '\0')
+                xml->setAttribute("helperSourceUuid", juce::String(uuid));
+        }
+
+        copyXmlToBinary(*xml, destData);
+    }
+
+    void setStateInformation(const void* data, int sizeInBytes) override
+    {
+        std::unique_ptr<juce::XmlElement> xmlState(getXmlFromBinary(data, sizeInBytes));
+        if (xmlState.get() != nullptr)
+        {
+            if (xmlState->hasTagName(apvts.state.getType()))
+                apvts.replaceState(juce::ValueTree::fromXml(*xmlState));
+
+            // Look for helper source by UUID
+            if (xmlState->hasAttribute("helperSourceUuid"))
+            {
+                juce::String uuidStr = xmlState->getStringAttribute("helperSourceUuid");
+                if (uuidStr.isNotEmpty())
+                    pairWithHelperByUuid(uuidStr.toStdString());
+            }
+            else if (!privateSource)
+            {
+                // No UUID in state, create new helper source
+                createNewHelperSource();
+            }
+        }
+        else if (!privateSource)
+        {
+            // No state at all, create new helper source
+            createNewHelperSource();
+        }
+    }
+
+    bool acceptsMidi() const override
+    {
+        return false;
+    }
+
+    bool producesMidi() const override
+    {
+        return false;
+    }
+
+    auto& getApvts()
+    {
+        return apvts;
+    }
+
+private:
+    juce::AudioProcessorValueTreeState apvts;
+
+    obs_source_t* privateSource = nullptr;
+    obs_data_t* sourceSettings = nullptr;
+    obs_source_audio audioSourceData;
+
+    void pairWithHelperByUuid(const std::string& uuid)
+    {
+        // Release any existing source
+        if (privateSource)
+        {
+            obs_source_release(privateSource);
+            privateSource = nullptr;
+        }
+
+        // Search for source with matching UUID
+        struct FindContext
+        {
+            const std::string* targetUuid;
+            obs_source_t* foundSource;
+        } context{&uuid, nullptr};
+
+        obs_enum_sources(
+            [](void* param, obs_source_t* source) -> bool
+            {
+                auto* ctx = static_cast<FindContext*>(param);
+                const char* sourceUuid = obs_source_get_uuid(source);
+
+                if (sourceUuid && *ctx->targetUuid == sourceUuid)
+                {
+                    // Get a new reference to the source (obs_enum_sources doesn't add a ref)
+                    ctx->foundSource = obs_source_get_ref(source);
+                    return false; // stop enumeration
+                }
+                return true; // continue enumeration
+            },
+            &context
+        );
+
+        if (context.foundSource)
+        {
+            privateSource = context.foundSource;
+        }
+        else
+        {
+            // UUID not found, create new helper source
+            createNewHelperSource();
+        }
+    }
+
+    void createNewHelperSource()
+    {
+        auto id = std::string("atkaudio_ph2helper");
+        auto name = "Ph2Out";
+
+        privateSource = obs_source_create(id.c_str(), name, nullptr, nullptr);
+
+        if (privateSource)
+        {
+            auto* sceneSource = obs_frontend_get_current_scene();
+            if (sceneSource)
+            {
+                auto* scene = obs_scene_from_source(sceneSource);
+                if (scene)
+                    obs_scene_add(scene, privateSource);
+                obs_source_release(sceneSource);
+            }
+
+            obs_source_set_audio_active(privateSource, true);
+            obs_source_set_enabled(privateSource, true);
+        }
+    }
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ObsOutputAudioProcessor)
+};
+
+class ObsOutputAudioProcessorEditor : public juce::AudioProcessorEditor
+{
+public:
+    ObsOutputAudioProcessorEditor(ObsOutputAudioProcessor& p)
+        : juce::AudioProcessorEditor(&p)
+        , processor(p)
+    {
+        setSize(300, 200);
+        setResizable(true, true);
+        setResizeLimits(200, 100, 300, 600);
+    }
+
+    void resized() override
+    {
+        auto area = getLocalBounds().reduced(8);
+    }
+
+private:
+    ObsOutputAudioProcessor& processor;
+    juce::Array<juce::String> items;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ObsOutputAudioProcessorEditor)
+};
+
+// Implementation of createEditor
+inline juce::AudioProcessorEditor* ObsOutputAudioProcessor::createEditor()
+{
+    return new ObsOutputAudioProcessorEditor(*this);
+}

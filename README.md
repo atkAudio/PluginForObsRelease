@@ -10,23 +10,25 @@
 
 ## Plugin Host2
 
-- Includes features of regular Plugin Host plus:
-- Build filter graphs (plugin chains/network) with multiple VST3 plugin instances
+- Includes all features of regular Plugin Host plus:
+- MIDI, e.g. for using MIDI keyboard and a sampler plugin as soundboard
+- Direct interfacing with audio and MIDI hardware devices
+- Use multiple plugins to create complex audio processing chains and graphs from OBS sources and audio devices
+- Multicore parallel audio processing for improved performance
 - Saving and loading of graphs as files
-- MIDI support (e.g. for using MIDI keyboard and a sampler plugin as soundboard)
 - Route audio and MIDI between plugins and hardware (ASIO/CoreAudio included)
+- Sample rate converting and drift compensating internal buffering for seamless audio between OBS sources and audio devices
 - etc
 
 Plugin Host2 can interface directly with audio and MIDI hardware, OBS audio sources, and output audio as new OBS sources, allowing for complex audio processing setups. E.g. use ASIO interface as audio device, take additional audio from OBS sources, route monitoring to ASIO outputs and/or different audio drivers/hardware, use plugins and create final mix, and output the processed audio as a new OBS source for recording and streaming. Or just create a simple soundboard with a sampler plugin and a MIDI keyboard.
-
-Develop your own audio processing plugins and integrate them into `Plugin Host2` using the [JUCE framework](https://juce.com/) AudioProcessor class. See `InternalPlugins.cpp` how `GainPlugin` is loaded. See `GainPlugin.h` for implementation. Optionally include OBS headers to use the [OBS API](https://docs.obsproject.com/) for more advanced integration with [OBS Studio](https://obsproject.com/)
 
 ## Device I/O
 
 - Send and receive audio directly into and from audio devices
 - "Anything from/to anywhere" device routing
 - ASIO, CoreAudio and Windows Audio devices
-- Resampling and drift correction
+
+Develop your own audio processing plugins and integrate them into `Plugin Host2` using the [JUCE framework](https://juce.com/) AudioProcessor class. See `InternalPlugins.cpp` how `GainPlugin` is loaded. See `GainPlugin.h` for implementation. Optionally include OBS headers to use the [OBS API](https://docs.obsproject.com/) for more advanced integration with [OBS Studio](https://obsproject.com/)
 
 ## Audio Source Mixer (OBS Source)
 
@@ -49,6 +51,10 @@ cmake --build --preset ubuntu-x86_64
 
 Find `atkaudio-pluginforobs.so` and copy it to OBS plugins directory.
 See `CMakePresets.json` for Windows, macOS and other build presets.
+
+### Linux Realtime Thread Support
+
+For optimal performance on Linux, see [LINUX_REALTIME.md](LINUX_REALTIME.md) for information about enabling realtime thread scheduling. The plugin works without this configuration but may have better performance with it enabled.
 
 ## Donation
 

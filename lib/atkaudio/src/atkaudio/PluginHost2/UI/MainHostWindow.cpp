@@ -1,9 +1,10 @@
 #include "MainHostWindow.h"
 
 #include "../../About.h"
-#include "../Plugins/InternalPlugins.h"
-#include "../VirtualAudioIoDevice.h"
-#include "../ph2_AudioDeviceSelectorComponent.h"
+#include "../../DeviceIo/AudioDeviceSelectorComponent.h"
+#include "../Core/InternalPlugins.h"
+
+#include <atkaudio/ModuleInfrastructure/MidiServer/MidiServerSettingsComponent.h>
 
 constexpr const char* scanModeKey = "pluginScanMode";
 
@@ -299,22 +300,27 @@ private:
 //==============================================================================
 MainHostWindow::MainHostWindow()
     : DocumentWindow(
-          "atkAudio Plugin Host2",
+          "atkAudio PluginHost2",
           LookAndFeel::getDefaultLookAndFeel().findColour(ResizableWindow::backgroundColourId),
           DocumentWindow::allButtons,
           false
       )
 {
+    // Initialize AudioServer and MidiServer
+    audioServer = atk::AudioServer::getInstance();
+    midiServer = atk::MidiServer::getInstance();
+
+    if (audioServer)
+        audioServer->initialize();
+    if (midiServer)
+        midiServer->initialize();
+
+    // Don't create MIDI client here - it will be provided externally by ModuleDeviceManager
+    // via setExternalMidiClient(), or created on-demand in getMidiClient() if needed
+
     initialise("");
 
-    auto& dm = getDeviceManager();
-    dm.initialiseWithDefaultDevices(256, 256);
-    dm.addAudioDeviceType(std::make_unique<VirtualAudioIODeviceType>());
-    dm.setCurrentAudioDeviceType(IO_TYPE, true);
-    juce::AudioDeviceManager::AudioDeviceSetup setup = dm.getAudioDeviceSetup();
-    setup.inputDeviceName = IO_NAME;
-    setup.outputDeviceName = IO_NAME;
-    dm.setAudioDeviceSetup(setup, true);
+    // AudioDeviceManager setup is now handled by PluginHost2::Impl via ModuleDeviceManager
 
     formatManager.addDefaultFormats();
     formatManager.addFormat(new InternalPluginFormat());
@@ -436,7 +442,7 @@ void MainHostWindow::changeListenerCallback(ChangeBroadcaster* changed)
     }
     else if (graphHolder != nullptr && changed == graphHolder->graph.get())
     {
-        auto title = juce::String("atkAudio Plugin Host2");
+        auto title = juce::String("atkAudio PluginHost2");
         auto f = graphHolder->graph->getFile();
 
         if (f.existsAsFile())
@@ -520,7 +526,7 @@ PopupMenu MainHostWindow::getMenuForIndex(int topLevelMenuIndex, const String& /
 
         menu.addSeparator();
         menu.addCommandItem(&getCommandManager(), CommandIDs::showAudioSettings);
-        menu.addCommandItem(&getCommandManager(), CommandIDs::toggleDoublePrecision);
+        menu.addCommandItem(&getCommandManager(), CommandIDs::showMidiSettings);
 
         if (autoScaleOptionAvailable)
             menu.addCommandItem(&getCommandManager(), CommandIDs::autoScalePluginWindows);
@@ -718,7 +724,7 @@ void MainHostWindow::getAllCommands(Array<CommandID>& commands)
         CommandIDs::saveAs,
         CommandIDs::showPluginListEditor,
         CommandIDs::showAudioSettings,
-        CommandIDs::toggleDoublePrecision,
+        CommandIDs::showMidiSettings,
         CommandIDs::aboutBox,
         CommandIDs::allWindowsForward,
         CommandIDs::autoScalePluginWindows
@@ -759,12 +765,13 @@ void MainHostWindow::getCommandInfo(const CommandID commandID, ApplicationComman
         break;
 
     case CommandIDs::showAudioSettings:
-        result.setInfo("Change Device Settings", {}, category, 0);
+        result.setInfo("Audio...", {}, category, 0);
         result.addDefaultKeypress('a', ModifierKeys::commandModifier);
         break;
 
-    case CommandIDs::toggleDoublePrecision:
-        updatePrecisionMenuItem(result);
+    case CommandIDs::showMidiSettings:
+        result.setInfo("MIDI...", {}, category, 0);
+        result.addDefaultKeypress('m', ModifierKeys::commandModifier);
         break;
 
     case CommandIDs::aboutBox:
@@ -844,19 +851,8 @@ bool MainHostWindow::perform(const InvocationInfo& info)
         showAudioSettings();
         break;
 
-    case CommandIDs::toggleDoublePrecision:
-        if (auto* props = getAppProperties().getUserSettings())
-        {
-            auto newIsDoublePrecision = !isDoublePrecisionProcessingEnabled();
-            props->setValue("doublePrecisionProcessing", var(newIsDoublePrecision));
-
-            ApplicationCommandInfo cmdInfo(info.commandID);
-            updatePrecisionMenuItem(cmdInfo);
-            menuItemsChanged();
-
-            if (graphHolder != nullptr)
-                graphHolder->setDoublePrecision(newIsDoublePrecision);
-        }
+    case CommandIDs::showMidiSettings:
+        showMidiSettings();
         break;
 
     case CommandIDs::autoScalePluginWindows:
@@ -896,23 +892,31 @@ bool MainHostWindow::perform(const InvocationInfo& info)
 
 void MainHostWindow::showAudioSettings()
 {
-    auto* audioSettingsComp =
-        new ph2::AudioDeviceSelectorComponent(deviceManager, 0, 256, 0, 256, true, true, true, true);
+    // Use standard JUCE AudioDeviceSelectorComponent
+    // ModuleDeviceManager devices will show up with OBS Audio and AudioServer devices
+    auto* audioSettingsComp = new AudioDeviceSelectorComponent(
+        deviceManager,
+        0,     // minAudioInputChannels
+        256,   // maxAudioInputChannels
+        0,     // minAudioOutputChannels
+        256,   // maxAudioOutputChannels
+        false, // showMidiInputOptions
+        false, // showMidiOutputSelector
+        false, // showChannelsAsStereoPairs
+        false  // hideAdvancedOptionsWithButton
+    );
 
     audioSettingsComp->setSize(500, 450);
 
     DialogWindow::LaunchOptions o;
     o.content.setOwned(audioSettingsComp);
-
-    o.content.setOwned(audioSettingsComp);
-    o.dialogTitle = "Device Settings";
+    o.dialogTitle = "Audio Settings";
     o.componentToCentreAround = this;
     o.dialogBackgroundColour = getLookAndFeel().findColour(ResizableWindow::backgroundColourId);
     o.escapeKeyTriggersCloseButton = true;
     o.useNativeTitleBar = false;
     o.resizable = false;
 
-    // audioSettingsDialogWindow.reset(o.launchAsync());
     auto* w = o.create();
     audioSettingsDialogWindow = w;
     auto safeThis = SafePointer<MainHostWindow>(this);
@@ -922,14 +926,44 @@ void MainHostWindow::showAudioSettings()
         ModalCallbackFunction::create(
             [safeThis](int)
             {
-                // auto audioState = safeThis->deviceManager.createStateXml();
+                // Device changes are handled automatically by AudioDeviceManager
 
-                // safeThis->getAppProperties().getUserSettings()->setValue("audioDeviceState", audioState.get());
-                // safeThis->getAppProperties().getUserSettings()->saveIfNeeded();
+                if (safeThis != nullptr && safeThis->graphHolder != nullptr)
+                    if (safeThis->graphHolder->graph != nullptr)
+                        safeThis->graphHolder->graph->graph.removeIllegalConnections();
+            }
+        ),
+        true
+    );
+}
 
-                // if (safeThis->graphHolder != nullptr)
-                //     if (safeThis->graphHolder->graph != nullptr)
-                //         safeThis->graphHolder->graph->graph.removeIllegalConnections();
+void MainHostWindow::showMidiSettings()
+{
+    // Create MIDI settings component using ModuleDeviceManager's MidiClient
+    auto* midiSettingsComp = new atk::MidiServerSettingsComponent(&getMidiClient());
+
+    midiSettingsComp->setSize(600, 550);
+
+    DialogWindow::LaunchOptions o;
+    o.content.setOwned(midiSettingsComp);
+    o.dialogTitle = "MIDI Settings";
+    o.componentToCentreAround = this;
+    o.dialogBackgroundColour = getLookAndFeel().findColour(ResizableWindow::backgroundColourId);
+    o.escapeKeyTriggersCloseButton = true;
+    o.useNativeTitleBar = false;
+    o.resizable = false;
+
+    auto* w = o.create();
+    midiSettingsDialogWindow = w;
+    auto safeThis = SafePointer<MainHostWindow>(this);
+
+    w->enterModalState(
+        true,
+        ModalCallbackFunction::create(
+            [safeThis](int)
+            {
+                // MIDI device subscriptions are managed by MidiServer
+                // No additional cleanup needed here
             }
         ),
         true
@@ -990,26 +1024,12 @@ void MainHostWindow::filesDropped(const StringArray& files, int x, int y)
     }
 }
 
-bool MainHostWindow::isDoublePrecisionProcessingEnabled()
-{
-    if (auto* props = getAppProperties().getUserSettings())
-        return props->getBoolValue("doublePrecisionProcessing", false);
-
-    return false;
-}
-
 bool MainHostWindow::isAutoScalePluginWindowsEnabled()
 {
     if (auto* props = getAppProperties().getUserSettings())
         return props->getBoolValue("autoScalePluginWindows", false);
 
     return false;
-}
-
-void MainHostWindow::updatePrecisionMenuItem(ApplicationCommandInfo& info)
-{
-    info.setInfo("Double Floating-Point Precision Rendering", {}, "General", 0);
-    info.setTicked(isDoublePrecisionProcessingEnabled());
 }
 
 void MainHostWindow::updateAutoScaleMenuItem(ApplicationCommandInfo& info)

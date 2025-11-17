@@ -10,7 +10,7 @@
 #include <util/platform.h>
 #include <vector>
 
-#define FILTER_NAME "atkAudio Plugin Host"
+#define FILTER_NAME "atkAudio PluginHost"
 #define FILTER_ID "atkaudio_plugin_host"
 
 #define OPEN_PLUGIN_SETTINGS "open_plugin_settings"
@@ -97,6 +97,7 @@ static void save(void* data, obs_data_t* settings)
     std::string s;
     ph->pluginHost.getState(s);
 
+    blog(LOG_INFO, "[PluginHost] Saving state, size: %zu bytes", s.size());
     obs_data_set_string(settings, FILTER_ID, s.c_str());
 }
 
@@ -106,6 +107,7 @@ static void load(void* data, obs_data_t* settings)
     std::string s;
     const char* chunkData = obs_data_get_string(settings, FILTER_ID);
     s = chunkData;
+    blog(LOG_INFO, "[PluginHost] Loading state, size: %zu bytes", s.size());
     ph->pluginHost.setState(s);
 }
 
@@ -122,6 +124,9 @@ static void pluginhost_update(void* data, obs_data_t* s)
 
     bool valid_sidechain = *sidechain_name && strcmp(sidechain_name, "none") != 0;
     obs_weak_source_t* old_weak_sidechain = NULL;
+
+    // Update sidechain enabled state in the plugin host
+    ph->pluginHost.setSidechainEnabled(valid_sidechain);
 
     ph->sidechain_update_mutex.lock();
 

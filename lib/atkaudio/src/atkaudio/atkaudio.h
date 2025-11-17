@@ -27,5 +27,8 @@ extern "C"
 
     // Apply colors to LookAndFeel from RGB values
     void applyColors(uint8_t bgR, uint8_t bgG, uint8_t bgB, uint8_t fgR, uint8_t fgG, uint8_t fgB);
+
+    // Logging helper
+    void logMessage(const juce::String& message);
 }
 } // namespace atk

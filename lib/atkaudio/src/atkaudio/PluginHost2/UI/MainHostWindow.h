@@ -3,9 +3,12 @@
 using namespace juce;
 
 #include "../../LookAndFeel.h"
-#include "../Plugins/PluginGraph.h"
+#include "../Core/PluginGraph.h"
 #include "GraphEditorPanel.h"
 #include "ScannerSubprocess.h"
+
+#include <atkaudio/ModuleInfrastructure/AudioServer/AudioServer.h>
+#include <atkaudio/ModuleInfrastructure/MidiServer/MidiServer.h>
 
 //==============================================================================
 namespace CommandIDs
@@ -18,9 +21,9 @@ static const int newFile = 0x30003;
 #endif
 static const int showPluginListEditor = 0x30100;
 static const int showAudioSettings = 0x30200;
+static const int showMidiSettings = 0x30210;
 static const int aboutBox = 0x30300;
 static const int allWindowsForward = 0x30400;
-static const int toggleDoublePrecision = 0x30500;
 static const int autoScalePluginWindows = 0x30600;
 } // namespace CommandIDs
 
@@ -111,7 +114,7 @@ public:
         // initialise our settings file..
 
         PropertiesFile::Options options;
-        options.applicationName = "atkAudio Plugin Host2";
+        options.applicationName = "atkAudio PluginHost2";
         options.filenameSuffix = "settings";
         options.osxLibrarySubFolder = "Application Support";
         options.folderName = "atkAudio Plugin";
@@ -169,6 +172,29 @@ public:
             graphHolder->graph->restoreFromXml(xml);
     }
 
+    auto& getAudioServer()
+    {
+        return *audioServer;
+    }
+
+    auto& getMidiServer()
+    {
+        return *midiServer;
+    }
+
+    auto& getMidiClient()
+    {
+        // Always use external MidiClient from ModuleDeviceManager
+        jassert(externalMidiClient != nullptr);
+        return *externalMidiClient;
+    }
+
+    // Set the external MIDI client from ModuleDeviceManager (required)
+    void setExternalMidiClient(atk::MidiClient& external)
+    {
+        externalMidiClient = &external;
+    }
+
     auto& getDeviceManager()
     {
         return deviceManager;
@@ -176,20 +202,29 @@ public:
 
 private:
     //==============================================================================
-    bool isDoublePrecisionProcessingEnabled();
     bool isAutoScalePluginWindowsEnabled();
 
-    void updatePrecisionMenuItem(ApplicationCommandInfo& info);
     void updateAutoScaleMenuItem(ApplicationCommandInfo& info);
 
     void showAudioSettings();
+    void showMidiSettings();
 
     //==============================================================================
     static inline juce::InterProcessLock interprocessLock{"atkAudioPluginHost2Lock"};
 
     juce::DialogWindow* audioSettingsDialogWindow = nullptr;
+    juce::DialogWindow* midiSettingsDialogWindow = nullptr;
 
+    // NEW: Use AudioServer and MidiServer instead of AudioDeviceManager
+    atk::AudioServer* audioServer = nullptr;
+    atk::MidiServer* midiServer = nullptr;
+
+    // NEW: MidiClient from ModuleDeviceManager (external reference, required)
+    atk::MidiClient* externalMidiClient = nullptr;
+
+    // OLD: Keep for backward compatibility with VirtualAudioIODevice
     AudioDeviceManager deviceManager;
+
     AudioPluginFormatManager formatManager;
 
     std::vector<PluginDescription> internalTypes;

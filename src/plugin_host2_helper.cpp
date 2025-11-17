@@ -1,9 +1,9 @@
 #include "config.h"
 
-#include <atkaudio/PluginHost2/ObsOutput.h>
+#include <atkaudio/PluginHost2/Core/ObsOutput.h>
 #include <obs-module.h>
 
-#define SOURCE_NAME "atkAudio Plugin Host2 Helper"
+#define SOURCE_NAME "atkAudio PluginHost2 Helper"
 #define SOURCE_ID "atkaudio_ph2helper"
 
 struct ph2helper_data

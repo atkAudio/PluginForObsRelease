@@ -9,7 +9,7 @@ string(JSON PATHNAME GET "${_buildspec_json}" name)
 file(CREATE_LINK "${CMAKE_CURRENT_SOURCE_DIR}/README.md" "${CMAKE_BINARY_DIR}/README.txt" SYMBOLIC)
 set(CPACK_RESOURCE_FILE_README "${CMAKE_BINARY_DIR}/README.txt")
 
-configure_file("${CMAKE_CURRENT_SOURCE_DIR}/LICENSE-AGPL3" "${CMAKE_BINARY_DIR}/LICENSE.txt" COPYONLY)
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/LICENSE" "${CMAKE_BINARY_DIR}/LICENSE.txt" COPYONLY)
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_BINARY_DIR}/LICENSE.txt")
 
 set(CPACK_PACKAGE_VENDOR "${AUTHOR}")
@@ -204,6 +204,10 @@ else()
   # Set package dependencies - OBS Studio is typically required
   set(CPACK_DEBIAN_PACKAGE_DEPENDS "obs-studio")
   
+  # Control debug symbol package generation
+  # Set to ON to create separate .ddeb files, OFF to strip and skip debug packages
+  set(CPACK_DEBIAN_DEBUGINFO_PACKAGE OFF)
+  
   # Linux-specific: Force CPack to use ONLY install() commands for plugin component
   # This ensures only the installed plugin component (binary + locale) is packaged
   set(CPACK_DEB_COMPONENT_INSTALL OFF)
@@ -230,6 +234,52 @@ message(STATUS "CPack configuration - Package file name: ${CPACK_PACKAGE_FILE_NA
 message(STATUS "CPack configuration - Install projects: ${CPACK_INSTALL_CMAKE_PROJECTS}")
 
 include(CPack)
+
+# ============================================================================
+# SOURCE ARCHIVE GENERATION
+# ============================================================================
+# Only generate on Linux x86_64 to avoid duplicate artifacts
+if(UNIX AND NOT APPLE AND (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64"))
+  set(SOURCE_ARCHIVE_NAME "${PATHNAME}-${PROJECT_VERSION}-source.tar.gz")
+  set(SOURCE_ARCHIVE_OUTPUT "${CPACK_PACKAGE_DIRECTORY}/${SOURCE_ARCHIVE_NAME}")
+
+  find_package(Git QUIET)
+
+  if(GIT_FOUND)
+    execute_process(
+      COMMAND "${GIT_EXECUTABLE}" rev-parse --is-inside-work-tree
+      WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+      RESULT_VARIABLE GIT_REPO_CHECK
+      OUTPUT_QUIET
+      ERROR_QUIET
+    )
+    
+    if(GIT_REPO_CHECK EQUAL 0)
+      message(STATUS "Source archive will be generated: ${SOURCE_ARCHIVE_NAME}")
+      
+      add_custom_command(
+        OUTPUT "${SOURCE_ARCHIVE_OUTPUT}"
+        COMMAND "${GIT_EXECUTABLE}" archive -o "${SOURCE_ARCHIVE_OUTPUT}" HEAD --worktree-attributes
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        COMMENT "Creating source archive ${SOURCE_ARCHIVE_NAME}"
+        VERBATIM
+      )
+      
+      add_custom_target(generate_source_archive ALL
+        DEPENDS "${SOURCE_ARCHIVE_OUTPUT}"
+      )
+      
+      message(STATUS "Source archive location: ${SOURCE_ARCHIVE_OUTPUT}")
+    else()
+      message(STATUS "Not in a git repository - source archive will not be generated")
+    endif()
+  else()
+    message(STATUS "Git not found - source archive will not be generated")
+  endif()
+else()
+  message(STATUS "Source archive generation skipped (only Linux x86_64)")
+endif()
+
 # ============================================================================
 # PORTABLE INSTALLER CONFIGURATION (Define before first CPack include)
 # ============================================================================

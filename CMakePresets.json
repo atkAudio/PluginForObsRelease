@@ -105,7 +105,7 @@
       "displayName": "Windows x64 CI build",
       "description": "Build for Windows x64 on CI",
       "cacheVariables": {
-        "CMAKE_COMPILE_WARNING_AS_ERROR": true
+        "CMAKE_COMPILE_WARNING_AS_ERROR": false
       }
     },
     {
@@ -139,7 +139,7 @@
       "displayName": "Windows ARM64 CI build",
       "description": "Build for Windows ARM64 on CI",
       "cacheVariables": {
-        "CMAKE_COMPILE_WARNING_AS_ERROR": true
+        "CMAKE_COMPILE_WARNING_AS_ERROR": false
       }
     },
     {
@@ -220,7 +220,7 @@
       "configurePreset": "windows-arm64",
       "displayName": "Windows ARM64",
       "description": "Windows build for ARM64",
-      "configuration": "Debug"
+      "configuration": "RelWithDebInfo"
     },
     {
       "name": "windows-arm64-release",

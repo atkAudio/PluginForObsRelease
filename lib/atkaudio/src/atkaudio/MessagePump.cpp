@@ -1,9 +1,9 @@
 #include "MessagePump.h"
-
 #include "atkaudio.h"
 
-#include <QTimer>
 #include <juce_events/juce_events.h>
+
+#include <QTimer>
 
 namespace atk
 {

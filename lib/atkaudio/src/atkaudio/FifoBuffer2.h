@@ -2,7 +2,8 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
-static constexpr int FIXED_BUFFER_SIZE = 65536; // max samples
+static constexpr auto FIXED_BUFFER_SIZE = 65536; // max samples
+static constexpr auto TARGET_LEVEL_FACTOR = 1.5; // Target buffer level factor
 
 // Simple FIFO buffer - no auto-growth, just basic read/write
 class FifoBuffer2
@@ -216,8 +217,7 @@ public:
         bufferLevelHistory.assign(BUFFER_HISTORY_SIZE, FIXED_BUFFER_SIZE);
 
         bufferCompensation = 0.0;
-        compensationInitialized = false;
-        lastCompensationLogTime = juce::Time::getCurrentTime();
+        wasAtTargetLevel = false;
 
         isPrepared = true;
     }
@@ -312,9 +312,10 @@ public:
             for (int i = 0; i < BUFFER_HISTORY_SIZE; ++i)
                 minBufferLevel = std::min(minBufferLevel, bufferLevelHistory[i]);
 
-            // Target: 1.5x reader buffer size (in writer's domain) for safety margin
+            // Target: reader buffer size (in writer's domain) for safety margin
             int baseTargetLevel = static_cast<int>(std::ceil(readerBufferSize * ratio));
-            int targetMinLevel = static_cast<int>(baseTargetLevel * 1.5);
+            int targetMinLevel = static_cast<int>(std::ceil(baseTargetLevel * TARGET_LEVEL_FACTOR));
+            targetMinLevel++;
             int bufferLevelError = minBufferLevel - targetMinLevel;
 
             // Calculate compensation: normalize error by total samples read in window
@@ -328,25 +329,19 @@ public:
                 bufferCompensation = 0.0;
             }
 
-            // Log once per second
-            if (!compensationInitialized)
+            // Log only when recovering/achieving target (transitioning from below to at/above target)
+            bool currentlyAtTarget = (minBufferLevel >= targetMinLevel);
+            if (currentlyAtTarget && !wasAtTargetLevel)
             {
-                compensationInitialized = true;
-                lastCompensationLogTime = juce::Time::getCurrentTime();
-            }
-
-            auto currentTime = juce::Time::getCurrentTime();
-            if ((currentTime - lastCompensationLogTime).inSeconds() >= 1.0)
-            {
-                lastCompensationLogTime = currentTime;
-                DBG("[SYNC] Buffer comp = "
-                    << (bufferCompensation * 100.0)
-                    << "% (min = "
+                auto timestamp = juce::Time::getCurrentTime().formatted("%H:%M:%S");
+                DBG("[SYNC] "
+                    << timestamp
+                    << " Buffer level RECOVERED - min = "
                     << minBufferLevel
                     << ", target = "
-                    << targetMinLevel
-                    << ")");
+                    << targetMinLevel);
             }
+            wasAtTargetLevel = currentlyAtTarget;
         }
 
         // Apply buffer compensation to ratio
@@ -355,20 +350,6 @@ public:
         int writerSamplesNeeded = static_cast<int>(std::ceil(numSamples * compensatedRatio));
 
         writerSamplesNeeded++; // need one extra sample for interpolation safety
-
-        // Log buffer level periodically
-        auto now = juce::Time::getCurrentTime();
-        if ((now - lastBufferLevelLogTime).inSeconds() >= 1)
-        {
-            DBG("[SYNC] Buffer level = "
-                << samplesInFifo
-                << " / "
-                << totalSize
-                << " ("
-                << (100 * samplesInFifo / totalSize)
-                << "%)");
-            lastBufferLevelLogTime = now;
-        }
 
         if (!addToBuffer)
             for (int ch = 0; ch < numChannels; ++ch)
@@ -392,7 +373,10 @@ public:
             double availabilityFactor = static_cast<double>(writerSamples) / writerSamplesNeeded;
             finalRatio = compensatedRatio * availabilityFactor;
 
-            DBG("[SYNC] UNDERFLOW - need "
+            auto timestamp = juce::Time::getCurrentTime().formatted("%H:%M:%S");
+            DBG("[SYNC] "
+                << timestamp
+                << " UNDERFLOW - need "
                 << writerSamplesNeeded
                 << " samples, only got "
                 << writerSamples
@@ -407,61 +391,41 @@ public:
         if (writerNumChannels > numChannels)
             channelGain = static_cast<float>(std::sqrt(static_cast<double>(numChannels) / writerNumChannels));
 
+        // Process all samples at once per channel
         for (int destCh = 0; destCh < numChannels; ++destCh)
         {
-            int totalSamplesConsumed = 0;
-            int samplesAvailable = writerSamples;
-
             int srcCh = destCh % writerNumChannels;
 
-            for (int j = 0; j < numSamples; ++j)
-            {
-                int samplesConsumed = interpolators[srcCh].process(
-                    finalRatio,
-                    tempBuffer.getReadPointer(srcCh) + totalSamplesConsumed,
-                    dest[destCh] + j,
-                    1,
-                    samplesAvailable,
-                    0
-                );
+            int samplesConsumed =
+                interpolators[srcCh]
+                    .process(finalRatio, tempBuffer.getReadPointer(srcCh), dest[destCh], numSamples, writerSamples, 0);
 
-                dest[destCh][j] *= channelGain;
+            // Apply channel gain
+            if (channelGain != 1.0f)
+                for (int j = 0; j < numSamples; ++j)
+                    dest[destCh][j] *= channelGain;
 
-                samplesAvailable -= samplesConsumed;
-                totalSamplesConsumed += samplesConsumed;
-            }
-
-            maxSamplesConsumed = std::max(maxSamplesConsumed, totalSamplesConsumed);
+            maxSamplesConsumed = std::max(maxSamplesConsumed, samplesConsumed);
         }
 
+        // Handle extra writer channels (fold down into reader channels)
         if (writerNumChannels > numChannels)
         {
             for (int i = numChannels; i < writerNumChannels; ++i)
             {
-                int totalSamplesConsumed = 0;
-                int samplesAvailable = writerSamples;
-
                 auto destCh = i % numChannels;
 
+                // Process into temp location then mix
+                float tempOutput[FIXED_BUFFER_SIZE];
+                int samplesConsumed =
+                    interpolators[i]
+                        .process(finalRatio, tempBuffer.getReadPointer(i), tempOutput, numSamples, writerSamples, 0);
+
+                // Mix with gain into destination
                 for (int j = 0; j < numSamples; ++j)
-                {
-                    float sample = 0.0f;
-                    int samplesConsumed = interpolators[i].process(
-                        finalRatio,
-                        tempBuffer.getReadPointer(i) + totalSamplesConsumed,
-                        &sample,
-                        1,
-                        samplesAvailable,
-                        0
-                    );
+                    dest[destCh][j] += tempOutput[j] * channelGain;
 
-                    dest[destCh][j] += sample * channelGain;
-
-                    samplesAvailable -= samplesConsumed;
-                    totalSamplesConsumed += samplesConsumed;
-                }
-
-                maxSamplesConsumed = std::max(maxSamplesConsumed, totalSamplesConsumed);
+                maxSamplesConsumed = std::max(maxSamplesConsumed, samplesConsumed);
             }
         }
 
@@ -510,10 +474,8 @@ private:
     int readCallCount{0};                 // Total number of read() calls
     std::atomic<bool> hasReadOnce{false}; // Flag to enable writes after first read
 
-    juce::Time lastCompensationLogTime; // Last time we logged compensation
-    juce::Time lastBufferLevelLogTime;  // Last time we logged buffer level
-    double bufferCompensation{0.0};     // Current compensation value
-    bool compensationInitialized{false};
+    double bufferCompensation{0.0}; // Current compensation value
+    bool wasAtTargetLevel{false};   // Track if we were at target level (for recovery detection)
 
     juce::CriticalSection readLock;
     juce::CriticalSection writeLock;

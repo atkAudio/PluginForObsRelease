@@ -23,8 +23,6 @@
 #define TEXT_OUTPUT MT_("Output")
 #define S_POSTMUTE "post_mute"
 #define TEXT_POSTMUTE MT_("Post-Mute")
-#define S_POSTFADER "post_fader"
-#define TEXT_POSTFADER MT_("Post-Fader")
 #define TEXT_LAYOUT MT_("Output Channels")
 #define TEXT_LAYOUT_DEFAULT MT_("Default")
 #define TEXT_LAYOUT_MONO MT_("Mono")
@@ -43,7 +41,6 @@ struct source_data
 
     float gain;
     bool postMute;
-    bool postFader;
 
     atk::FifoBuffer fifoBuffer;
     std::vector<float> tempBuffer;
@@ -212,17 +209,8 @@ static void asmd_capture(void* param, obs_source_t* sourceIn, const struct audio
     for (int i = 0; i < numChannels; i++)
     {
         auto* sourcePtr = (float*)audio_data->data[i];
-
-        float totalGain = source->gain;
-
-        if (source->postFader && sourceIn)
-        {
-            float sourceVolume = obs_source_get_volume(sourceIn);
-            totalGain *= sourceVolume;
-        }
-
         for (size_t j = 0; j < frames; j++)
-            sourcePtr[j] *= totalGain;
+            sourcePtr[j] *= source->gain;
 
         source->fifoBuffer.write(sourcePtr, i, frames, i == numChannels - 1);
     }
@@ -438,12 +426,6 @@ static obs_properties_t* properties(void* data)
         textLabel += " " + std::to_string(i + 1);
         obs_properties_add_bool(props, propText.c_str(), textLabel.c_str());
 
-        propText = S_POSTFADER;
-        propText += std::to_string(i + 1);
-        textLabel = TEXT_POSTFADER;
-        textLabel += " " + std::to_string(i + 1);
-        obs_properties_add_bool(props, propText.c_str(), textLabel.c_str());
-
         struct sidechain_prop_info info = {sources, parent, asmd};
         obs_enum_sources(add_sources, &info);
     }
@@ -477,10 +459,6 @@ static void update(void* data, obs_data_t* s)
         paramText = S_POSTMUTE;
         paramText += std::to_string(i + 1);
         source.postMute = obs_data_get_bool(s, paramText.c_str());
-
-        paramText = S_POSTFADER;
-        paramText += std::to_string(i + 1);
-        source.postFader = obs_data_get_bool(s, paramText.c_str());
 
         const char* sidechain_name = obs_data_get_string(s, sidechainText.c_str());
 

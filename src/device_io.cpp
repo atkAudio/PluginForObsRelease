@@ -2,7 +2,7 @@
 #include <atomic>
 #include <obs-module.h>
 
-#define FILTER_NAME "atkAudio Device I/O"
+#define FILTER_NAME "atkAudio DeviceIo"
 #define FILTER_ID "atkaudio_device_io"
 
 #define OPEN_DEVICE_SETTINGS "open_device_settings"

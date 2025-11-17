@@ -1,8 +1,11 @@
 #include "atkaudio.h"
 
+#include "AudioProcessorGraphMT/AudioThreadPool.h"
 #include "JuceApp.h"
 #include "LookAndFeel.h"
 #include "MessagePump.h"
+#include "ModuleInfrastructure/AudioServer/AudioServer.h"
+#include "ModuleInfrastructure/MidiServer/MidiServer.h"
 #include "UpdateCheck.h"
 
 #include <juce_audio_utils/juce_audio_utils.h>
@@ -39,6 +42,18 @@ void atk::create()
 
     // Initialize LookAndFeel singleton
     juce::SharedResourcePointer<atk::LookAndFeel> lookAndFeel;
+
+    // Initialize MIDI server
+    if (auto* midiServer = atk::MidiServer::getInstance())
+        midiServer->initialize();
+
+    // Initialize Audio server
+    if (auto* audioServer = atk::AudioServer::getInstance())
+        audioServer->initialize();
+
+    // Initialize AudioThreadPool synchronously so it's ready when filters are created
+    if (auto* threadPool = atk::AudioThreadPool::getInstance())
+        threadPool->initialize(0, 8); // 0 = auto-detect cores, priority 8
 }
 
 void atk::pump()
@@ -47,7 +62,7 @@ void atk::pump()
     // On Linux, pump the JUCE message loop with a timer
     // On macOS, JUCE integrates with NSRunLoop and doesn't need manual pumping
     // On Windows, JUCE integrates with Win32 message loop and doesn't need manual pumping
-    juce::MessageManager::getInstance()->runDispatchLoopUntil(5);
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(3);
 #endif
 }
 
@@ -70,37 +85,36 @@ void atk::startMessagePump(QObject* qtParent)
 
 void atk::destroy()
 {
+    juce::MessageManager::getInstance()->setCurrentThreadAsMessageThread();
+
     g_messagePump = nullptr;
 
-    // Explicitly delete UpdateCheck before shutting down JUCE
     if (updateCheck != nullptr)
     {
         delete updateCheck;
         updateCheck = nullptr;
     }
 
-    juce::MessageManager::getInstance()->setCurrentThreadAsMessageThread();
-
-    // Force hide all visible JUCE components before shutdown
-    auto& desktop = juce::Desktop::getInstance();
-    for (int i = 0; i < desktop.getNumComponents(); ++i)
+    if (auto* midiServer = atk::MidiServer::getInstance())
     {
-        if (auto* comp = desktop.getComponent(i))
-        {
-            if (comp->isVisible())
-                comp->setVisible(false);
-        }
+        midiServer->shutdown();
+        atk::MidiServer::deleteInstance();
     }
 
-    auto numComponents = juce::Desktop::getInstance().getNumComponents();
-    DBG("shutting down with " << numComponents << " remaining components");
+    if (auto* audioServer = atk::AudioServer::getInstance())
+    {
+        audioServer->shutdown();
+        atk::AudioServer::deleteInstance();
+    }
 
-    // Don't pump messages after hiding components - this can cause crashes
-    // when VST3 plugins try to unregister event handlers during destruction
+    // Shutdown thread pool if it exists
+    if (auto* threadPool = atk::AudioThreadPool::getInstance())
+    {
+        threadPool->shutdown();
+        atk::AudioThreadPool::deleteInstance();
+    }
 
-#ifndef JUCE_LINUX
     juce::shutdownJuce_GUI();
-#endif
 }
 
 void atk::update()
@@ -177,4 +191,9 @@ void atk::applyColors(uint8_t bgR, uint8_t bgG, uint8_t bgB, uint8_t fgR, uint8_
     auto bgColour = juce::Colour(bgR, bgG, bgB);
     auto fgColour = juce::Colour(fgR, fgG, fgB);
     atk::LookAndFeel::applyColorsToInstance(bgColour, fgColour);
+}
+
+void atk::logMessage(const juce::String& message)
+{
+    DBG(message);
 }
