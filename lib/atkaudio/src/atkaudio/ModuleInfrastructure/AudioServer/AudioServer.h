@@ -221,7 +221,9 @@ private:
  * Each device gets its own AudioDeviceManager and callback
  * Operates in FULL-DUPLEX mode (both input and output) for reliable callbacks
  */
-class AudioDeviceHandler : public juce::AudioIODeviceCallback
+class AudioDeviceHandler
+    : public juce::AudioIODeviceCallback
+    , public juce::ChangeListener
 {
     friend class AudioServer; // Allow AudioServer to access private members
 
@@ -245,6 +247,9 @@ public:
 
     void audioDeviceAboutToStart(juce::AudioIODevice* device) override;
     void audioDeviceStopped() override;
+
+    // ChangeListener interface - detects device configuration changes
+    void changeListenerCallback(juce::ChangeBroadcaster* source) override;
 
     // Client subscription management
     void addClientSubscription(void* clientId, const std::vector<ChannelSubscription>& subscriptions, bool isInput);
@@ -505,6 +510,13 @@ public:
         const juce::Array<double>& sampleRates,
         const juce::Array<int>& bufferSizes
     );
+
+    /**
+     * Invalidate cached device information for a specific device.
+     * Called when device configuration changes to force re-querying capabilities.
+     * @param deviceName Name of the device to invalidate cache for
+     */
+    void invalidateDeviceCache(const juce::String& deviceName);
 
     /**
      * Get current sample rate for a device (if device is open)

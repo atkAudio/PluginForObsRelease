@@ -9,8 +9,6 @@
 #define OPEN_DEVICE_TEXT "Open Device Settings"
 #define CLOSE_DEVICE_SETTINGS "close_device_settings"
 #define CLOSE_DEVICE_TEXT "Close Device Settings"
-#define MIX_INPUT_TEXT "Mix Input"
-#define S_MIX_INPUT "mix_input"
 
 #define IG_ID "input_gain"
 #define OG_ID "output_gain"
@@ -29,7 +27,6 @@ struct adio2_data
     int channels = 0;
     double sampleRate = 0.0;
 
-    std::atomic_bool mixInput = false;
     std::atomic_bool followSourceVolume = false;
     std::atomic<float> inputGain = 1.0f;
     std::atomic<float> outputGain = 1.0f;
@@ -40,13 +37,13 @@ struct adio2_data
     bool hasInitUpdateLoad = false;
 };
 
-static const char* devio2_name(void* unused)
+static const char* deviceio2_name(void* unused)
 {
     UNUSED_PARAMETER(unused);
     return obs_module_text(FILTER_NAME);
 }
 
-static void devio2_destroy(void* data)
+static void deviceio2_destroy(void* data)
 {
     struct adio2_data* adio = (struct adio2_data*)data;
 
@@ -62,13 +59,12 @@ static void load(void* data, obs_data_t* settings)
     adio->deviceIo2.setState(s);
 }
 
-static void devio2_update(void* data, obs_data_t* s)
+static void deviceio2_update(void* data, obs_data_t* s)
 {
     struct adio2_data* adio = (struct adio2_data*)data;
     adio->settings = s;
     adio->channels = (int)audio_output_get_channels(obs_get_audio());
 
-    adio->mixInput.store(obs_data_get_bool(s, S_MIX_INPUT), std::memory_order_release);
     adio->followSourceVolume.store(obs_data_get_bool(s, FOLLOW_ID), std::memory_order_release);
 
     auto inputGain = (float)obs_data_get_double(s, IG_ID);
@@ -89,7 +85,7 @@ static void devio2_update(void* data, obs_data_t* s)
     }
 }
 
-static void* devio2_create(obs_data_t* settings, obs_source_t* filter)
+static void* deviceio2_create(obs_data_t* settings, obs_source_t* filter)
 {
     struct adio2_data* adio = new adio2_data();
     adio->context = filter;
@@ -100,14 +96,13 @@ static void* devio2_create(obs_data_t* settings, obs_source_t* filter)
     adio->channels = numChannels;
     adio->sampleRate = sampleRate;
 
-    devio2_update(adio, settings);
+    deviceio2_update(adio, settings);
 
     return adio;
 }
 
-static void devio2_defaults(obs_data_t* s)
+static void deviceio2_defaults(obs_data_t* s)
 {
-    obs_data_set_default_bool(s, S_MIX_INPUT, false);
     obs_data_set_default_bool(s, FOLLOW_ID, false);
     obs_data_set_default_double(s, IG_ID, 0.0);
     obs_data_set_default_double(s, OG_ID, 0.0);
@@ -136,7 +131,7 @@ static bool close_editor_button_clicked(obs_properties_t* props, obs_property_t*
     return true;
 }
 
-static obs_properties_t* devio2_properties(void* data)
+static obs_properties_t* deviceio2_properties(void* data)
 {
     obs_properties_t* props = obs_properties_create();
 
@@ -148,8 +143,6 @@ static obs_properties_t* devio2_properties(void* data)
 
     obs_property_set_visible(obs_properties_get(props, OPEN_DEVICE_SETTINGS), open_settings_vis);
     obs_property_set_visible(obs_properties_get(props, CLOSE_DEVICE_SETTINGS), close_settings_vis);
-
-    obs_properties_add_bool(props, S_MIX_INPUT, obs_module_text(MIX_INPUT_TEXT));
 
     std::string propText = FOLLOW_ID;
     std::string textLabel = FOLLOW_NAME;
@@ -175,7 +168,7 @@ static obs_properties_t* devio2_properties(void* data)
     return props;
 }
 
-static struct obs_audio_data* devio2_filter(void* data, struct obs_audio_data* audio)
+static struct obs_audio_data* deviceio2_filter(void* data, struct obs_audio_data* audio)
 {
     struct adio2_data* adio = (struct adio2_data*)data;
     auto channels = adio->channels;
@@ -187,7 +180,6 @@ static struct obs_audio_data* devio2_filter(void* data, struct obs_audio_data* a
         for (size_t j = 0; j < frames; j++)
             adata[i][j] *= outputGain;
 
-    adio->deviceIo2.setMixInput(adio->mixInput.load(std::memory_order_acquire));
     adio->deviceIo2.process(adata, channels, frames, adio->sampleRate);
 
     auto inputGain = adio->inputGain.load(std::memory_order_acquire);
@@ -242,14 +234,14 @@ struct obs_source_info device_io2_filter = {
     .id = FILTER_ID,
     .type = OBS_SOURCE_TYPE_FILTER,
     .output_flags = OBS_SOURCE_AUDIO,
-    .get_name = devio2_name,
-    .create = devio2_create,
-    .destroy = devio2_destroy,
-    .get_defaults = devio2_defaults,
-    .get_properties = devio2_properties,
-    .update = devio2_update,
+    .get_name = deviceio2_name,
+    .create = deviceio2_create,
+    .destroy = deviceio2_destroy,
+    .get_defaults = deviceio2_defaults,
+    .get_properties = deviceio2_properties,
+    .update = deviceio2_update,
     .video_tick = tick,
-    .filter_audio = devio2_filter,
+    .filter_audio = deviceio2_filter,
     .save = save,
     .load = load,
 };

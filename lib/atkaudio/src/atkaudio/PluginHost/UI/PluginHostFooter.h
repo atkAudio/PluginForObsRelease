@@ -14,13 +14,14 @@ public:
     {
         actionButton.setButtonText(actionButtonText);
 
+        // MT button for enabling secondary job queue processing
         addAndMakeVisible(multiToggle);
         addAndMakeVisible(audioButton);
         addAndMakeVisible(midiButton);
         addAndMakeVisible(actionButton);
 
         multiToggle.setButtonText("MT");
-        multiToggle.setTooltip("Enable multithreading (adds one buffer latency)");
+        multiToggle.setTooltip("Enable multithreading using secondary job queue");
         multiToggle.setClickingTogglesState(true);
 
         if (showLinkButton)

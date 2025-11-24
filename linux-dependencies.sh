@@ -30,11 +30,13 @@ JUCE_DEPS=(
   libwebkit2gtk-4.1-dev
   libglu1-mesa-dev
   mesa-common-dev
+  libgtk-3-dev
 )
 
 # OBS dependencies
 OBS_DEPS=(
   libobs-dev
+  libsimde-dev
 )
 
 # Qt6 dependencies

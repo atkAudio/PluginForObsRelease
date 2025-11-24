@@ -16,7 +16,10 @@ class ObsOutputAudioProcessor : public juce::AudioProcessor
 {
 public:
     ObsOutputAudioProcessor()
-        : apvts(*this, nullptr, "Parameters", {})
+        : juce::AudioProcessor(
+              juce::AudioProcessor::BusesProperties().withInput("Input", juce::AudioChannelSet::stereo(), true)
+          )
+        , apvts(*this, nullptr, "Parameters", {})
     {
         // Pairing with helper source is now done in setStateInformation
         // to support UUID-based tracking
@@ -36,21 +39,22 @@ public:
         return "OBS Output";
     }
 
-    void prepareToPlay(double sampleRate, int samplesPerBlock) override
+    void prepareToPlay(double, int) override
     {
     }
 
     void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
     {
         // Ensure we have a helper source before processing
-        if (!privateSource)
+        if (!privateSource && !sourceCreationScheduled)
+        {
+            DBG("ObsOutput: Creating helper source (first processBlock)");
+            sourceCreationScheduled = true;
             createNewHelperSource();
+        }
 
         if (!privateSource)
-        {
-            // Still no source, skip processing
-            return;
-        }
+            return; // No source available yet
 
         for (int i = 0; i < MAX_AUDIO_CHANNELS; ++i)
             if (i < buffer.getNumChannels())
@@ -138,15 +142,17 @@ public:
                 if (uuidStr.isNotEmpty())
                     pairWithHelperByUuid(uuidStr.toStdString());
             }
-            else if (!privateSource)
+            else if (!privateSource && !sourceCreationScheduled)
             {
-                // No UUID in state, create new helper source
+                DBG("ObsOutput: Creating helper source (no UUID in state)");
+                sourceCreationScheduled = true;
                 createNewHelperSource();
             }
         }
-        else if (!privateSource)
+        else if (!privateSource && !sourceCreationScheduled)
         {
-            // No state at all, create new helper source
+            DBG("ObsOutput: Creating helper source (no state)");
+            sourceCreationScheduled = true;
             createNewHelperSource();
         }
     }
@@ -170,8 +176,8 @@ private:
     juce::AudioProcessorValueTreeState apvts;
 
     obs_source_t* privateSource = nullptr;
-    obs_data_t* sourceSettings = nullptr;
     obs_source_audio audioSourceData;
+    bool sourceCreationScheduled = false; // Prevent duplicate scheduling
 
     void pairWithHelperByUuid(const std::string& uuid)
     {
@@ -209,37 +215,45 @@ private:
         if (context.foundSource)
         {
             privateSource = context.foundSource;
+            DBG("ObsOutput: Paired with existing helper source via UUID");
         }
-        else
+        else if (!sourceCreationScheduled)
         {
-            // UUID not found, create new helper source
+            DBG("ObsOutput: Creating helper source (UUID not found)");
+            sourceCreationScheduled = true;
             createNewHelperSource();
         }
     }
 
     void createNewHelperSource()
     {
-        auto id = std::string("atkaudio_ph2helper");
-        auto name = "Ph2Out";
-
-        privateSource = obs_source_create(id.c_str(), name, nullptr, nullptr);
+        privateSource = obs_source_create("atkaudio_ph2helper", "Ph2Out", nullptr, nullptr);
 
         if (privateSource)
         {
-            auto* sceneSource = obs_frontend_get_current_scene();
-            if (sceneSource)
-            {
-                auto* scene = obs_scene_from_source(sceneSource);
-                if (scene)
-                    obs_scene_add(scene, privateSource);
-                obs_source_release(sceneSource);
-            }
-
             obs_source_set_audio_active(privateSource, true);
             obs_source_set_enabled(privateSource, true);
-        }
-    }
 
+            // Add to current scene
+            auto* currentScene = obs_frontend_get_current_scene();
+            if (currentScene)
+            {
+                auto* sceneSource = obs_scene_from_source(currentScene);
+                if (sceneSource)
+                {
+                    if (obs_scene_add(sceneSource, privateSource))
+                        DBG("ObsOutput: Helper source created and added to scene");
+                }
+                obs_source_release(currentScene);
+            }
+        }
+        else
+        {
+            DBG("ObsOutput: Failed to create helper source!");
+        }
+
+        sourceCreationScheduled = false;
+    }
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ObsOutputAudioProcessor)
 };
 
@@ -262,7 +276,6 @@ public:
 
 private:
     ObsOutputAudioProcessor& processor;
-    juce::Array<juce::String> items;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ObsOutputAudioProcessorEditor)
 };

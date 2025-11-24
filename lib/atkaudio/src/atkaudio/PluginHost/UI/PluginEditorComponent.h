@@ -233,11 +233,12 @@ private:
                         audioComponent->setInputFixedTopRows(obsInputChannelNames, true);
                         audioComponent->setOutputFixedTopRows(obsOutputChannelNames, true);
 
-                        // Restore current OBS channel mappings from processor if they exist
+                        // Restore current OBS channel mappings AND device subscriptions from processor
+                        // Use setCompleteRoutingMatrices to restore ALL rows (not just fixed OBS rows)
                         auto currentInputMapping = hostProc->getInputChannelMapping();
                         auto currentOutputMapping = hostProc->getOutputChannelMapping();
                         if (!currentInputMapping.empty() && !currentOutputMapping.empty())
-                            audioComponent->setObsChannelMappings(currentInputMapping, currentOutputMapping);
+                            audioComponent->setCompleteRoutingMatrices(currentInputMapping, currentOutputMapping);
 
                         audioComponent
                             ->setClientChannelInfo(inputChannelNames, outputChannelNames, innerPlugin->getName());

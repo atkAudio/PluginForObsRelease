@@ -1,14 +1,16 @@
 #pragma once
 
 #include <juce_audio_devices/juce_audio_devices.h>
-#include <obs.h>
-#include <media-io/audio-io.h>
+
 #include <atomic>
 #include <set>
 #include <memory>
 
 namespace atk
 {
+
+// Forward declaration - actual value retrieved from OBS at runtime
+int getOBSAudioFrameSize();
 
 /**
  * Coordinator to ensure only one device is active at a time within a module instance.
@@ -96,23 +98,9 @@ public:
         const juce::String& deviceName,
         std::shared_ptr<ModuleDeviceCoordinator> deviceCoordinator,
         const juce::String& typeName = "Module Audio"
-    )
-        : juce::AudioIODevice(deviceName, typeName)
-        , coordinator(deviceCoordinator)
-    {
-        // Get current OBS audio configuration
-        auto* obsAudio = obs_get_audio();
-        if (obsAudio)
-        {
-            obsChannelCount = audio_output_get_channels(obsAudio);
-            obsSampleRate = audio_output_get_sample_rate(obsAudio);
-        }
-    }
+    );
 
-    ~ModuleOBSAudioDevice() override
-    {
-        close();
-    }
+    ~ModuleOBSAudioDevice() override;
 
     // AudioIODevice interface - Channel names
     juce::StringArray getOutputChannelNames() override
@@ -142,13 +130,13 @@ public:
     juce::Array<int> getAvailableBufferSizes() override
     {
         juce::Array<int> sizes;
-        sizes.add(AUDIO_OUTPUT_FRAMES); // 1024 - OBS standard frame size
+        sizes.add(getOBSAudioFrameSize());
         return sizes;
     }
 
     int getDefaultBufferSize() override
     {
-        return AUDIO_OUTPUT_FRAMES; // 1024 - OBS standard
+        return getOBSAudioFrameSize();
     }
 
     // AudioIODevice interface - Open/Close
@@ -250,7 +238,7 @@ public:
 
     int getCurrentBufferSizeSamples() override
     {
-        return AUDIO_OUTPUT_FRAMES;
+        return getOBSAudioFrameSize();
     }
 
     double getCurrentSampleRate() override

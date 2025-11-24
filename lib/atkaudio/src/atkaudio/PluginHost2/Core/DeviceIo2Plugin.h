@@ -25,6 +25,8 @@ public:
           )
     {
         deviceIo2 = std::make_unique<atk::DeviceIo2>();
+        // Note: DeviceIo2 internal routing matrix is initialized with default diagonal routing
+        // It will auto-resize based on the actual OBS channel count during processing
     }
 
     ~DeviceIo2Plugin() override
@@ -35,7 +37,7 @@ public:
     //==============================================================================
     const juce::String getName() const override
     {
-        return "DevIo2";
+        return "DeviceIo2";
     }
 
     bool acceptsMidi() const override

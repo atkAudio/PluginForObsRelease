@@ -85,7 +85,7 @@ public:
         if (mode_ == Mode::Fixed1024)
         {
             while (!predicate())
-                for (volatile int i = 0; i < fixedSpinPauseCount_; ++i)
+                for (volatile int i = 0; i < fixedSpinPauseCount_; i = i + 1)
                     CPU_PAUSE();
         }
         else if (mode_ == Mode::BenchmarkedAdaptive)

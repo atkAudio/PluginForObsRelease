@@ -251,6 +251,10 @@ struct GraphEditorPanel::PluginComponent final
 
     ~PluginComponent() override
     {
+        setVisible(false);
+        setComponentEffect(nullptr);
+        stopTimer();
+
         if (auto f = graph.graph.getNodeForId(pluginID))
         {
             if (auto* processor = f->getProcessor())
@@ -315,9 +319,17 @@ struct GraphEditorPanel::PluginComponent final
     {
         auto boxArea = getLocalBounds().reduced(4, pinSize);
         bool isBypassed = false;
+        String displayName = getName();
 
         if (auto* f = graph.graph.getNodeForId(pluginID))
+        {
             isBypassed = f->isBypassed();
+
+            // Use custom name if set
+            auto customName = f->properties["customName"].toString();
+            if (customName.isNotEmpty())
+                displayName = customName + formatSuffix;
+        }
 
         auto boxColour = findColour(TextEditor::backgroundColourId);
 
@@ -329,7 +341,7 @@ struct GraphEditorPanel::PluginComponent final
 
         g.setColour(findColour(TextEditor::textColourId));
         g.setFont(font);
-        g.drawFittedText(getName(), boxArea, Justification::centred, 2);
+        g.drawFittedText(displayName, boxArea, Justification::centred, 2);
     }
 
     void resized() override
@@ -461,6 +473,60 @@ struct GraphEditorPanel::PluginComponent final
                     node->setBypassed(!node->isBypassed());
 
                 repaint();
+            }
+        );
+        menu->addItem(
+            "Rename Node",
+            [this]
+            {
+                if (auto* node = graph.graph.getNodeForId(pluginID))
+                {
+                    auto currentName = node->properties["customName"].toString();
+                    if (currentName.isEmpty())
+                        currentName = getProcessor()->getName();
+
+                    auto* alertWindow = new AlertWindow(
+                        "Rename Node",
+                        "Enter new name (leave empty to reset to default):",
+                        MessageBoxIconType::QuestionIcon
+                    );
+
+                    alertWindow->addTextEditor("name", currentName, String());
+                    alertWindow->addButton("OK", 1, KeyPress(KeyPress::returnKey));
+                    alertWindow->addButton("Cancel", 0, KeyPress(KeyPress::escapeKey));
+
+                    auto callback = [this, alertWindow, pluginID = this->pluginID, graphRef = &graph](int result)
+                    {
+                        if (result == 1)
+                        {
+                            String newName = alertWindow->getTextEditorContents("name").trim();
+
+                            if (auto* node = graphRef->graph.getNodeForId(pluginID))
+                            {
+                                if (newName.isEmpty())
+                                    node->properties.remove("customName");
+                                else
+                                    node->properties.set("customName", newName);
+
+                                graphRef->setChangedFlag(true);
+                                graphRef->sendChangeMessage();
+
+                                // Repaint the component to show the new name
+                                repaint();
+                            }
+                        }
+
+                        delete alertWindow;
+                    };
+
+                    alertWindow->enterModalState(true, ModalCallbackFunction::create(callback), true);
+
+                    if (auto* editor = alertWindow->getTextEditor("name"))
+                    {
+                        editor->grabKeyboardFocus();
+                        editor->selectAll();
+                    }
+                }
             }
         );
 
@@ -806,6 +872,7 @@ GraphEditorPanel::GraphEditorPanel(PluginGraph& g)
 
 GraphEditorPanel::~GraphEditorPanel()
 {
+    setVisible(false);
     graph.removeChangeListener(this);
     draggingConnector = nullptr;
     nodes.clear();

@@ -111,6 +111,16 @@ public:
     AudioProcessorGraphMT graph;
 
     //==============================================================================
+    // Static counter for PluginHost2 instances
+    // Used by PluginHost to avoid thread pool conflicts
+    static std::atomic<int> activeInstanceCount;
+
+    static bool hasActiveInstances()
+    {
+        return activeInstanceCount.load() > 0;
+    }
+
+    //==============================================================================
     // MIDI routing through MidiServer
     // Called from audio callback to handle MIDI I/O
     void processMidiInput(juce::MidiBuffer& midiMessages, int numSamples, double sampleRate);

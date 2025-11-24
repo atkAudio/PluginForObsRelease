@@ -1,10 +1,11 @@
 #include "PluginHost.h"
 
 #include "../AudioProcessorGraphMT/AdaptiveSpinLock.h"
-#include "../AudioProcessorGraphMT/AudioThreadPool.h"
+#include "../PluginHost2/Core/PluginGraph.h"
 #include "Core/HostAudioProcessor.h"
 #include "Core/PluginHolder.h"
 #include "UI/HostEditorWindow.h"
+#include "SecondaryThreadPool.h"
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
@@ -34,6 +35,9 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
     std::string pendingStateString;
     juce::CriticalSection pendingStateLock; // Protect string from concurrent access
 
+    // Track threading mode to detect transitions
+    bool wasUsingThreading = false;
+
     // Job context for audio processing
     struct ProcessJobContext
     {
@@ -51,7 +55,7 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
         }
     };
 
-    // Static function for AudioThreadPool job execution
+    // Job execution on SecondaryThreadPool worker
     static void executeProcessJob(void* userData)
     {
         auto* context = static_cast<ProcessJobContext*>(userData);
@@ -265,10 +269,6 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
                 multiCoreMidiBuffers[i].ensureSize(numSamples);
             }
 
-            // Configure thread pool with buffer size
-            if (auto* pool = atk::AudioThreadPool::getInstance())
-                pool->configure(numSamples, newSampleRate);
-
             // Schedule async preparation (can't block OBS audio thread)
             // Note: This is different from standalone JUCE apps where audioDeviceAboutToStart
             // is called before audio begins. In OBS plugins, we must handle dynamic changes.
@@ -286,33 +286,33 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
         if (!isPrepared)
             return;
 
-        if (useThreadPool.load(std::memory_order_acquire))
+        // Multi-threading using dedicated PluginHost thread pool
+        auto* pool = atk::SecondaryThreadPool::getInstance();
+        const bool canUseThreading = useThreadPool.load(std::memory_order_acquire) && pool && pool->isReady();
+
+        if (canUseThreading)
         {
-            // Get thread pool instance (must be initialized before audio starts)
-            auto* pool = atk::AudioThreadPool::getInstance();
-            if (!pool || !pool->isReady())
+            // If transitioning from sync to async, reset double-buffer state
+            if (!wasUsingThreading)
             {
-                // Thread pool not ready - output silence this frame
-                // DO NOT initialize here as it would violate realtime safety!
-                for (int ch = 0; ch < newNumChannels * 2; ++ch)
-                    juce::FloatVectorOperations::clear(buffer[ch], newNumSamples);
-                return;
+                jobContexts[0].reset();
+                jobContexts[1].reset();
+                currentBufferIndex = 0;
+                // Mark context[0] as completed so first frame outputs it
+                jobContexts[0].completed.store(true, std::memory_order_release);
+                wasUsingThreading = true;
             }
 
-            // PARALLEL PROCESSING PIPELINE
-            // ===========================
-            // 1. Copy current input to processing buffer
-            // 2. Wait for previous frame to complete (if any)
-            // 3. Copy previous frame result to OBS output buffer
-            // 4. Submit current frame for processing on worker thread
-            // 5. Return immediately (worker processes in parallel with OBS)
+            // DOUBLE-BUFFER PIPELINE (one frame latency):
+            // Frame N:   Copy input → Check prev job → Output prev result → Submit current for processing
+            // Frame N+1: Copy input → Check prev job → Output prev result → Submit current for processing
 
-            // Step 1: Copy input data to current buffer FIRST (before overwriting output)
-            currentBufferIndex = 1 - currentBufferIndex; // Toggle buffer
+            // Step 1: Copy input to current buffer
+            currentBufferIndex = 1 - currentBufferIndex;
             auto& currentBuffer = multiCoreBuffers[currentBufferIndex];
             auto& currentMidi = multiCoreMidiBuffers[currentBufferIndex];
 
-            // Grow buffer if needed (never shrink to avoid reallocation)
+            // Ensure buffer is large enough
             if (currentBuffer.getNumChannels() < newNumChannels * 2 || currentBuffer.getNumSamples() < newNumSamples)
             {
                 int newCh = juce::jmax(currentBuffer.getNumChannels(), newNumChannels * 2);
@@ -324,72 +324,75 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
                 juce::FloatVectorOperations::copy(currentBuffer.getWritePointer(ch), buffer[ch], newNumSamples);
             currentMidi.clear();
 
-            // Step 2 & 3: Check if previous job is ready (NO WAITING - pipeline design)
+            // Step 2: Check if previous job completed
             const int prevIndex = 1 - currentBufferIndex;
             auto& prevContext = jobContexts[prevIndex];
 
-            if (prevContext.owner != nullptr && prevContext.completed.load(std::memory_order_acquire))
+            bool prevCompleted = prevContext.completed.load(std::memory_order_acquire);
+
+            if (prevCompleted)
             {
-                // Previous frame completed - copy results to OBS output buffer
+                // Previous frame completed - output it
                 auto& prevBuffer = multiCoreBuffers[prevIndex];
                 for (int ch = 0; ch < newNumChannels * 2 && ch < prevBuffer.getNumChannels(); ++ch)
                     juce::FloatVectorOperations::copy(buffer[ch], prevBuffer.getReadPointer(ch), newNumSamples);
-
-                // Clear previous context so we don't check it again
-                prevContext.owner = nullptr;
             }
             else
             {
-                // Previous frame not ready yet (or first frame) - output silence
-                // This is OK - next frame will have the result
+                // First frame or previous job still running - output silence
                 for (int ch = 0; ch < newNumChannels * 2; ++ch)
                     juce::FloatVectorOperations::clear(buffer[ch], newNumSamples);
             }
 
-            // Step 4: Setup job context (worker thread will acquire locks itself)
+            // Step 3: Submit current buffer for async processing
             auto& context = jobContexts[currentBufferIndex];
             context.reset();
             context.owner = this;
             context.bufferIndex = currentBufferIndex;
             context.numSamples = newNumSamples;
 
-            // Submit job to thread pool (no barrier needed for single job)
-            if (auto* pool = atk::AudioThreadPool::getInstance())
-            {
-                pool->prepareJobs(nullptr); // No barrier for single-job execution
-                pool->addJob(&Impl::executeProcessJob, &context);
-                pool->kickWorkers();
-            }
+            // Submit to SecondaryThreadPool
+            pool->addJob(&Impl::executeProcessJob, &context);
+            pool->kickWorkers();
 
-            // Worker thread will process in parallel with next OBS callback
+            return; // Done with async path
         }
-        else
+
+        // SYNCHRONOUS PROCESSING (only when MT is disabled)
+        // Mark that we're not using threading (for transition detection)
+        wasUsingThreading = false;
+
+        if (!mainWindow->getPluginHolderLock().tryEnter())
         {
-            // SYNCHRONOUS PROCESSING (original behavior for debugging/comparison)
-            if (!mainWindow->getPluginHolderLock().tryEnter())
-                return;
-
-            auto* processor = mainWindow->getAudioProcessor();
-
-            if (!processor->getCallbackLock().tryEnter())
-            {
-                mainWindow->getPluginHolderLock().exit();
-                return;
-            }
-
-            // Process audio in-place
-            auto& currentBuffer = audioBuffers[currentBufferIndex];
-            auto& currentMidi = midiBuffers[currentBufferIndex];
-
-            currentBuffer.setDataToReferTo(buffer, newNumChannels * 2, newNumSamples);
-            currentMidi.clear();
-
-            if (!processor->isSuspended())
-                processor->processBlock(currentBuffer, currentMidi);
-
-            processor->getCallbackLock().exit();
-            mainWindow->getPluginHolderLock().exit();
+            // Can't get lock - output silence
+            for (int ch = 0; ch < newNumChannels * 2; ++ch)
+                juce::FloatVectorOperations::clear(buffer[ch], newNumSamples);
+            return;
         }
+
+        auto* processor = mainWindow->getAudioProcessor();
+
+        if (!processor->getCallbackLock().tryEnter())
+        {
+            mainWindow->getPluginHolderLock().exit();
+            // Can't get lock - output silence
+            for (int ch = 0; ch < newNumChannels * 2; ++ch)
+                juce::FloatVectorOperations::clear(buffer[ch], newNumSamples);
+            return;
+        }
+
+        // Process audio in-place
+        auto& currentBuffer = audioBuffers[currentBufferIndex];
+        auto& currentMidi = midiBuffers[currentBufferIndex];
+
+        currentBuffer.setDataToReferTo(buffer, newNumChannels * 2, newNumSamples);
+        currentMidi.clear();
+
+        if (!processor->isSuspended())
+            processor->processBlock(currentBuffer, currentMidi);
+
+        processor->getCallbackLock().exit();
+        mainWindow->getPluginHolderLock().exit();
     }
 
     juce::Component* getWindowComponent()
@@ -508,11 +511,19 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
 
     void setMultiCoreEnabled(bool enabled)
     {
-        useThreadPool.store(enabled, std::memory_order_release);
+        bool wasEnabled = useThreadPool.exchange(enabled, std::memory_order_acq_rel);
 
-        if (!enabled)
+        if (enabled && !wasEnabled)
         {
-            // DISABLING: Wait for both jobs to complete with timeout
+            // ENABLING: Initialize dedicated thread pool
+            auto* pool = atk::SecondaryThreadPool::getInstance();
+            if (!pool->isReady())
+                pool->initialize();
+        }
+        else if (!enabled && wasEnabled)
+        {
+            // DISABLING: Wait for any pending jobs to complete
+
             for (int i = 0; i < 2; ++i)
             {
                 if (jobContexts[i].owner == nullptr)

@@ -372,6 +372,10 @@ MainHostWindow::MainHostWindow()
 
 MainHostWindow::~MainHostWindow()
 {
+    // Hide window before destroying components to prevent paint messages during destruction
+    setVisible(false);
+    removeFromDesktop();
+
     if (auto* dw = dynamic_cast<juce::DialogWindow*>(audioSettingsDialogWindow))
     {
         if (dw->isCurrentlyModal())

@@ -13,6 +13,17 @@ include(compiler_common)
 
 add_compile_options("$<$<NOT:$<COMPILE_LANGUAGE:Swift>>:-fopenmp-simd>")
 
+# Enable dSYM generator for release builds
+string(APPEND CMAKE_C_FLAGS_RELEASE " -g")
+string(APPEND CMAKE_CXX_FLAGS_RELEASE " -g")
+string(APPEND CMAKE_OBJC_FLAGS_RELEASE " -g")
+string(APPEND CMAKE_OBJCXX_FLAGS_RELEASE " -g")
+
+string(APPEND CMAKE_C_FLAGS_RELWITHDEBINFO " -g")
+string(APPEND CMAKE_CXX_FLAGS_RELWITHDEBINFO " -g")
+string(APPEND CMAKE_OBJC_FLAGS_RELWITHDEBINFO " -g")
+string(APPEND CMAKE_OBJCXX_FLAGS_RELWITHDEBINFO " -g")
+
 # Default ObjC compiler options used by Xcode:
 #
 # * -Wno-implicit-atomic-properties

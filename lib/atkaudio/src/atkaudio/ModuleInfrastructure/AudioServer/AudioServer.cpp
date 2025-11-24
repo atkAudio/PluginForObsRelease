@@ -272,6 +272,9 @@ bool AudioDeviceHandler::openDevice(const juce::AudioDeviceManager::AudioDeviceS
             }
         }
 
+        // Register as change listener on AudioDeviceManager to detect device configuration changes
+        deviceManager->addChangeListener(this);
+
         // Check if device actually started
         if (device && !device->isPlaying())
         {
@@ -291,6 +294,9 @@ void AudioDeviceHandler::closeDevice()
 {
     if (!isDeviceOpen())
         return;
+
+    // Remove change listener before closing device
+    deviceManager->removeChangeListener(this);
 
     deviceManager->removeAudioCallback(this);
     deviceManager->closeAudioDevice();
@@ -506,6 +512,42 @@ void AudioDeviceHandler::audioDeviceStopped()
     }
 
     isRunning.store(false, std::memory_order_release);
+}
+
+void AudioDeviceHandler::changeListenerCallback(juce::ChangeBroadcaster* source)
+{
+    juce::ignoreUnused(source);
+
+    auto* device = deviceManager->getCurrentAudioDevice();
+    if (!device)
+        return;
+
+    DBG("AudioDeviceHandler: Device '" + deviceName + "' configuration changed - updating cache");
+
+    // Get new channel counts
+    int newInputChannels = device->getActiveInputChannels().countNumberOfSetBits();
+    int newOutputChannels = device->getActiveOutputChannels().countNumberOfSetBits();
+
+    DBG("AudioDeviceHandler: New channel counts - "
+        + juce::String(newInputChannels)
+        + " inputs, "
+        + juce::String(newOutputChannels)
+        + " outputs");
+
+    // Invalidate and update cache with new device info
+    // Note: JUCE will call audioDeviceStopped() and audioDeviceAboutToStart()
+    // when the device restarts, which will handle buffer reallocation
+    if (auto* server = AudioServer::getInstanceWithoutCreating())
+    {
+        server->invalidateDeviceCache(deviceName);
+        server->cacheDeviceInfo(
+            deviceName,
+            device->getInputChannelNames(),
+            device->getOutputChannelNames(),
+            device->getAvailableSampleRates(),
+            device->getAvailableBufferSizes()
+        );
+    }
 }
 
 void AudioDeviceHandler::addClientSubscription(
@@ -1878,6 +1920,27 @@ void AudioServer::cacheDeviceInfo(
         + " inputs, "
         + juce::String(outputChannelNames.size())
         + " outputs");
+}
+
+void AudioServer::invalidateDeviceCache(const juce::String& deviceName)
+{
+    DBG("AudioServer: Invalidating device cache for '" + deviceName + "'");
+
+    // Clear channel counts and names
+    {
+        std::lock_guard<std::mutex> lock(deviceChannelCacheMutex);
+        inputDeviceChannelCache.erase(deviceName);
+        outputDeviceChannelCache.erase(deviceName);
+        inputDeviceChannelNamesCache.erase(deviceName);
+        outputDeviceChannelNamesCache.erase(deviceName);
+    }
+
+    // Clear capabilities cache
+    {
+        std::lock_guard<std::mutex> lock(deviceCapabilitiesCacheMutex);
+        deviceSampleRatesCache.erase(deviceName);
+        deviceBufferSizesCache.erase(deviceName);
+    }
 }
 
 double AudioServer::getCurrentSampleRate(const juce::String& deviceName) const

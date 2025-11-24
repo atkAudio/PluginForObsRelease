@@ -4,6 +4,9 @@
 #include "../UI/MainHostWindow.h"
 #include "InternalPlugins.h"
 
+// Initialize static instance counter
+std::atomic<int> PluginGraph::activeInstanceCount{0};
+
 static std::unique_ptr<ScopedDPIAwarenessDisabler> makeDPIAwarenessDisablerForPlugin(const PluginDescription& desc)
 {
     // return std::make_unique<ScopedDPIAwarenessDisabler>();
@@ -17,12 +20,14 @@ PluginGraph::PluginGraph(MainHostWindow& mw, AudioPluginFormatManager& fm, Known
     , knownPlugins(kpl)
     , mainHostWindow(mw)
 {
+    activeInstanceCount.fetch_add(1, std::memory_order_relaxed);
     newDocument();
     graph.addListener(this);
 }
 
 PluginGraph::~PluginGraph()
 {
+    activeInstanceCount.fetch_sub(1, std::memory_order_relaxed);
     graph.removeListener(this);
     graph.removeChangeListener(this);
     graph.clear();
@@ -355,6 +360,10 @@ static XmlElement* createNodeXml(AudioProcessorGraphMT::Node* const node) noexce
         e->setAttribute("y", node->properties["y"].toString());
         e->setAttribute("useARA", node->properties["useARA"].toString());
 
+        // Save custom name if set
+        if (node->properties.contains("customName"))
+            e->setAttribute("customName", node->properties["customName"].toString());
+
         for (int i = 0; i < (int)PluginWindow::Type::numTypes; ++i)
         {
             auto type = (PluginWindow::Type)i;
@@ -495,6 +504,10 @@ void PluginGraph::createNodeFromXml(const XmlElement& xml)
             node->properties.set("x", xml.getDoubleAttribute("x"));
             node->properties.set("y", xml.getDoubleAttribute("y"));
             node->properties.set("useARA", xml.getBoolAttribute("useARA"));
+
+            // Load custom name if present
+            if (xml.hasAttribute("customName"))
+                node->properties.set("customName", xml.getStringAttribute("customName"));
 
             for (int i = 0; i < (int)PluginWindow::Type::numTypes; ++i)
             {

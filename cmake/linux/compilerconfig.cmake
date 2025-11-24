@@ -70,4 +70,4 @@ else()
   set(ENABLE_COMPILER_TRACE OFF CACHE STRING "Enable Clang time-trace (required Clang and Ninja)" FORCE)
 endif()
 
-add_compile_definitions($<$<CONFIG:DEBUG>:DEBUG> $<$<CONFIG:DEBUG>:_DEBUG> SIMDE_ENABLE_OPENMP)
+add_compile_definitions($<$<CONFIG:DEBUG>:DEBUG> $<$<CONFIG:DEBUG>:_DEBUG>)

@@ -113,6 +113,7 @@ public:
     // Multi-core processing callbacks (set by PluginHost)
     std::function<bool()> getMultiCoreEnabled;
     std::function<void(bool)> setMultiCoreEnabled;
+    std::function<bool()> canUseMultiCore;
 
 private:
     class AtkAudioPlayHead : public juce::AudioPlayHead

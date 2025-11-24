@@ -6,6 +6,7 @@
 #include "MessagePump.h"
 #include "ModuleInfrastructure/AudioServer/AudioServer.h"
 #include "ModuleInfrastructure/MidiServer/MidiServer.h"
+#include "PluginHost/SecondaryThreadPool.h"
 #include "UpdateCheck.h"
 
 #include <juce_audio_utils/juce_audio_utils.h>
@@ -33,12 +34,7 @@ void atk::create()
 #endif
     juce::initialiseJuce_GUI();
 
-#if JUCE_LINUX
-    // On Linux, we need to explicitly set the message thread and use a timer-based pump
-    // On macOS, JUCE integrates with NSRunLoop automatically
-    // On Windows, JUCE integrates with the Win32 message loop automatically
     juce::MessageManager::getInstance()->setCurrentThreadAsMessageThread();
-#endif
 
     // Initialize LookAndFeel singleton
     juce::SharedResourcePointer<atk::LookAndFeel> lookAndFeel;
@@ -107,11 +103,16 @@ void atk::destroy()
         atk::AudioServer::deleteInstance();
     }
 
-    // Shutdown thread pool if it exists
     if (auto* threadPool = atk::AudioThreadPool::getInstance())
     {
         threadPool->shutdown();
         atk::AudioThreadPool::deleteInstance();
+    }
+
+    if (auto* secondaryPool = atk::SecondaryThreadPool::getInstance())
+    {
+        secondaryPool->shutdown();
+        atk::SecondaryThreadPool::deleteInstance();
     }
 
     juce::shutdownJuce_GUI();

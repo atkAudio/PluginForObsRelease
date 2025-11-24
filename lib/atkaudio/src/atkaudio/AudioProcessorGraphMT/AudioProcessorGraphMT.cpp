@@ -1,6 +1,6 @@
 #include "AudioProcessorGraphMT.h"
 
-#include "GraphPartitioner.h"
+#include "SubgraphExtractor.h"
 #include "AudioThreadPool.h"
 
 #include <juce_dsp/juce_dsp.h>
@@ -12,7 +12,7 @@ namespace atk
 {
 
 // Import JUCE types into atk namespace for convenience
-using atk::GraphPartitioner;
+using atk::SubgraphExtractor;
 using juce::approximatelyEqual;
 using juce::Array;
 using juce::AudioBuffer;
@@ -1161,7 +1161,7 @@ public:
     static SequenceAndLatency buildFiltered(
         const Nodes& n,
         const Connections& c,
-        const std::set<NodeID>& nodeFilter,
+        const std::vector<NodeID>& nodeFilter,
         const std::unordered_map<uint32, int>& globalDelays
     )
     {
@@ -1285,7 +1285,8 @@ private:
         return createOrderedNodeList(n, c, nullptr);
     }
 
-    static Array<Node*> createOrderedNodeList(const Nodes& n, const Connections& c, const std::set<NodeID>* nodeFilter)
+    static Array<Node*>
+    createOrderedNodeList(const Nodes& n, const Connections& c, const std::vector<NodeID>* nodeFilter)
     {
         Array<Node*> result;
 
@@ -1300,7 +1301,7 @@ private:
                 continue;
 
             // Skip nodes not in filter (if filter is provided)
-            if (nodeFilter && nodeFilter->find(nodeID) == nodeFilter->end())
+            if (nodeFilter && std::find(nodeFilter->begin(), nodeFilter->end(), nodeID) == nodeFilter->end())
                 continue;
 
             int insertionIndex = 0;
@@ -1747,7 +1748,7 @@ private:
         const Nodes& n,
         const Connections& c,
         GraphRenderSequence& sequence,
-        const std::set<NodeID>& nodeFilter,
+        const std::vector<NodeID>& nodeFilter,
         const std::unordered_map<uint32, int>& globalDelays
     )
         : orderedNodes(createOrderedNodeList(n, c, &nodeFilter))
@@ -1880,7 +1881,7 @@ public:
         const PrepareSettings s,
         const Nodes& n,
         const Connections& c,
-        const std::set<NodeID>& nodeFilter,
+        const std::vector<NodeID>& nodeFilter,
         const std::unordered_map<uint32, int>& globalDelays,
         AudioBuffer<float>& buffer
     )
@@ -1892,7 +1893,7 @@ public:
         const PrepareSettings s,
         const Nodes& n,
         const Connections& c,
-        const std::set<NodeID>& nodeFilter,
+        const std::vector<NodeID>& nodeFilter,
         const std::unordered_map<uint32, int>& globalDelays
     )
         : RenderSequence(s, RenderSequenceBuilder::buildFiltered(n, c, nodeFilter, globalDelays))
@@ -2014,8 +2015,25 @@ public:
         return buffers.size();
     }
 
+    // Pre-allocate buffers to avoid allocation in audio thread
+    void preallocate(size_t count, int blockSize)
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        buffers.reserve(count);
+
+        for (size_t i = 0; i < count; ++i)
+        {
+            auto buffer = std::make_shared<PooledBuffer>(blockSize);
+            buffer->refCount.store(0); // Initially free
+            buffers.push_back(buffer);
+        }
+    }
+
 private:
     std::vector<std::shared_ptr<PooledBuffer>> buffers;
+    // Mutex protects vector access for theoretical multi-threaded acquireBuffer() calls
+    // In practice, acquireBuffer() is called serially from audio thread during graph construction
+    // With pre-allocation, acquireBuffer() never allocates - just finds and marks a free buffer
     mutable std::mutex mutex;
 };
 
@@ -2309,8 +2327,17 @@ public:
         , delayLinePool(delayPool)
         , outputMixer(UINT32_MAX, &delayPool) // Use UINT32_MAX as destId for output mixer
     {
+        DBG("========================================");
+        DBG("[RENDER SEQ] Building new ParallelRenderSequence");
+        DBG("[RENDER SEQ] Total nodes in graph: " << n.getNodes().size());
+        DBG("[RENDER SEQ] Total connections: " << c.getConnections().size());
+
+        // Helper to check if a vector contains a value
+        auto contains = [](const auto& vec, const auto& val)
+        { return std::find(vec.begin(), vec.end(), val) != vec.end(); };
+
         // Extract parallel subgraphs
-        GraphPartitioner extractor;
+        SubgraphExtractor extractor;
         subgraphs = extractor.extractUniversalParallelization(graph);
         connectionsVec = c.getConnections();
         extractor.buildSubgraphDependencies(subgraphs, connectionsVec);
@@ -2358,10 +2385,54 @@ public:
 
         DBG("Total passthrough mappings: " << passthroughChannelMap.size());
 
-        // If no subgraphs (no processor nodes), we're done - only passthrough connections exist
+        // Collect OBS Output nodes for sequential processing (to avoid deadlock with nested PluginHost2 MT)
+        // Must happen before early return for empty subgraphs
+        for (const auto& node : n.getNodes())
+        {
+            if (!node || !node->getProcessor() || node->getProcessor()->getName() != "OBS Output")
+                continue;
+
+            ObsOutputNode obsNode;
+            obsNode.node = node;
+            obsNode.buffer = bufferPool.acquireBuffer(s.blockSize);
+
+            // Scan connections to find inputs to this OBS Output node
+            for (const auto& conn : connectionsVec)
+            {
+                if (conn.destination.nodeID != node->nodeID)
+                    continue;
+
+                if (conn.source.nodeID == audioInputNodeID)
+                {
+                    // Direct: Audio Input -> OBS Output
+                    obsNode.directInputConnections.push_back({conn.source.channelIndex, conn.destination.channelIndex});
+                }
+                else
+                {
+                    // From processor node -> OBS Output
+                    obsNode.chainInputConnections.push_back(
+                        {conn.source.nodeID, conn.source.channelIndex, conn.destination.channelIndex}
+                    );
+                }
+            }
+
+            obsOutputNodes.push_back(std::move(obsNode));
+        }
+
+        if (!obsOutputNodes.empty())
+            DBG("[OBS OUTPUT] Collected " << obsOutputNodes.size() << " OBS Output node(s) for sequential processing");
+
+        // Pre-allocate buffer pool to avoid allocation in audio thread
+        // Need: 1 for savedInput + subgraphs.size() for chains + obsOutputNodes.size() already acquired above
+        // Add extra margin for safety
+        const size_t numBuffersNeeded = 1 + subgraphs.size() + obsOutputNodes.size() + 2;
+        bufferPool.preallocate(numBuffersNeeded, s.blockSize);
+        DBG("[BUFFER POOL] Pre-allocated " << numBuffersNeeded << " buffers at " << s.blockSize << " samples");
+
+        // If no subgraphs (no processor nodes besides OBS Output), we're done
         if (subgraphs.empty())
         {
-            DBG("No processor nodes - passthrough-only graph");
+            DBG("No processor chains - passthrough-only graph");
             return;
         }
 
@@ -2411,7 +2482,7 @@ public:
             chain->connectsToMidiOutput = false;
             for (const auto& conn : connectionsVec)
             {
-                if (subgraph.nodeIDs.count(conn.source.nodeID) > 0)
+                if (contains(subgraph.nodeIDs, conn.source.nodeID))
                 {
                     // Check if destination is an output node
                     auto destNode = n.getNodeForId(conn.destination.nodeID);
@@ -2459,7 +2530,7 @@ public:
                 size_t sourceChainIdx = SIZE_MAX;
                 for (size_t i = 0; i < subgraphs.size(); ++i)
                 {
-                    if (subgraphs[i].nodeIDs.count(conn.source.nodeID) > 0)
+                    if (contains(subgraphs[i].nodeIDs, conn.source.nodeID))
                     {
                         sourceChainIdx = i;
                         break;
@@ -2470,7 +2541,7 @@ public:
                 size_t destChainIdx = SIZE_MAX;
                 for (size_t i = 0; i < subgraphs.size(); ++i)
                 {
-                    if (subgraphs[i].nodeIDs.count(conn.destination.nodeID) > 0)
+                    if (contains(subgraphs[i].nodeIDs, conn.destination.nodeID))
                     {
                         destChainIdx = i;
                         break;
@@ -2487,6 +2558,19 @@ public:
         }
 
         DBG("Total inter-chain MIDI connections: " << midiChainConnections.size());
+
+        // Build NodeID -> Chain map for efficient OBS Output routing
+        nodeToChainMap.clear();
+        for (auto& chain : chains)
+        {
+            // Use the chain's stored subgraphIndex to ensure correct mapping
+            if (chain->subgraphIndex < subgraphs.size())
+                for (const auto& nodeID : subgraphs[chain->subgraphIndex].nodeIDs)
+                    nodeToChainMap[nodeID.uid] = chain.get();
+        }
+
+        // NOTE: OBS Output nodes are collected earlier (before the empty subgraphs check)
+        // to ensure they're found even in passthrough-only graphs
 
         // Initialize input mixers for delay compensation
         // Query the graph to find which nodes (from other chains) feed into each chain's first node
@@ -2506,7 +2590,7 @@ public:
                 bool hasInternalInput = false;
                 for (const auto& conn : connectionsVec)
                 {
-                    if (conn.destination.nodeID == nodeID && destSubgraph.nodeIDs.count(conn.source.nodeID) > 0)
+                    if (conn.destination.nodeID == nodeID && contains(destSubgraph.nodeIDs, conn.source.nodeID))
                     {
                         hasInternalInput = true;
                         break;
@@ -2535,7 +2619,7 @@ public:
                     // Find which chain contains the source node
                     for (size_t j = 0; j < subgraphs.size(); ++j)
                     {
-                        if (i != j && subgraphs[j].nodeIDs.count(conn.source.nodeID) > 0)
+                        if (i != j && contains(subgraphs[j].nodeIDs, conn.source.nodeID))
                         {
                             // Source node is in chain j, get its accumulated latency from globalDelays
                             int accumulatedLatency = 0;
@@ -2595,7 +2679,7 @@ public:
         for (auto& chain : chains)
             chainsByLevel[chain->topologicalLevel].push_back(chain.get());
 
-        // Build input channel mappings: Audio Input node → chains at level 0
+        // Build input channel mappings: Audio Input node → chains
         // Maps (chainIndex, destinationChannel) → sourceChannel from host input
         for (const auto& conn : connectionsVec)
         {
@@ -2604,7 +2688,7 @@ public:
                 // Find which chain contains the destination node
                 for (size_t i = 0; i < subgraphs.size(); ++i)
                 {
-                    if (subgraphs[i].nodeIDs.count(conn.destination.nodeID) > 0)
+                    if (contains(subgraphs[i].nodeIDs, conn.destination.nodeID))
                     {
                         // Map: chain i, destination channel → source channel
                         inputChannelMap[{i, conn.destination.channelIndex}] = conn.source.channelIndex;
@@ -2633,7 +2717,7 @@ public:
                 // Find which chain contains the destination node
                 for (size_t i = 0; i < subgraphs.size(); ++i)
                 {
-                    if (subgraphs[i].nodeIDs.count(conn.destination.nodeID) > 0)
+                    if (contains(subgraphs[i].nodeIDs, conn.destination.nodeID))
                     {
                         midiInputChains.insert(i);
 
@@ -2666,7 +2750,7 @@ public:
                 // Find which chain contains the source node
                 for (size_t i = 0; i < subgraphs.size(); ++i)
                 {
-                    if (subgraphs[i].nodeIDs.count(conn.source.nodeID) > 0)
+                    if (contains(subgraphs[i].nodeIDs, conn.source.nodeID))
                     {
                         // Map: chain i, source channel → destination channel
                         outputChannelMap[{i, conn.source.channelIndex}] = conn.destination.channelIndex;
@@ -2768,70 +2852,118 @@ public:
         DBG("[PARALLEL] Pre-allocated " << barriers.size() << " barriers and job vectors for realtime-safe processing");
     }
 
-    void process(AudioBuffer<float>& audio, MidiBuffer& midi, AudioPlayHead* playHead)
+    // Process OBS Output nodes sequentially (called from multiple code paths)
+    void processObsOutputNodes(
+        AudioBuffer<float>& audio,
+        int numSamples,
+        const std::shared_ptr<ChainBufferPool::PooledBuffer>& savedInputBuffer
+    )
     {
-        // Handle passthrough for graphs with no processor nodes (only I/O nodes)
-        if (chains.empty() && !passthroughChannelMap.empty())
+        for (auto& obsNode : obsOutputNodes)
         {
-            // Use a pooled buffer as temporary storage
-            auto tempBuffer = bufferPool.acquireBuffer(audio.getNumSamples());
-            tempBuffer->audioBuffer
-                .setSize(tempBuffer->audioBuffer.getNumChannels(), audio.getNumSamples(), false, false, true);
-            tempBuffer->audioBuffer.clear();
+            auto& nodeBuffer = obsNode.buffer->audioBuffer;
+            nodeBuffer.setSize(nodeBuffer.getNumChannels(), numSamples, false, false, true);
+            nodeBuffer.clear();
 
-            const int numSamples = audio.getNumSamples();
-
-            // The passthrough map directly stores inputChannel -> outputChannel
-            // Copy from host input to the correct temp buffer channels
-            for (const auto& mapping : passthroughChannelMap)
+            // Route from Audio Input -> OBS Output (using saved input buffer)
+            if (savedInputBuffer)
             {
-                int inputChannel = mapping.first;   // Host input channel (from Audio Input node)
-                int outputChannel = mapping.second; // Host output channel (to Audio Output node)
+                for (const auto& [hostInputChannel, nodeInputChannel] : obsNode.directInputConnections)
+                    if (hostInputChannel < savedInputBuffer->audioBuffer.getNumChannels()
+                        && nodeInputChannel < nodeBuffer.getNumChannels())
+                        FloatVectorOperations::add(
+                            nodeBuffer.getWritePointer(nodeInputChannel),
+                            savedInputBuffer->audioBuffer.getReadPointer(hostInputChannel),
+                            numSamples
+                        );
+            }
 
-                if (inputChannel < audio.getNumChannels() && outputChannel < tempBuffer->audioBuffer.getNumChannels())
+            // Route from chains -> OBS Output
+            for (const auto& [sourceNodeID, sourceChannel, destChannel] : obsNode.chainInputConnections)
+            {
+                // Look up which chain contains this source node (using prebuilt map)
+                auto it = nodeToChainMap.find(sourceNodeID.uid);
+                if (it != nodeToChainMap.end() && destChannel < nodeBuffer.getNumChannels())
                 {
-                    const auto* src = audio.getReadPointer(inputChannel);
-                    auto* dst = tempBuffer->audioBuffer.getWritePointer(outputChannel);
-                    FloatVectorOperations::copy(dst, src, numSamples);
+                    auto* sourceChain = it->second;
+                    if (sourceChannel < sourceChain->getAudioBuffer().getNumChannels())
+                        FloatVectorOperations::add(
+                            nodeBuffer.getWritePointer(destChannel),
+                            sourceChain->getAudioBuffer().getReadPointer(sourceChannel),
+                            numSamples
+                        );
                 }
             }
 
-            // Copy temp buffer back to host output
-            audio.clear();
-            const int numChannels = std::min(tempBuffer->audioBuffer.getNumChannels(), audio.getNumChannels());
-            for (int ch = 0; ch < numChannels; ++ch)
+            // Process the OBS Output node
+            if (auto* proc = obsNode.node->getProcessor())
             {
-                const auto* src = tempBuffer->audioBuffer.getReadPointer(ch);
-                auto* dst = audio.getWritePointer(ch);
-                FloatVectorOperations::copy(dst, src, numSamples);
+                MidiBuffer emptyMidi;
+                proc->processBlock(nodeBuffer, emptyMidi);
             }
-            // MIDI passthrough is already in the buffer
-            return;
+        }
+    }
+
+    void process(AudioBuffer<float>& audio, MidiBuffer& midi, AudioPlayHead* playHead)
+    {
+        // Helper to check if a vector contains a value
+        auto contains = [](const auto& vec, const auto& val)
+        { return std::find(vec.begin(), vec.end(), val) != vec.end(); };
+
+        const int numSamples = audio.getNumSamples();
+
+        // ========================================================================
+        // BASE CASE: Save input for passthrough and OBS Output
+        // Everything flows through by default unless intercepted by chains
+        // ========================================================================
+        auto savedInput = bufferPool.acquireBuffer(numSamples);
+        savedInput->audioBuffer.setSize(savedInput->audioBuffer.getNumChannels(), numSamples, false, false, true);
+
+        const int numInputChannels = std::min(audio.getNumChannels(), savedInput->audioBuffer.getNumChannels());
+        for (int ch = 0; ch < numInputChannels; ++ch)
+        {
+            const auto* src = audio.getReadPointer(ch);
+            auto* dst = savedInput->audioBuffer.getWritePointer(ch);
+            FloatVectorOperations::copy(dst, src, numSamples);
         }
 
-        // If no chains and no passthrough, produce silence
+        // If no chains, just do passthrough and OBS Output
         if (chains.empty())
         {
             audio.clear();
             midi.clear();
+
+            // Apply passthrough mappings (default flow)
+            for (const auto& mapping : passthroughChannelMap)
+            {
+                int inputChannel = mapping.first;
+                int outputChannel = mapping.second;
+
+                if (inputChannel < savedInput->audioBuffer.getNumChannels() && outputChannel < audio.getNumChannels())
+                {
+                    const auto* src = savedInput->audioBuffer.getReadPointer(inputChannel);
+                    auto* dst = audio.getWritePointer(outputChannel);
+                    FloatVectorOperations::add(dst, src, numSamples);
+                }
+            }
+
+            // OBS Output gets the input directly
+            processObsOutputNodes(audio, numSamples, savedInput);
             return;
         }
 
         // ========================================================================
-        // PARALLEL PROCESSING PIPELINE (Thread-safe design)
+        // CHAIN PROCESSING: Chains intercept and process audio
         // ========================================================================
-        // Main thread orchestrates:
-        // 1. Distribute inputs to root chains (serial)
-        // 2. Process chains level-by-level (parallel within each level, barrier between levels)
-        // 3. Wait for all chains to complete (implicit barrier after last level)
-        // 4. Collect outputs from terminal chains (serial)
-        // 5. Copy to host output (serial)
+        // Flow:
+        // 1. Reset dependency counters and clear chain buffers
+        // 2. Distribute saved input to chains (chains intercept specific channels)
+        // 3. Process all chains level-by-level (parallel within each level)
+        // 4. Collect chain outputs to host output buffer
+        // 5. Process OBS Output nodes (read from saved input + chain buffers)
+        // 6. Add passthrough audio (channels not intercepted by chains)
         //
-        // This design ensures no data races:
-        // - Each chain has isolated buffers (no shared write state during processing)
-        // - Input distribution is serial (main thread only)
-        // - Output collection is serial (main thread only)
-        // - Inter-chain routing uses per-chain buffers (safe for parallel reads/writes)
+        // Thread safety: Each chain has isolated buffers, no shared mutable state
         // ========================================================================
 
         // Step 1: Reset all dependency counters
@@ -2839,9 +2971,6 @@ public:
             chain->pendingDependencies.store(chain->initialDependencyCount, std::memory_order_relaxed);
 
         // Step 2: Ensure chain buffers are correctly sized, then clear them
-        // If numSamples > buffer capacity, we need to resize (which invalidates pointers,
-        // but prepare() will be called again by perform() to refresh them)
-        const int numSamples = audio.getNumSamples();
         for (auto& chain : chains)
         {
             auto& chainBuffer = chain->getAudioBuffer();
@@ -2859,43 +2988,42 @@ public:
             chain->getMidiBuffer().clear();
         }
 
-        // Step 3: Distribute input to root-level chains (SERIAL - main thread only)
-        // Implement Audio Input node logic: map host input channels to chain input channels
-        if (!chainsByLevel.empty() && !chainsByLevel[0].empty())
+        // Step 3: Distribute input to chains that connect to Audio Input (SERIAL - main thread only)
+        // Chains intercept audio from the saved input buffer
+        for (auto& chain : chains)
         {
-            for (auto* chain : chainsByLevel[0])
+            // Copy channels according to Audio Input node → chain connections
+            for (const auto& mapping : inputChannelMap)
             {
-                // Copy channels according to Audio Input node → chain connections
-                for (const auto& mapping : inputChannelMap)
+                if (mapping.first.first == chain->subgraphIndex) // This chain
                 {
-                    if (mapping.first.first == chain->subgraphIndex) // This chain
-                    {
-                        int destChannel = mapping.first.second; // Chain's input channel
-                        int sourceChannel = mapping.second;     // Host's output channel
+                    int destChannel = mapping.first.second; // Chain's input channel
+                    int sourceChannel = mapping.second;     // Host's input channel
 
-                        if (sourceChannel < audio.getNumChannels()
-                            && destChannel < chain->getAudioBuffer().getNumChannels())
-                        {
-                            const auto* src = audio.getReadPointer(sourceChannel);
-                            auto* dst = chain->getAudioBuffer().getWritePointer(destChannel);
-                            FloatVectorOperations::copy(dst, src, numSamples);
-                        }
+                    if (sourceChannel < savedInput->audioBuffer.getNumChannels()
+                        && destChannel < chain->getAudioBuffer().getNumChannels())
+                    {
+                        const auto* src = savedInput->audioBuffer.getReadPointer(sourceChannel);
+                        auto* dst = chain->getAudioBuffer().getWritePointer(destChannel);
+                        FloatVectorOperations::copy(dst, src, numSamples);
                     }
                 }
-
-                // Copy MIDI if this chain has MIDI input connections
-                // Check if any node in this chain receives MIDI from the MIDI Input node
-                bool chainReceivesMidi = (midiInputChains.count(chain->subgraphIndex) > 0);
-
-                if (chainReceivesMidi)
-                    chain->getMidiBuffer().addEvents(midi, 0, numSamples, 0);
             }
+
+            // Copy MIDI if this chain has MIDI input connections
+            bool chainReceivesMidi = (midiInputChains.count(chain->subgraphIndex) > 0);
+            if (chainReceivesMidi)
+                chain->getMidiBuffer().addEvents(midi, 0, numSamples, 0);
         }
 
         // Step 4: Process chains level by level with parallel execution within each level
         // Get thread pool instance (may be null if not initialized)
         auto* pool = atk::AudioThreadPool::getInstance();
-        const bool canUseThreadPool = pool && pool->isReady();
+
+        // Disable parallel processing if called from worker thread to avoid nested parallelization
+        // This prevents deadlock when PluginHost2s is nested (which uses same thread pool)
+        const bool isWorkerThread = pool && pool->isCalledFromWorkerThread();
+        const bool canUseThreadPool = pool && pool->isReady() && !isWorkerThread;
 
         for (int level = 0; level <= maxTopologicalLevel; ++level)
         {
@@ -2933,9 +3061,9 @@ public:
                                 continue;
 
                             // Check if this connection goes from a node in source chain to a node in dest chain
-                            bool sourceInChain = subgraphs[chain->subgraphIndex].nodeIDs.count(conn.source.nodeID) > 0;
+                            bool sourceInChain = contains(subgraphs[chain->subgraphIndex].nodeIDs, conn.source.nodeID);
                             bool destInDependent =
-                                subgraphs[dependent->subgraphIndex].nodeIDs.count(conn.destination.nodeID) > 0;
+                                contains(subgraphs[dependent->subgraphIndex].nodeIDs, conn.destination.nodeID);
 
                             if (sourceInChain && destInDependent)
                             {
@@ -3043,9 +3171,9 @@ public:
                                 continue;
 
                             // Check if this connection goes from a node in source chain to a node in dest chain
-                            bool sourceInChain = subgraphs[chain->subgraphIndex].nodeIDs.count(conn.source.nodeID) > 0;
+                            bool sourceInChain = contains(subgraphs[chain->subgraphIndex].nodeIDs, conn.source.nodeID);
                             bool destInDependent =
-                                subgraphs[dependent->subgraphIndex].nodeIDs.count(conn.destination.nodeID) > 0;
+                                contains(subgraphs[dependent->subgraphIndex].nodeIDs, conn.destination.nodeID);
 
                             if (sourceInChain && destInDependent)
                             {
@@ -3080,35 +3208,8 @@ public:
             }
         }
 
-        // Step 5: Collect outputs from chains that connect to Audio Output node (SERIAL - main thread only)
-        // Implement Audio Output node logic: map chain output channels to host output channels
-        // CRITICAL: Must be serial to prevent data races when writing to host output buffer
-
-        // For passthrough: save input channels before clearing (if needed)
-        std::shared_ptr<ChainBufferPool::PooledBuffer> passthroughBuffer;
-        if (!passthroughChannelMap.empty())
-        {
-            passthroughBuffer = bufferPool.acquireBuffer(numSamples);
-            passthroughBuffer->audioBuffer
-                .setSize(passthroughBuffer->audioBuffer.getNumChannels(), numSamples, false, false, true);
-            passthroughBuffer->audioBuffer.clear();
-
-            // Copy input channels that need passthrough
-            for (const auto& mapping : passthroughChannelMap)
-            {
-                int inputChannel = mapping.first;
-                int outputChannel = mapping.second;
-
-                if (inputChannel < audio.getNumChannels()
-                    && outputChannel < passthroughBuffer->audioBuffer.getNumChannels())
-                {
-                    const auto* src = audio.getReadPointer(inputChannel);
-                    auto* dst = passthroughBuffer->audioBuffer.getWritePointer(outputChannel);
-                    FloatVectorOperations::copy(dst, src, numSamples);
-                }
-            }
-        }
-
+        // Step 5: Collect outputs from chains and combine with passthrough
+        // Clear output buffer, then mix in chain outputs and passthrough audio
         audio.clear();
         midi.clear();
 
@@ -3142,14 +3243,19 @@ public:
                 midi.addEvents(chain->getMidiBuffer(), 0, numSamples, 0);
         }
 
+        // Step 5.5: Process OBS Output nodes (excluded from chains to avoid nested MT deadlock)
+        processObsOutputNodes(audio, numSamples, savedInput);
+
         // Step 6: Add passthrough audio (direct Input → Output connections)
-        if (passthroughBuffer)
+        for (const auto& mapping : passthroughChannelMap)
         {
-            const int numChannels = std::min(passthroughBuffer->audioBuffer.getNumChannels(), audio.getNumChannels());
-            for (int ch = 0; ch < numChannels; ++ch)
+            int inputChannel = mapping.first;
+            int outputChannel = mapping.second;
+
+            if (inputChannel < savedInput->audioBuffer.getNumChannels() && outputChannel < audio.getNumChannels())
             {
-                const auto* src = passthroughBuffer->audioBuffer.getReadPointer(ch);
-                auto* dst = audio.getWritePointer(ch);
+                const auto* src = savedInput->audioBuffer.getReadPointer(inputChannel);
+                auto* dst = audio.getWritePointer(outputChannel);
                 FloatVectorOperations::add(dst, src, numSamples);
             }
         }
@@ -3229,7 +3335,7 @@ private:
     int totalLatency = 0;
 
     // Store subgraphs for channel routing lookup during process()
-    std::vector<GraphPartitioner::Subgraph> subgraphs;
+    std::vector<SubgraphExtractor::Subgraph> subgraphs;
 
     // Pre-allocated resources for realtime-safe parallel processing
     // These are allocated during graph rebuild (message thread) and reused during process() (audio thread)
@@ -3270,6 +3376,23 @@ private:
 
     // Global node latencies (nodeID.uid -> accumulated latency samples)
     std::unordered_map<uint32, int> nodeLatencies;
+
+    // Map from NodeID to chain pointer for efficient OBS Output routing
+    std::unordered_map<uint32, ChainRenderSequence*> nodeToChainMap;
+
+    // OBS Output nodes: processed sequentially on main thread AFTER all parallel chains complete
+    // These nodes are excluded from parallel chains to avoid deadlock with nested PluginHost2 MT
+    struct ObsOutputNode
+    {
+        Node::Ptr node;
+        // Connections from chains: (sourceNodeID, sourceChannel, destChannel)
+        std::vector<std::tuple<NodeID, int, int>> chainInputConnections;
+        // Direct connections from Audio Input: (hostInputChannel, nodeInputChannel)
+        std::vector<std::pair<int, int>> directInputConnections;
+        std::shared_ptr<ChainBufferPool::PooledBuffer> buffer; // Pooled buffer for this node
+    };
+
+    std::vector<ObsOutputNode> obsOutputNodes;
 };
 
 //==============================================================================

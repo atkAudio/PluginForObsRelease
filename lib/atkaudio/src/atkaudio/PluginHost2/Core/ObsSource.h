@@ -68,7 +68,10 @@ class ObsSourceAudioProcessor : public juce::AudioProcessor
 {
 public:
     ObsSourceAudioProcessor()
-        : apvts(*this, nullptr, "Parameters", {})
+        : juce::AudioProcessor(
+              juce::AudioProcessor::BusesProperties().withOutput("Output", juce::AudioChannelSet::stereo(), true)
+          )
+        , apvts(*this, nullptr, "Parameters", {})
     {
     }
 
@@ -227,7 +230,7 @@ public:
     {
         syncBuffer.read(
             buffer.getArrayOfWritePointers(),
-            getMainBusNumInputChannels(),
+            getMainBusNumOutputChannels(),
             buffer.getNumSamples(),
             getSampleRate()
         );
@@ -267,7 +270,7 @@ private:
         auto frames = (int)audio_data->frames;
 
         int numChannelsObs = audio_output_get_channels(obs_get_audio());
-        int numChannels = processor->getMainBusNumInputChannels();
+        int numChannels = processor->getMainBusNumOutputChannels();
         numChannels = jmin(numChannels, numChannelsObs);
 
         fifo.write(

@@ -245,7 +245,10 @@ void AudioServerSettingsComponent::ChannelMappingMatrix::resized()
 
 void AudioServerSettingsComponent::ChannelMappingMatrix::setSubscribedChannels(const std::vector<MappingRow>& rows)
 {
-    size_t oldSize = subscribedChannels.size();
+    // Save ALL current row mappings before resizing
+    std::vector<std::vector<bool>> savedMappings = mappingGrid;
+    std::vector<MappingRow> oldSubscribedChannels = subscribedChannels;
+
     subscribedChannels = rows;
 
     // Resize grid to include fixed top rows + subscribed rows
@@ -253,21 +256,11 @@ void AudioServerSettingsComponent::ChannelMappingMatrix::setSubscribedChannels(c
     mappingGrid.clear();
     mappingGrid.resize(totalRows, std::vector<bool>(numClientChannels, false));
 
-    // Set up fixed top rows (diagonal pattern if enabled)
-    for (int row = 0; row < numFixedTopRows && row < numClientChannels; ++row)
-        mappingGrid[row][row] = true; // Diagonal pattern for OBS channels
-
-    // Create default diagonal mapping for newly added subscribed rows
-    // Each subscribed channel maps to client channels in order, wrapping around
-    if (numClientChannels > 0)
-    {
-        for (size_t row = 0; row < rows.size(); ++row)
-        {
-            // Map to client channel using modulo for wrap-around
-            int clientChannel = static_cast<int>(row) % numClientChannels;
-            mappingGrid[numFixedTopRows + row][clientChannel] = true;
-        }
-    }
+    // Restore saved mappings for all rows that existed before
+    int rowsToRestore = juce::jmin((int)savedMappings.size(), totalRows);
+    for (int row = 0; row < rowsToRestore; ++row)
+        for (int col = 0; col < numClientChannels && col < (int)savedMappings[row].size(); ++col)
+            mappingGrid[row][col] = savedMappings[row][col];
 
     table.updateContent();
     table.repaint();
@@ -276,8 +269,6 @@ void AudioServerSettingsComponent::ChannelMappingMatrix::setSubscribedChannels(c
 void AudioServerSettingsComponent::ChannelMappingMatrix::setNumClientChannels(int numChannels)
 {
     numClientChannels = numChannels;
-
-    DBG("Setting client channels to: " << numChannels);
 
     // Generate default channel names
     clientChannelNames.clear();
@@ -289,14 +280,10 @@ void AudioServerSettingsComponent::ChannelMappingMatrix::setNumClientChannels(in
         row.resize(numClientChannels, false);
 
     // Remove old client channel columns (keep column 1 which is the device label)
-    int numColumnsToRemove = table.getHeader().getNumColumns(true) - 1;
-    DBG("Removing " << numColumnsToRemove << " old columns");
-
     while (table.getHeader().getNumColumns(true) > 1)
         table.getHeader().removeColumn(table.getHeader().getColumnIdOfIndex(1, true));
 
     // Add client channel columns
-    DBG("Adding " << numClientChannels << " new columns");
     for (int i = 0; i < numClientChannels; ++i)
     {
         table.getHeader().addColumn(
@@ -401,6 +388,19 @@ void AudioServerSettingsComponent::ChannelMappingMatrix::setFixedRowMappings(
 {
     // Apply the provided mappings to fixed rows
     for (size_t row = 0; row < mappings.size() && row < (size_t)numFixedTopRows && row < mappingGrid.size(); ++row)
+        for (size_t col = 0; col < mappings[row].size() && col < (size_t)numClientChannels; ++col)
+            mappingGrid[row][col] = mappings[row][col];
+
+    table.updateContent();
+    table.repaint();
+}
+
+void AudioServerSettingsComponent::ChannelMappingMatrix::setCompleteMatrix(
+    const std::vector<std::vector<bool>>& mappings
+)
+{
+    // Apply the complete routing matrix (OBS + device subscription rows)
+    for (size_t row = 0; row < mappings.size() && row < mappingGrid.size(); ++row)
         for (size_t col = 0; col < mappings[row].size() && col < (size_t)numClientChannels; ++col)
             mappingGrid[row][col] = mappings[row][col];
 
@@ -605,13 +605,23 @@ AudioServerSettingsComponent::AudioServerSettingsComponent(AudioClient* audioCli
     cancelButton.addListener(this);
     addAndMakeVisible(cancelButton);
 
+    deviceButton.addListener(this);
+    addAndMakeVisible(deviceButton);
+
+    // Build device trees immediately
+    // Note: Device enumeration can be slow with some audio drivers, but deferring
+    // causes timing issues with state restoration. Build synchronously.
     updateDeviceTrees();
 
-    // Restore current subscriptions from the client
+    // Restore current subscriptions from the client after devices are enumerated
     if (client)
     {
         auto currentState = client->getSubscriptions();
         setSubscriptionState(currentState, true);
+
+        // Now update the mapping matrix to reflect the subscriptions
+        // This must happen AFTER setSubscriptionState marks the tree checkboxes
+        updateMappingMatrix();
     }
 
     // Start timer for periodic updates
@@ -620,6 +630,10 @@ AudioServerSettingsComponent::AudioServerSettingsComponent(AudioClient* audioCli
 
 AudioServerSettingsComponent::~AudioServerSettingsComponent()
 {
+    // Close device settings dialog if open
+    if (deviceSettingsDialog != nullptr)
+        deviceSettingsDialog->exitModalState(0);
+
     applyButton.removeListener(this);
     restoreButton.removeListener(this);
     cancelButton.removeListener(this);
@@ -637,7 +651,7 @@ void AudioServerSettingsComponent::resized()
 {
     auto bounds = getLocalBounds().reduced(10);
 
-    // Bottom buttons (right to left: Reset, Restore, Apply)
+    // Bottom buttons (right to left: Reset, Restore, Apply, Device...)
     auto buttonArea = bounds.removeFromBottom(30);
     buttonArea.removeFromTop(5); // Gap
     applyButton.setBounds(buttonArea.removeFromRight(80));
@@ -645,6 +659,8 @@ void AudioServerSettingsComponent::resized()
     restoreButton.setBounds(buttonArea.removeFromRight(80));
     buttonArea.removeFromRight(5); // Gap
     cancelButton.setBounds(buttonArea.removeFromRight(80));
+    buttonArea.removeFromRight(5); // Gap
+    deviceButton.setBounds(buttonArea.removeFromRight(80));
 
     bounds.removeFromBottom(10); // Gap
 
@@ -963,9 +979,9 @@ void AudioServerSettingsComponent::setSubscriptionState(const AudioClientState& 
     markSubscribedAndExpand(inputRootItem.get(), state.inputSubscriptions);
     markSubscribedAndExpand(outputRootItem.get(), state.outputSubscriptions);
 
-    // Update matrices - subscriptions are shown as rows, no need to set mappings here
-    // The routing matrix boolean grid is maintained separately
-    updateMappingMatrix();
+    // Don't call updateMappingMatrix() here - subscriptions are already set in constructor
+    // and routing matrix has been restored. This just marks checkboxes in the tree.
+    // updateMappingMatrix() should only be called when user actually changes subscriptions.
 
     // Repaint trees
     inputTreeView->repaint();
@@ -1021,8 +1037,9 @@ void AudioServerSettingsComponent::setClientChannelInfo(
         outputMappingMatrix->setFirstColumnName(firstColumnName);
     }
 
-    // Update the mapping matrix to reflect new channel count
-    updateMappingMatrix();
+    // Don't call updateMappingMatrix() here - it rebuilds subscriptions from tree
+    // which may not be loaded yet. Subscriptions are set up in constructor
+    // and updateMappingMatrix() is called when user actually changes subscriptions via tree clicks.
 }
 
 void AudioServerSettingsComponent::setInputFixedTopRows(const juce::StringArray& names, bool defaultEnabled)
@@ -1074,6 +1091,17 @@ void AudioServerSettingsComponent::setObsChannelMappings(
         inputMappingMatrix->setFixedRowMappings(inputMapping);
     if (outputMappingMatrix)
         outputMappingMatrix->setFixedRowMappings(outputMapping);
+}
+
+void AudioServerSettingsComponent::setCompleteRoutingMatrices(
+    const std::vector<std::vector<bool>>& inputMapping,
+    const std::vector<std::vector<bool>>& outputMapping
+)
+{
+    if (inputMappingMatrix)
+        inputMappingMatrix->setCompleteMatrix(inputMapping);
+    if (outputMappingMatrix)
+        outputMappingMatrix->setCompleteMatrix(outputMapping);
 }
 
 void AudioServerSettingsComponent::setClientChannelCount(int numChannels, const juce::String& firstColumnName)
@@ -1168,6 +1196,53 @@ void AudioServerSettingsComponent::buttonClicked(juce::Button* button)
             }
         );
     }
+    else if (button == &deviceButton)
+    {
+        showDeviceSettings();
+    }
+}
+
+void AudioServerSettingsComponent::showDeviceSettings()
+{
+    // Use external device manager if set, otherwise show error
+    if (!externalDeviceManager)
+    {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::MessageBoxIconType::WarningIcon,
+            "Device Settings",
+            "Device configuration is not available.\n\n"
+            "No device manager has been set for this component.",
+            "OK"
+        );
+        return;
+    }
+
+    // Show standard JUCE AudioDeviceSelectorComponent
+    // Hide channel selectors (only show device type and sample rate/buffer)
+    auto* audioSettingsComp = new juce::AudioDeviceSelectorComponent(
+        *externalDeviceManager,
+        0,     // minAudioInputChannels
+        0,     // maxAudioInputChannels - 0 hides input channels
+        0,     // minAudioOutputChannels
+        0,     // maxAudioOutputChannels - 0 hides output channels
+        false, // showMidiInputOptions
+        false, // showMidiOutputSelector
+        false, // showChannelsAsStereoPairs
+        false  // hideAdvancedOptionsWithButton
+    );
+
+    audioSettingsComp->setSize(500, 450);
+
+    juce::DialogWindow::LaunchOptions o;
+    o.content.setOwned(audioSettingsComp);
+    o.dialogTitle = "Audio Device Settings";
+    o.componentToCentreAround = this;
+    o.dialogBackgroundColour = getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId);
+    o.escapeKeyTriggersCloseButton = true;
+    o.useNativeTitleBar = false;
+    o.resizable = false;
+
+    deviceSettingsDialog = o.launchAsync();
 }
 
 void AudioServerSettingsComponent::clearAllDeviceSubscriptions(DeviceChannelTreeItem* root)
@@ -1199,8 +1274,81 @@ void AudioServerSettingsComponent::clearAllDeviceSubscriptions(DeviceChannelTree
 
 void AudioServerSettingsComponent::timerCallback()
 {
-    // Periodic refresh if needed (e.g., if devices change)
-    // For now, just ensure the display is current
+    // Refresh device tree nodes that are currently open
+    // This ensures that if a device's channel count changes at runtime,
+    // the tree view is updated to show the new channels
+
+    auto refreshOpenDeviceNodes = [this](DeviceChannelTreeItem* root)
+    {
+        if (!root || !server)
+            return;
+
+        for (int i = 0; i < root->getNumSubItems(); ++i)
+        {
+            auto* typeItem = dynamic_cast<DeviceChannelTreeItem*>(root->getSubItem(i));
+            if (!typeItem)
+                continue;
+
+            // Check each device under this type
+            for (int j = 0; j < typeItem->getNumSubItems(); ++j)
+            {
+                auto* deviceItem = dynamic_cast<DeviceChannelTreeItem*>(typeItem->getSubItem(j));
+                if (!deviceItem)
+                    continue;
+
+                // If device node is open, refresh its channels
+                if (deviceItem->isOpen() && deviceItem->getDeviceName().isNotEmpty())
+                {
+                    juce::String deviceName = deviceItem->getDeviceName();
+                    bool isInput = deviceItem->isInputDevice();
+
+                    // Get current channel count
+                    juce::StringArray channelNames = server->getDeviceChannelNames(deviceName, isInput);
+                    int newChannelCount = static_cast<int>(channelNames.size());
+
+                    // Only refresh if channel count changed
+                    if (newChannelCount != deviceItem->getNumSubItems())
+                    {
+                        DBG("AudioServerSettingsComponent: Device '"
+                            + deviceName
+                            + "' channel count changed from "
+                            + juce::String(deviceItem->getNumSubItems())
+                            + " to "
+                            + juce::String(newChannelCount)
+                            + " - refreshing tree node");
+
+                        // Clear and rebuild child items
+                        deviceItem->clearSubItems();
+                        deviceItem->resetChildrenLoadedFlag();
+
+                        // Reload channels
+                        for (int ch = 0; ch < newChannelCount; ++ch)
+                        {
+                            juce::String displayName = "(" + juce::String(ch + 1) + ") " + channelNames[ch];
+
+                            auto* channelItem = new DeviceChannelTreeItem(
+                                displayName,
+                                DeviceChannelTreeItem::ItemType::Channel,
+                                deviceName,
+                                ch,
+                                isInput
+                            );
+                            channelItem->setServerInstance(server);
+                            channelItem->setSettingsComponent(this);
+                            deviceItem->addSubItem(channelItem);
+                        }
+
+                        // Repaint the tree
+                        deviceItem->treeHasChanged();
+                    }
+                }
+            }
+        }
+    };
+
+    // Refresh both input and output trees
+    refreshOpenDeviceNodes(inputRootItem.get());
+    refreshOpenDeviceNodes(outputRootItem.get());
 }
 
 void AudioServerSettingsComponent::updateDeviceSettings(const juce::String& deviceName)

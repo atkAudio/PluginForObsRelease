@@ -5,14 +5,14 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/common/bootstrap.cmake")
 
 project(${_name} VERSION ${_version})
 
-# Set default build type to Debug
+# Set default build type to RelWithDebInfo for local development
+# RelWithDebInfo provides optimized code with debug symbols (PDB files on Windows)
 if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Choose the type of build (Debug or Release)" FORCE)
+    set(CMAKE_BUILD_TYPE "RelWithDebInfo" CACHE STRING "Choose the type of build (Debug, Release, or RelWithDebInfo)" FORCE)
 endif()
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 
 option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" ON)
-option(BUILD_TESTS "Build unit tests" OFF)
 
 include(compilerconfig)
 include(defaults)
@@ -102,7 +102,6 @@ set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CXX_STANDARD 23)
 
 add_subdirectory(lib/atkaudio)
 
-
 string(JSON PLUGIN_DISPLAY_NAME GET ${buildspec} displayName)
 string(JSON PLUGIN_AUTHOR GET ${buildspec} author)
 string(JSON PLUGIN_OBS_VERSION_REQUIRED GET ${buildspec} dependencies obs-studio version)
@@ -113,15 +112,13 @@ configure_file(src/config.h.in config.h @ONLY)
 
 include(./lib/atkaudio/cmake/cpack.cmake)
 
-# Enable testing and add tests subdirectory
-if(BUILD_TESTS)
-    enable_testing()
-    add_subdirectory(tests)
-    message(STATUS "Building tests: Enabled")
-endif()
+
+# Build tests
+include(CTest)
+add_subdirectory(tests)
 
 # Automatically run install after build (skip in CI or when installing to system directories without permissions)
-if(NOT DEFINED ENV{CI} OR NOT CMAKE_INSTALL_PREFIX MATCHES "^/usr")
+if(NOT DEFINED ENV{CI} AND NOT DEFINED ENV{GITHUB_ACTIONS} AND NOT CMAKE_INSTALL_PREFIX MATCHES "^/usr")
     add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
         COMMAND ${CMAKE_COMMAND} --install ${CMAKE_BINARY_DIR} --config $<CONFIG> --component plugin
         COMMENT "Installing plugin after build..."
@@ -129,7 +126,8 @@ if(NOT DEFINED ENV{CI} OR NOT CMAKE_INSTALL_PREFIX MATCHES "^/usr")
 endif()
 
 # On non-CI Linux builds, copy plugin to user home directory after build
-if(NOT DEFINED ENV{CI} AND UNIX AND NOT APPLE)
+if(NOT DEFINED ENV{CI} AND NOT DEFINED ENV{GITHUB_ACTIONS} AND UNIX AND NOT APPLE)
+    message(STATUS "Configuring post-build copy to ~/.config/obs-studio/plugins/")
     if(CMAKE_SIZEOF_VOID_P EQUAL 8)
         set(_user_arch "64bit")
     else()

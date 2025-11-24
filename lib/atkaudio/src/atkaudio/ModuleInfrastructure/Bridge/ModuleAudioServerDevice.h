@@ -3,6 +3,8 @@
 #include "ModuleAudioDevice.h"
 #include <atkaudio/ModuleInfrastructure/AudioServer/AudioServer.h>
 #include <juce_audio_devices/juce_audio_devices.h>
+#include <atomic>
+#include <thread>
 
 namespace atk
 {
@@ -60,6 +62,15 @@ public:
 
     ~ModuleAudioServerDevice() override
     {
+        isDestroying.store(true, std::memory_order_release);
+
+        if (auto* server = AudioServer::getInstanceWithoutCreating())
+            server->unregisterDirectCallback(actualDeviceName.toStdString(), this);
+
+        // Wait for any active callbacks to exit
+        while (activeCallbackCount.load(std::memory_order_acquire) > 0)
+            std::this_thread::yield();
+
         close();
     }
 
@@ -446,6 +457,27 @@ private:
         const juce::AudioIODeviceCallbackContext& context
     ) override
     {
+        // Early exit if destroying to prevent use-after-free
+        if (isDestroying.load(std::memory_order_acquire))
+            return;
+
+        // Track active callbacks with RAII guard
+        activeCallbackCount.fetch_add(1, std::memory_order_acquire);
+
+        struct Guard
+        {
+            std::atomic<int>& count;
+
+            ~Guard()
+            {
+                count.fetch_sub(1, std::memory_order_release);
+            }
+        } guard{activeCallbackCount};
+
+        // Double-check after incrementing
+        if (isDestroying.load(std::memory_order_acquire))
+            return;
+
         // Check if we're the active device
         if (!coordinator || !coordinator->isActive(this))
         {
@@ -500,14 +532,9 @@ private:
         }
 
         // Build output pointers from temp buffer
-        if (numActiveOutputs > static_cast<int>(activeOutputPtrs.size()))
-        {
-            // Vector not properly sized - clear outputs and return
-            for (int ch = 0; ch < numOutputChannels; ++ch)
-                if (outputChannelData[ch] != nullptr)
-                    juce::FloatVectorOperations::clear(outputChannelData[ch], numSamples);
-            return;
-        }
+        // Ensure vector is large enough for the number of active outputs
+        if (static_cast<int>(activeOutputPtrs.size()) < numActiveOutputs)
+            activeOutputPtrs.resize(numActiveOutputs);
 
         for (int i = 0; i < numActiveOutputs; ++i)
         {
@@ -577,6 +604,8 @@ private:
     int currentBufferSize = 0;
     bool isOpen_ = false;
     bool isPlaying_ = false;
+    std::atomic<bool> isDestroying{false};
+    std::atomic<int> activeCallbackCount{0};
     juce::CriticalSection lock;
 
     // Temp buffers for channel filtering in audio callback

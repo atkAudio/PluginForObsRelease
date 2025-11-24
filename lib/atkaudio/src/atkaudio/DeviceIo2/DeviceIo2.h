@@ -23,8 +23,6 @@ public:
 
     void process(float** buffer, int numChannels, int numSamples, double sampleRate) override;
 
-    void setMixInput(bool mixInput);
-
     /**
      * Set output delay in milliseconds (applied before sending to hardware).
      * Range: 0-10000 ms

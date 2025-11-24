@@ -1,6 +1,40 @@
 #!/bin/bash
 set -e
 
+# Parse command-line arguments
+TARGET_ARCH=""
+DEBIAN_ARCH=""
+APT_ARCH_SUFFIX=""
+CROSS_COMPILE="false"
+CROSS_TRIPLE=""
+CMAKE_SYSTEM_PROCESSOR=""
+BUILD_CONFIG="RelWithDebInfo"
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --target-arch) TARGET_ARCH="$2"; shift 2 ;;
+    --debian-arch) DEBIAN_ARCH="$2"; shift 2 ;;
+    --apt-arch-suffix) APT_ARCH_SUFFIX="$2"; shift 2 ;;
+    --cross-compile) CROSS_COMPILE="$2"; shift 2 ;;
+    --cross-triple) CROSS_TRIPLE="$2"; shift 2 ;;
+    --cmake-system-processor) CMAKE_SYSTEM_PROCESSOR="$2"; shift 2 ;;
+    --build-config) BUILD_CONFIG="$2"; shift 2 ;;
+    *) echo "Unknown parameter: $1"; exit 1 ;;
+  esac
+done
+
+# Validate required parameters
+if [ -z "$TARGET_ARCH" ]; then
+  echo "ERROR: --target-arch is required"
+  exit 1
+fi
+
+# Map TARGET_ARCH to cross-compile triple prefix for binutils
+case "${TARGET_ARCH}" in
+  arm64) export CROSS_PREFIX="aarch64" ;;
+  *) export CROSS_PREFIX="${TARGET_ARCH}" ;;
+esac
+
 # Verify we're running on x86_64 (not ARM64 emulation)
 echo "Container architecture: $(uname -m)"
 [ "$(uname -m)" = "aarch64" ] && echo "ERROR: Running on ARM64 emulation!" && exit 1
@@ -87,9 +121,8 @@ fi
 
 # Configure CMake
 BUILD_CONFIG="${BUILD_CONFIG:-Release}"
-CMAKE_FLAGS="-B build-${TARGET_ARCH} -G Ninja -DCMAKE_BUILD_TYPE=${BUILD_CONFIG}"
+CMAKE_FLAGS="-B build_${TARGET_ARCH} -G Ninja -DCMAKE_BUILD_TYPE=${BUILD_CONFIG}"
 CMAKE_FLAGS="${CMAKE_FLAGS} -DCMAKE_INSTALL_PREFIX=/usr"
-CMAKE_FLAGS="${CMAKE_FLAGS} -DBUILD_TESTS=OFF"
 
 # Cross-compilation configuration
 if [ "${CROSS_COMPILE}" = "true" ]; then
@@ -105,6 +138,8 @@ set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR arm64)
 set(CMAKE_C_COMPILER ${CROSS_TRIPLE}-gcc)
 set(CMAKE_CXX_COMPILER ${CROSS_TRIPLE}-g++)
+set(CMAKE_OBJCOPY ${CROSS_TRIPLE}-objcopy)
+set(CMAKE_STRIP ${CROSS_TRIPLE}-strip)
 
 # Debian multi-arch paths
 set(CMAKE_FIND_ROOT_PATH /usr/${CROSS_TRIPLE})
@@ -135,11 +170,13 @@ fi
 
 # Build
 cmake ${CMAKE_FLAGS}
-cmake --build build-${TARGET_ARCH} --config Release --parallel
+cmake --build build_${TARGET_ARCH} --config ${BUILD_CONFIG} --parallel
 
-# Verify and strip
-echo "Built binary: $(file build-${TARGET_ARCH}/obs-plugins/64bit/atkaudio-pluginforobs.so || echo 'Not found')"
-[ "${CROSS_COMPILE}" = "true" ] && find build-${TARGET_ARCH} -name '*.so' -exec ${CROSS_TRIPLE}-strip --strip-debug {} \; 2>/dev/null || true
+# Verify and strip (only strip for Release builds, keep debug symbols for RelWithDebInfo)
+echo "Built binary: $(file build_${TARGET_ARCH}/${BUILD_CONFIG}/*.so || file build_${TARGET_ARCH}/obs-plugins/64bit/*.so || echo 'Not found')"
+if [ "${CROSS_COMPILE}" = "true" ] && [ "${BUILD_CONFIG}" = "Release" ]; then
+  find build_${TARGET_ARCH} -name '*.so' -exec ${CROSS_TRIPLE}-strip --strip-debug {} \; 2>/dev/null || true
+fi
 
 
 

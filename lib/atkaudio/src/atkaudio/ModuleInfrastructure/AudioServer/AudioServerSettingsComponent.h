@@ -111,6 +111,17 @@ public:
     );
 
     /**
+     * Set the complete routing matrices (OBS channels + device subscriptions)
+     * This sets ALL rows in the matrix, including both fixed top rows and subscription rows
+     * @param inputMapping Complete input mapping matrix
+     * @param outputMapping Complete output mapping matrix
+     */
+    void setCompleteRoutingMatrices(
+        const std::vector<std::vector<bool>>& inputMapping,
+        const std::vector<std::vector<bool>>& outputMapping
+    );
+
+    /**
      * Set callback to be called when OBS channel mapping changes (on Apply)
      * Receives input mapping [obsChannel][pluginChannel] and output mapping [pluginChannel][obsChannel]
      */
@@ -193,6 +204,16 @@ private:
             settingsComponent = settingsComp;
         }
 
+        bool isInputDevice() const
+        {
+            return isInput;
+        }
+
+        void resetChildrenLoadedFlag()
+        {
+            childrenLoaded = false;
+        }
+
     private:
         juce::String itemName;
         ItemType itemType;
@@ -265,6 +286,12 @@ private:
         void setFixedRowMappings(const std::vector<std::vector<bool>>& mappings);
 
         /**
+         * Set the complete routing matrix (all rows: fixed + subscriptions)
+         * @param mappings 2D vector [row][clientChannel] = enabled
+         */
+        void setCompleteMatrix(const std::vector<std::vector<bool>>& mappings);
+
+        /**
          * Reset fixed top rows to diagonal pattern (pass-through mapping)
          */
         void resetFixedRowsToDefault();
@@ -330,11 +357,23 @@ private:
     juce::TextButton applyButton{"Apply"};
     juce::TextButton restoreButton{"Discard"};
     juce::TextButton cancelButton{"Reset"};
+    juce::TextButton deviceButton{"Device..."};
+
+    juce::AudioDeviceManager* externalDeviceManager = nullptr;
+    juce::Component::SafePointer<juce::DialogWindow> deviceSettingsDialog;
 
     juce::String currentDeviceName; // Track which device we're showing settings for
 
     void updateDeviceSettings(const juce::String& deviceName);
+    void showDeviceSettings();
 
+public:
+    void setDeviceManager(juce::AudioDeviceManager* manager)
+    {
+        externalDeviceManager = manager;
+    }
+
+private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AudioServerSettingsComponent)
 };
 

@@ -76,7 +76,9 @@ HostAudioProcessorImpl::HostAudioProcessorImpl(int numChannels)
     pluginList.addChangeListener(this);
 
     // Initialize default diagonal OBS routing (all OBS channels enabled)
-    routingMatrix.initializeDefaultMapping(numChannels);
+    // If sidechain is enabled, include diagonal routing for sidechain channels too
+    int totalInputChannels = numChannels + (sidechainEnabled.load() ? numChannels : 0);
+    routingMatrix.initializeDefaultMapping(std::max(totalInputChannels, numChannels));
 
     DBG("[MIDI_SRV] PluginHost created with MidiClient");
 }
@@ -356,45 +358,43 @@ void HostAudioProcessorImpl::getStateInformation(MemoryBlock& destData)
     auto midiState = midiClient.getSubscriptions();
     xml.setAttribute("midiClientState", midiState.serialize());
 
-    // Save channel mappings
+    // Save channel mappings - save complete 2D matrices including all subscription rows
     {
         auto inputMapping = routingMatrix.getInputMapping();
         auto outputMapping = routingMatrix.getOutputMapping();
 
+        // Save input mapping as complete 2D boolean matrix
         if (!inputMapping.empty())
         {
-            String inputMappingStr;
-            for (size_t obsChannel = 0; obsChannel < inputMapping.size(); ++obsChannel)
+            auto inputMappingElement = std::make_unique<XmlElement>("InputMapping");
+            for (const auto& row : inputMapping)
             {
-                for (size_t pluginChannel = 0; pluginChannel < inputMapping[obsChannel].size(); ++pluginChannel)
-                {
-                    if (inputMapping[obsChannel][pluginChannel])
-                    {
-                        if (inputMappingStr.isNotEmpty())
-                            inputMappingStr += ";";
-                        inputMappingStr += String(obsChannel) + "," + String(pluginChannel);
-                    }
-                }
+                String rowData;
+                for (bool cell : row)
+                    rowData += cell ? '1' : '0';
+
+                auto rowElement = std::make_unique<XmlElement>("Row");
+                rowElement->setAttribute("data", rowData);
+                inputMappingElement->addChildElement(rowElement.release());
             }
-            xml.setAttribute("inputChannelMapping", inputMappingStr);
+            xml.addChildElement(inputMappingElement.release());
         }
 
+        // Save output mapping as complete 2D boolean matrix
         if (!outputMapping.empty())
         {
-            String outputMappingStr;
-            for (size_t pluginChannel = 0; pluginChannel < outputMapping.size(); ++pluginChannel)
+            auto outputMappingElement = std::make_unique<XmlElement>("OutputMapping");
+            for (const auto& row : outputMapping)
             {
-                for (size_t obsChannel = 0; obsChannel < outputMapping[pluginChannel].size(); ++obsChannel)
-                {
-                    if (outputMapping[pluginChannel][obsChannel])
-                    {
-                        if (outputMappingStr.isNotEmpty())
-                            outputMappingStr += ";";
-                        outputMappingStr += String(pluginChannel) + "," + String(obsChannel);
-                    }
-                }
+                String rowData;
+                for (bool cell : row)
+                    rowData += cell ? '1' : '0';
+
+                auto rowElement = std::make_unique<XmlElement>("Row");
+                rowElement->setAttribute("data", rowData);
+                outputMappingElement->addChildElement(rowElement.release());
             }
-            xml.setAttribute("outputChannelMapping", outputMappingStr);
+            xml.addChildElement(outputMappingElement.release());
         }
     }
 
@@ -450,14 +450,27 @@ void HostAudioProcessorImpl::setStateInformation(const void* data, int sizeInByt
         midiClient.setSubscriptions(midiState);
     }
 
-    // Restore channel mappings
+    // Restore channel mappings - restore complete 2D matrices including all subscription rows
     {
-        auto inputMapping = routingMatrix.getInputMapping();
-        auto outputMapping = routingMatrix.getOutputMapping();
-
-        // Restore input mapping
-        if (xml->hasAttribute("inputChannelMapping"))
+        // First try new format (complete 2D boolean matrix)
+        if (auto* inputMappingElement = xml->getChildByName("InputMapping"))
         {
+            std::vector<std::vector<bool>> inputMapping;
+            for (auto* rowElement : inputMappingElement->getChildIterator())
+            {
+                String rowData = rowElement->getStringAttribute("data");
+                std::vector<bool> row;
+                for (int i = 0; i < rowData.length(); ++i)
+                    row.push_back(rowData[i] == '1');
+                inputMapping.push_back(row);
+            }
+            if (!inputMapping.empty())
+                routingMatrix.setInputMapping(inputMapping);
+        }
+        // Fallback to old format (sparse coordinate pairs) for backward compatibility
+        else if (xml->hasAttribute("inputChannelMapping"))
+        {
+            auto inputMapping = routingMatrix.getInputMapping();
             auto inputMappingStr = xml->getStringAttribute("inputChannelMapping");
             auto tokens = StringArray::fromTokens(inputMappingStr, ";", "");
 
@@ -486,9 +499,25 @@ void HostAudioProcessorImpl::setStateInformation(const void* data, int sizeInByt
             routingMatrix.setInputMapping(inputMapping);
         }
 
-        // Restore output mapping
-        if (xml->hasAttribute("outputChannelMapping"))
+        // First try new format (complete 2D boolean matrix)
+        if (auto* outputMappingElement = xml->getChildByName("OutputMapping"))
         {
+            std::vector<std::vector<bool>> outputMapping;
+            for (auto* rowElement : outputMappingElement->getChildIterator())
+            {
+                String rowData = rowElement->getStringAttribute("data");
+                std::vector<bool> row;
+                for (int i = 0; i < rowData.length(); ++i)
+                    row.push_back(rowData[i] == '1');
+                outputMapping.push_back(row);
+            }
+            if (!outputMapping.empty())
+                routingMatrix.setOutputMapping(outputMapping);
+        }
+        // Fallback to old format (sparse coordinate pairs) for backward compatibility
+        else if (xml->hasAttribute("outputChannelMapping"))
+        {
+            auto outputMapping = routingMatrix.getOutputMapping();
             auto outputMappingStr = xml->getStringAttribute("outputChannelMapping");
             auto tokens = StringArray::fromTokens(outputMappingStr, ";", "");
 
