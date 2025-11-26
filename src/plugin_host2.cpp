@@ -1,5 +1,4 @@
 #include <algorithm>
-#include <atkaudio/FifoBuffer.h>
 #include <atkaudio/PluginHost2/API/PluginHost2.h>
 #include <inttypes.h>
 #include <math.h>

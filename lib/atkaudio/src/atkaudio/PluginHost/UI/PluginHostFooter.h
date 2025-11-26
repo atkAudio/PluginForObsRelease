@@ -26,7 +26,7 @@ public:
 
         if (showLinkButton)
         {
-            linkButton.setFont(juce::Font(11.0f), false);
+            linkButton.setFont(juce::FontOptions(11.0f), false);
             addAndMakeVisible(linkButton);
         }
     }

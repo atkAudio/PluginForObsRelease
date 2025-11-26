@@ -1297,7 +1297,7 @@ private:
             const auto nodeID = node->nodeID;
 
             // Skip I/O nodes - we handle input/output externally in perform()
-            if (auto* ioNode = dynamic_cast<AudioProcessorGraphMT::AudioGraphIOProcessor*>(node->getProcessor()))
+            if (dynamic_cast<AudioProcessorGraphMT::AudioGraphIOProcessor*>(node->getProcessor()))
                 continue;
 
             // Skip nodes not in filter (if filter is provided)
@@ -1765,6 +1765,7 @@ private:
         DBG("[LATENCY] Building filtered sequence for " << orderedNodes.size() << " nodes");
         for (auto* node : orderedNodes)
         {
+            (void)node; // Used in DBG macros only
             DBG("[LATENCY]   Node in subgraph: "
                 << node->getProcessor()->getName()
                 << " (nodeID="
@@ -1772,7 +1773,11 @@ private:
                 << ")");
         }
         for (const auto& [nodeId, delay] : globalDelays)
+        {
+            (void)nodeId;
+            (void)delay; // Used in DBG macros only
             DBG("[LATENCY]   GlobalDelay: nodeID=" << (int)nodeId << " delay=" << delay);
+        }
 
         int maxChannelsNeeded = 0;
         int maxMidiBuffersNeeded = 1; // At least one MIDI buffer
@@ -2216,7 +2221,7 @@ public:
             for (int i = 0; i < numSamples; ++i)
             {
                 delayLine.pushSample(channel, src[i]);
-                float delayedSample = delayLine.popSample(channel, delay);
+                float delayedSample = delayLine.popSample(channel, static_cast<float>(delay));
                 dst[i] += delayedSample;
             }
         }
@@ -2859,6 +2864,7 @@ public:
         const std::shared_ptr<ChainBufferPool::PooledBuffer>& savedInputBuffer
     )
     {
+        (void)audio; // Unused in current implementation
         for (auto& obsNode : obsOutputNodes)
         {
             auto& nodeBuffer = obsNode.buffer->audioBuffer;
@@ -3290,12 +3296,14 @@ public:
 
             if (currentLatencySum != chain->latencySum)
             {
+#ifdef ATK_DEBUG
                 DBG("[PARALLEL] Latency changed in subgraph "
                     << i
                     << ": expected "
                     << chain->latencySum
                     << ", current "
                     << currentLatencySum);
+#endif
                 return true;
             }
         }
@@ -3873,8 +3881,10 @@ void AudioProcessorGraphMT::setStateInformation(const void*, int)
 
 void AudioProcessorGraphMT::processBlock(AudioBuffer<float>& audio, MidiBuffer& midi)
 {
+#ifdef ATK_DEBUG
     if (!midi.isEmpty())
         DBG("[AudioProcessorGraphMT::processBlock] Received MIDI: " << midi.getNumEvents() << " events");
+#endif
 
     return pimpl->processBlock(audio, midi, getPlayHead());
 }

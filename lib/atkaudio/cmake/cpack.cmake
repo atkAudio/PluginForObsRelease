@@ -6,6 +6,73 @@ string(JSON WEBSITE GET "${_buildspec_json}" website)
 string(JSON DISPLAYNAME GET "${_buildspec_json}" displayName)
 string(JSON PATHNAME GET "${_buildspec_json}" name)
 
+# Define ATK_CI_BUILD for CI builds
+if(DEFINED ENV{CI} OR DEFINED ENV{GITHUB_ACTIONS})
+  add_compile_definitions(ATK_CI_BUILD)
+endif()
+
+# Define ATK_DEBUG for Debug/RelWithDebInfo builds when not in CI
+if((CMAKE_BUILD_TYPE STREQUAL "Debug" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo") AND NOT DEFINED ENV{CI} AND NOT DEFINED ENV{GITHUB_ACTIONS})
+  add_compile_definitions(ATK_DEBUG)
+endif()
+
+# Match JUCE's recommended config flags for Release and RelWithDebInfo
+if(UNIX)
+  # Fast math for all builds
+  string(APPEND CMAKE_C_FLAGS " -ffast-math")
+  string(APPEND CMAKE_CXX_FLAGS " -ffast-math")
+  
+  string(APPEND CMAKE_C_FLAGS_RELEASE " -g -O3")
+  string(APPEND CMAKE_CXX_FLAGS_RELEASE " -g -O3")
+  string(APPEND CMAKE_C_FLAGS_RELWITHDEBINFO " -g -O3")
+  string(APPEND CMAKE_CXX_FLAGS_RELWITHDEBINFO " -g -O3")
+  
+  if(APPLE)
+    string(APPEND CMAKE_OBJC_FLAGS " -ffast-math")
+    string(APPEND CMAKE_OBJCXX_FLAGS " -ffast-math")
+    string(APPEND CMAKE_OBJC_FLAGS_RELEASE " -g -O3")
+    string(APPEND CMAKE_OBJCXX_FLAGS_RELEASE " -g -O3")
+    string(APPEND CMAKE_OBJC_FLAGS_RELWITHDEBINFO " -g -O3")
+    string(APPEND CMAKE_OBJCXX_FLAGS_RELWITHDEBINFO " -g -O3")
+  endif()
+  
+  # LTO flags (match juce_recommended_lto_flags) - only on CI for faster local builds
+  if(DEFINED ENV{CI} OR DEFINED ENV{GITHUB_ACTIONS})
+    add_compile_options($<$<CONFIG:Release>:-flto>)
+    add_link_options($<$<CONFIG:Release>:-flto>)
+    add_compile_options($<$<CONFIG:RelWithDebInfo>:-flto>)
+    add_link_options($<$<CONFIG:RelWithDebInfo>:-flto>)
+  endif()
+  
+elseif(WIN32)
+  # Fast math for all builds
+  add_compile_options(/fp:fast)
+  
+  # Match JUCE: /Ox for Release, /Zi for debug symbols
+  add_compile_options(
+    $<$<CONFIG:Release>:/Zi>
+    $<$<CONFIG:Release>:/Ox>
+    $<$<CONFIG:Release>:/MP>
+    $<$<CONFIG:RelWithDebInfo>:/Zi>
+    $<$<CONFIG:RelWithDebInfo>:/Ox>
+    $<$<CONFIG:RelWithDebInfo>:/MP>
+  )
+  
+  # LTO flags (match juce_recommended_lto_flags) - only on CI for faster local builds
+  if(DEFINED ENV{CI} OR DEFINED ENV{GITHUB_ACTIONS})
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+      add_compile_options($<$<CONFIG:Release>:/GL>)
+      add_link_options($<$<CONFIG:Release>:/LTCG>)
+      add_compile_options($<$<CONFIG:RelWithDebInfo>:/GL>)
+      add_link_options($<$<CONFIG:RelWithDebInfo>:/LTCG>)
+    else()
+      # Clang-cl
+      add_compile_options($<$<CONFIG:Release>:-flto>)
+      add_compile_options($<$<CONFIG:RelWithDebInfo>:-flto>)
+    endif()
+  endif()
+endif()
+
 file(CREATE_LINK "${CMAKE_CURRENT_SOURCE_DIR}/README.md" "${CMAKE_BINARY_DIR}/README.txt" SYMBOLIC)
 set(CPACK_RESOURCE_FILE_README "${CMAKE_BINARY_DIR}/README.txt")
 
@@ -21,10 +88,21 @@ else()
   set(CPACK_PACKAGE_NAME "${DISPLAYNAME}")
 endif()
 
+# Detect Windows target architecture once for all subsequent checks
+if(WIN32)
+  if(CMAKE_GENERATOR_PLATFORM)
+    set(_win_target_arch "${CMAKE_GENERATOR_PLATFORM}")
+  elseif(CMAKE_VS_PLATFORM_NAME)
+    set(_win_target_arch "${CMAKE_VS_PLATFORM_NAME}")
+  else()
+    set(_win_target_arch "${CMAKE_SYSTEM_PROCESSOR}")
+  endif()
+endif()
+
 # Include architecture in package name only for Windows ARM64
 # Include build type in filename for local builds (non-CI)
 if(WIN32)
-  if(CMAKE_VS_PLATFORM_NAME STREQUAL "ARM64")
+  if(_win_target_arch STREQUAL "ARM64")
     set(CPACK_PACKAGE_FILE_NAME ${PATHNAME}-${PROJECT_VERSION}-${CMAKE_SYSTEM_NAME}-arm64)
   else()
     # Windows x64 - no architecture suffix
@@ -73,7 +151,13 @@ if(WIN32)
     LIBRARY DESTINATION "${TARGET_NAME}/bin/64bit"
     COMPONENT plugin)
 
-  # Note: PDB files are packaged separately in GitHub Actions workflow
+  # Include PDB files for debugging (x64 only, not ARM64)
+  if(NOT _win_target_arch STREQUAL "ARM64")
+    install(FILES $<TARGET_PDB_FILE:${TARGET_NAME}> 
+      DESTINATION "${TARGET_NAME}/bin/64bit" 
+      COMPONENT plugin 
+      OPTIONAL)
+  endif()
 
   # Windows data install pattern
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data")
@@ -229,7 +313,7 @@ if(WIN32)
   set(CPACK_PACKAGE_EXTENSION "exe")
   
   # Configure NSIS for specific architectures
-  if(CMAKE_VS_PLATFORM_NAME STREQUAL "ARM64")
+  if(_win_target_arch STREQUAL "ARM64")
     # Simple architecture check for ARM64 installer
     set(CPACK_NSIS_EXTRA_PREINSTALL_COMMANDS "
       ; Simple architecture check for ARM64
@@ -314,7 +398,7 @@ include(CPack)
 
 # Determine debug symbols package name based on platform
 if(WIN32)
-  if(CMAKE_VS_PLATFORM_NAME STREQUAL "ARM64")
+  if(_win_target_arch STREQUAL "ARM64")
     set(DEBUG_ARCH "arm64")
   else()
     set(DEBUG_ARCH "x64")
@@ -428,7 +512,7 @@ if(APPLE)
   set(PORTABLE_OS_NAME "macos")
 endif()
 set(CPACK_PACKAGE_FILE_NAME "portable-${PATHNAME}-${PROJECT_VERSION}-${PORTABLE_OS_NAME}")
-if(WIN32 AND CMAKE_VS_PLATFORM_NAME STREQUAL "ARM64")
+if(WIN32 AND _win_target_arch STREQUAL "ARM64")
   set(CPACK_PACKAGE_FILE_NAME "portable-${PATHNAME}-${PROJECT_VERSION}-${PORTABLE_OS_NAME}-arm64")
 endif()
 if(UNIX AND NOT APPLE)

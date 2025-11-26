@@ -270,6 +270,7 @@ public:
 
     void initialize(int numWorkers = 0, int priority = 8)
     {
+        (void)priority; // Unused - reserved for future use
         std::lock_guard<std::mutex> lock(poolMutex);
 
         if (isInitialized)

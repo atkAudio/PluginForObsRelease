@@ -570,7 +570,7 @@ private:
                 const float* srcPtr = tempOutputBuffer.getReadPointer(activeIdx);
                 if (srcPtr != nullptr && activeIdx < tempOutputBuffer.getNumChannels())
                 {
-                    std::memcpy(outputChannelData[ch], srcPtr, numSamples * sizeof(float));
+                    std::copy(srcPtr, srcPtr + numSamples, outputChannelData[ch]);
                 }
                 else
                 {

@@ -233,7 +233,13 @@ private:
         descr.name = identifier;
         descr.descriptiveName = identifier;
         descr.pluginFormatName = InternalPluginFormat::getIdentifier();
-        descr.category = (registerAsGenerator ? (acceptsMidi ? "Synth" : "Generator") : "Effect");
+
+        // Special category for OBS nodes
+        if (identifier == "OBS Source" || identifier == "OBS Output")
+            descr.category = "OBS";
+        else
+            descr.category = (registerAsGenerator ? (acceptsMidi ? "Synth" : "Generator") : "Effect");
+
         descr.manufacturerName = PLUGIN_AUTHOR;
         descr.version = PLUGIN_VERSION;
         descr.fileOrIdentifier = identifier;

@@ -369,11 +369,8 @@ public:
             {
                 if (activeOutputChannels[ch])
                 {
-                    std::memcpy(
-                        outputChannelData[ch],
-                        tempOutputBuffer.getReadPointer(activeIdx),
-                        numSamples * sizeof(float)
-                    );
+                    const float* src = tempOutputBuffer.getReadPointer(activeIdx);
+                    std::copy(src, src + numSamples, outputChannelData[ch]);
                     activeIdx++;
                 }
                 else

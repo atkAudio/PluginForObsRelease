@@ -50,6 +50,7 @@ target_compile_definitions(
     JUCE_USE_CURL=1
     JUCE_WEB_BROWSER=0
     JUCE_MODAL_LOOPS_PERMITTED=1 # we use QT event loop, so this is needed
+    JUCE_DIRECT2D=0 # Disable Direct2D to avoid crash in applySingleChannelBoxBlurEffectInArea
     # Disable DBG() output in CI/GitHub Actions RelWithDebInfo builds (keeps debug symbols but no console spam in CI)
     $<$<AND:$<CONFIG:RelWithDebInfo>,$<OR:$<BOOL:$ENV{CI}>,$<BOOL:$ENV{GITHUB_ACTIONS}>>>:JUCE_DISABLE_ASSERTIONS>
 )

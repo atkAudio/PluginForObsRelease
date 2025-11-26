@@ -88,7 +88,7 @@ struct atk::DeviceIo::Impl : public juce::Timer
             // No hardware input: send OBS input to hardware output
             hardwareOutputBuffer.setSize(numChannels, numSamples, false, false, true);
             for (int ch = 0; ch < numChannels; ++ch)
-                std::memcpy(hardwareOutputBuffer.getWritePointer(ch), buffer[ch], numSamples * sizeof(float));
+                std::copy(buffer[ch], buffer[ch] + numSamples, hardwareOutputBuffer.getWritePointer(ch));
             // Apply output delay before sending to hardware
             applyOutputDelay(hardwareOutputBuffer, numChannels, numSamples, sampleRate);
             fromObsBuffer.write(hardwareOutputBuffer.getArrayOfWritePointers(), numChannels, numSamples, sampleRate);
@@ -113,7 +113,7 @@ struct atk::DeviceIo::Impl : public juce::Timer
             {
                 // Replace: HW input -> OBS output
                 for (int ch = 0; ch < numChannels; ++ch)
-                    std::memcpy(buffer[ch], tempBuffer.getReadPointer(ch), numSamples * sizeof(float));
+                    std::copy(tempBuffer.getReadPointer(ch), tempBuffer.getReadPointer(ch) + numSamples, buffer[ch]);
             }
         }
         // else: No hardware input - pass through OBS audio unchanged

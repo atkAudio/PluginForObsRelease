@@ -166,7 +166,11 @@ public:
 
                 // Copy output back
                 for (int ch = 0; ch < numChannels; ++ch)
-                    std::memcpy(buffer[ch], outputBuffer.getReadPointer(ch), numSamples * sizeof(float));
+                    std::copy(
+                        outputBuffer.getReadPointer(ch),
+                        outputBuffer.getReadPointer(ch) + numSamples,
+                        buffer[ch]
+                    );
 
                 return;
             }

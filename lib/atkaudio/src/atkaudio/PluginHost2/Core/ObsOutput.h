@@ -48,7 +48,9 @@ public:
         // Ensure we have a helper source before processing
         if (!privateSource && !sourceCreationScheduled)
         {
+#ifdef ATK_DEBUG
             DBG("ObsOutput: Creating helper source (first processBlock)");
+#endif
             sourceCreationScheduled = true;
             createNewHelperSource();
         }

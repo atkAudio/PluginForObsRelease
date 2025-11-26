@@ -39,10 +39,6 @@ add_compile_options(
   "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:${_obs_msvc_cpp_options}>"
   "$<$<COMPILE_LANG_AND_ID:C,Clang>:${_obs_clang_c_options}>"
   "$<$<COMPILE_LANG_AND_ID:CXX,Clang>:${_obs_clang_cxx_options}>"
-  $<$<CONFIG:Release>:/Gy>
-  $<$<CONFIG:Release>:/GL>
-  $<$<CONFIG:Release>:/Oi>
-  $<$<CONFIG:RelWithDebInfo>:/Od>  # Disable optimizations for RelWithDebInfo
 )
 
 add_compile_definitions(
@@ -56,11 +52,6 @@ add_compile_definitions(
 )
 
 add_link_options(
-  $<$<CONFIG:Release>:/OPT:REF>
-  $<$<CONFIG:Release>:/OPT:ICF>
-  $<$<CONFIG:Release>:/LTCG>
-  $<$<CONFIG:Release>:/INCREMENTAL:NO>
-  $<$<CONFIG:RelWithDebInfo>:/INCREMENTAL>  # Enable incremental linking for RelWithDebInfo
   /DEBUG
   /Brepro
 )

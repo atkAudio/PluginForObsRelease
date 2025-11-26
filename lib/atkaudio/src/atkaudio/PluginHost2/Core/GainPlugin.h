@@ -27,6 +27,7 @@ public:
         gainParam = apvts->getParameter("gain");
         channelParam = apvts->getParameter("ch");
         ccParam = apvts->getParameter("cc");
+        midiEnabledParam = apvts->getParameter("midi");
 
         startTimerHz(30); // Start the timer to process MIDI messages
     }
@@ -58,6 +59,9 @@ public:
 
                 ccParam->setValueNotifyingHost(cc);
                 channelParam->setValueNotifyingHost(ch);
+
+                // Enable MIDI control
+                midiEnabledParam->setValueNotifyingHost(1.0f);
 
                 DBG("GainPlugin MIDI Learn complete: ch=" << toUiChannel.load() << " cc=" << toUiCc.load());
 
@@ -95,9 +99,9 @@ public:
 
         if (midiEnabled->load(std::memory_order_acquire) > 0.5f)
         {
-            for (const auto& event : midiBuffer)
+            for (const auto& metadata : midiBuffer)
             {
-                const auto& message = event.getMessage();
+                const juce::MidiMessage message(metadata.data, metadata.numBytes, metadata.samplePosition);
                 if (message.isController())
                 {
                     auto expectedChannel = static_cast<int>(midiChannel->load(std::memory_order_acquire));
@@ -116,7 +120,10 @@ public:
 
                     if (message.getChannel() == expectedChannel && message.getControllerNumber() == expectedCc)
                     {
+                        // Convert MIDI CC to gain using the parameter's normalisable range
+                        // The gain parameter already has skew set to 0.125 for cubic response
                         auto faderPos = message.getControllerValue() / 127.0f;
+
                         gain = gainParam->getNormalisableRange().convertFrom0to1(faderPos);
                         toUiGain.store(gain, std::memory_order_release);
                         gainUpdated.store(true, std::memory_order_release);
@@ -145,9 +152,10 @@ public:
         {
             DBG("GainPlugin: Learn mode active, buffer has " << midiBuffer.getNumEvents() << " events");
 
-            for (const auto& event : midiBuffer)
+            for (const auto& metadata : midiBuffer)
             {
-                const auto& message = event.getMessage();
+                const juce::MidiMessage message(metadata.data, metadata.numBytes, metadata.samplePosition);
+
                 DBG("GainPlugin: Learn mode checking message - isController="
                     << (message.isController() ? "yes" : "no")
                     << " isNoteOn="
@@ -155,16 +163,14 @@ public:
 
                 if (message.isController())
                 {
-                    auto channel = message.getChannel();
-                    auto cc = message.getControllerNumber();
+                    DBG("GainPlugin MIDI Learn captured: ch="
+                        << message.getChannel()
+                        << " cc="
+                        << message.getControllerNumber());
 
-                    DBG("GainPlugin MIDI Learn captured: ch=" << channel << " cc=" << cc);
-
-                    toUiChannel.store(channel, std::memory_order_release);
-                    toUiCc.store(cc, std::memory_order_release);
+                    toUiChannel.store(message.getChannel(), std::memory_order_release);
+                    toUiCc.store(message.getControllerNumber(), std::memory_order_release);
                     learnCaptured.store(true, std::memory_order_release);
-
-                    // Only capture the first CC message
                     break;
                 }
             }
@@ -262,7 +268,7 @@ private:
         std::vector<std::unique_ptr<RangedAudioParameter>> params;
 
         auto gainRange = NormalisableRange<float>(0.0f, 1.0f, 0.0f, 1.0f);
-        gainRange.setSkewForCentre(0.25f);
+        gainRange.setSkewForCentre(0.125f); // Match cubic curve: 0.5^3 = 0.125
 
         auto channelRange = NormalisableRange<float>(0.0f, 16.0f, 1.0f, 1.0f);
         auto ccRange = NormalisableRange<float>(0.0f, 128.0f, 1.0f, 1.0f);
@@ -300,6 +306,7 @@ private:
     juce::RangedAudioParameter* gainParam = nullptr;
     juce::RangedAudioParameter* channelParam = nullptr;
     juce::RangedAudioParameter* ccParam = nullptr;
+    juce::RangedAudioParameter* midiEnabledParam = nullptr;
 
     std::atomic<float> toUiGain = 0.0f;
     std::atomic<float> toUiChannel = 0.0f;

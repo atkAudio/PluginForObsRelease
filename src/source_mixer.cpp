@@ -2,14 +2,15 @@
 
 #include <algorithm>
 #include <atkaudio/FifoBuffer.h>
-#include <atomic>
 #include <memory>
 #include <mutex>
 #include <obs-module.h>
 #include <obs.h>
+#include <set>
 #include <string>
 #include <util/platform.h>
 #include <vector>
+#include <deque>
 
 #define SOURCE_NAME "atkAudio Source Mixer"
 #define SOURCE_ID "atkaudio_source_mixer"
@@ -23,6 +24,8 @@
 #define TEXT_OUTPUT MT_("Output")
 #define S_POSTMUTE "post_mute"
 #define TEXT_POSTMUTE MT_("Post-Mute")
+#define S_POSTFADER "post_fader"
+#define TEXT_POSTFADER MT_("Post-Fader")
 #define TEXT_LAYOUT MT_("Output Channels")
 #define TEXT_LAYOUT_DEFAULT MT_("Default")
 #define TEXT_LAYOUT_MONO MT_("Mono")
@@ -35,25 +38,23 @@ struct source_data
     obs_weak_source_t* weak_sidechain;
     char* sidechain_name;
     uint64_t sidechain_check_time;
-    // uint64_t last_callback_time = 0;
-
-    std::atomic_int frames = 0;
 
     float gain;
     bool postMute;
+    bool postFader;
 
     atk::FifoBuffer fifoBuffer;
     std::vector<float> tempBuffer;
 
     std::atomic_bool isActive = false;
     std::atomic_uint64_t last_callback_time = 0;
+
+    int calls_since_empty = 0; // Track how many calls since buffer was empty
 };
 
 struct audiosourcemixer_data
 {
-    std::unique_ptr<std::vector<source_data>> sources;
-
-    std::atomic_int frames = 0;
+    std::unique_ptr<std::deque<source_data>> sources;
 
     obs_source_t* source;
     obs_properties_t* properties = nullptr;
@@ -61,95 +62,62 @@ struct audiosourcemixer_data
     obs_source_audio audio_data;
 
     std::mutex sidechain_update_mutex;
-
-    size_t envelope_buf_len;
-
     std::mutex captureCallbackMutex;
 
-    std::atomic_bool doRawCallback = false;
     std::atomic_int speaker_layout = 0;
 
     std::vector<std::vector<float>> tempBuffer;
-    std::vector<float> tempBuffer2;
 };
 
 static void audio_output_callback(void* param, size_t mix_idx, struct audio_data* data)
 {
+    UNUSED_PARAMETER(mix_idx);
+    UNUSED_PARAMETER(data);
+
     struct audiosourcemixer_data* asmd = (struct audiosourcemixer_data*)param;
-    auto frames = (int)data->frames;
-    asmd->frames = frames;
 
-    if (!asmd->doRawCallback.load())
-        return;
-
-    std::scoped_lock lock(asmd->captureCallbackMutex);
-
-    auto numChannels = audio_output_get_channels(obs_get_audio());
-    auto sampleRate = audio_output_get_sample_rate(obs_get_audio());
-
-    asmd->tempBuffer.resize(numChannels);
-    for (auto& buffer : asmd->tempBuffer)
-        buffer.resize(frames);
-
-    for (auto& buffer : asmd->tempBuffer)
-        std::fill(buffer.begin(), buffer.end(), 0.0f);
-
-    asmd->tempBuffer2.resize(frames);
-    std::fill(asmd->tempBuffer2.begin(), asmd->tempBuffer2.end(), 0.0f);
-
-    for (int i = 0; i < numChannels; i++)
-        asmd->audio_data.data[i] = (const uint8_t*)asmd->tempBuffer[i].data();
-
-    asmd->audio_data.speakers =
-        (speaker_layout)(asmd->speaker_layout.load() == 0 ? numChannels : asmd->speaker_layout.load());
-    asmd->audio_data.samples_per_sec = sampleRate;
-    asmd->audio_data.format = AUDIO_FORMAT_FLOAT_PLANAR;
-
-    asmd->audio_data.frames = frames;
-    asmd->audio_data.timestamp = data->timestamp;
-
-    for (auto& source : *asmd->sources)
+    // Check if we have any configured sources
+    bool hasConfiguredSources = false;
+    if (asmd && asmd->sources)
     {
-        asmd->sidechain_update_mutex.lock();
-        obs_weak_source_t* weak_sidechain = source.weak_sidechain;
-        asmd->sidechain_update_mutex.unlock();
-
-        // has sidechain
-        if (weak_sidechain)
+        for (const auto& src : *asmd->sources)
         {
-            auto numReady = source.fifoBuffer.getNumReady();
-            if (numReady < frames)
-                continue;
-
-            int asmdFrames = asmd->frames.load();
-            int sourceFrames = source.frames.load();
-            auto maxFrames = (std::max)(asmdFrames, sourceFrames);
-            maxFrames = maxFrames * 2;
-
-            if (numReady > maxFrames)
+            if (src.sidechain_name && *src.sidechain_name)
             {
-                source.fifoBuffer.reset();
-
-                continue;
-            }
-
-            numChannels = (std::min)((int)numChannels, source.fifoBuffer.getNumChannels());
-            for (int i = 0; i < numChannels; i++)
-            {
-                auto* targetPtr = asmd->tempBuffer[i].data();
-                auto* tempPtr = asmd->tempBuffer2.data();
-                std::fill(asmd->tempBuffer2.begin(), asmd->tempBuffer2.end(), 0.0f);
-                source.fifoBuffer.read(tempPtr, i, frames, i == numChannels - 1);
-
-                for (size_t j = 0; j < frames; j++)
-                    targetPtr[j] += tempPtr[j];
+                hasConfiguredSources = true;
+                break;
             }
         }
     }
 
-    asmd->audio_data.timestamp = os_gettime_ns();
+    // Only produce silence if no sources are configured
+    if (!hasConfiguredSources && asmd)
+    {
+        auto numChannels = (int)audio_output_get_channels(obs_get_audio());
+        auto sampleRate = audio_output_get_sample_rate(obs_get_audio());
+        const int frames = (int)data->frames;
 
-    obs_source_output_audio(asmd->source, &asmd->audio_data);
+        // Prepare output buffer with silence
+        if (asmd->tempBuffer.size() < numChannels)
+            asmd->tempBuffer.resize(numChannels);
+
+        for (int i = 0; i < numChannels; i++)
+        {
+            if (asmd->tempBuffer[i].size() < frames)
+                asmd->tempBuffer[i].resize(frames, 0.0f);
+            std::fill_n(asmd->tempBuffer[i].data(), frames, 0.0f);
+            asmd->audio_data.data[i] = (const uint8_t*)asmd->tempBuffer[i].data();
+        }
+
+        asmd->audio_data.speakers =
+            (speaker_layout)(asmd->speaker_layout.load() == 0 ? numChannels : asmd->speaker_layout.load());
+        asmd->audio_data.samples_per_sec = sampleRate;
+        asmd->audio_data.format = AUDIO_FORMAT_FLOAT_PLANAR;
+        asmd->audio_data.frames = frames;
+        asmd->audio_data.timestamp = os_gettime_ns();
+
+        obs_source_output_audio(asmd->source, &asmd->audio_data);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -169,8 +137,13 @@ static inline obs_source_t* get_sidechain(source_data& sourceData, struct audios
 
 static void asmd_capture(void* param, obs_source_t* sourceIn, const struct audio_data* audio_data, bool muted)
 {
+    constexpr auto fifoSize = 1024 * 1024;
     struct audiosourcemixer_data* asmd = (struct audiosourcemixer_data*)param;
+    auto numChannels = (int)audio_output_get_channels(obs_get_audio());
+    auto sampleRate = audio_output_get_sample_rate(obs_get_audio());
+    auto frames = (int)audio_data->frames;
 
+    // Find the source that triggered this callback
     source_data* source = nullptr;
     for (auto& src : *asmd->sources)
     {
@@ -180,146 +153,141 @@ static void asmd_capture(void* param, obs_source_t* sourceIn, const struct audio
             break;
         }
     }
-
     if (!source)
         return;
 
+    // Handle muted sources
     source->isActive.store(false, std::memory_order_release);
-
     if (muted && source->postMute)
+    {
+        source->fifoBuffer.setSize(numChannels, fifoSize);
         return;
-
+    }
     source->isActive.store(true, std::memory_order_release);
 
-    std::scoped_lock lock(asmd->captureCallbackMutex);
-
-    auto frames = (int)audio_data->frames;
-
-    source->frames.store(frames, std::memory_order_release);
+    // Clear stale data if callback hasn't been called in >2 seconds
+    uint64_t lastCallbackTime = source->last_callback_time.load(std::memory_order_acquire);
+    if (lastCallbackTime > 0 && (audio_data->timestamp - lastCallbackTime) > 2000000000ULL)
+        source->fifoBuffer.setSize(numChannels, fifoSize);
 
     source->last_callback_time.store(audio_data->timestamp, std::memory_order_release);
 
-    auto numChannels = (int)audio_output_get_channels(obs_get_audio());
+    // Ensure buffers are sized
+    if (source->tempBuffer.size() < fifoSize)
+        source->tempBuffer.resize(fifoSize, 0.0f);
+    if (source->fifoBuffer.getTotalSize() < fifoSize)
+        source->fifoBuffer.setSize(numChannels, fifoSize);
 
-    auto fifoSize = ((asmd->frames * 2) / frames + 1) * frames;
+    // Apply gain and write to FIFO with overflow protection
+    std::scoped_lock lock(asmd->captureCallbackMutex);
 
-    source->tempBuffer.resize(fifoSize, 0.0f);
-    source->fifoBuffer.setSize(numChannels, fifoSize);
+    // Check if buffer is empty BEFORE writing new data - this is the optimal case
+    if (source->fifoBuffer.getNumReady() == 0)
+        source->calls_since_empty = 0;
+
+    float totalGain = source->gain;
+    if (source->postFader && sourceIn)
+        totalGain *= obs_source_get_volume(sourceIn);
+
+    // Check overflow once before writing
+    if (source->fifoBuffer.getFreeSpace() < frames)
+        source->fifoBuffer.setSize(numChannels, fifoSize);
 
     for (int i = 0; i < numChannels; i++)
     {
-        auto* sourcePtr = (float*)audio_data->data[i];
-        for (size_t j = 0; j < frames; j++)
-            sourcePtr[j] *= source->gain;
+        const float* sourcePtr = (const float*)audio_data->data[i];
+        float* tempPtr = source->tempBuffer.data();
 
-        source->fifoBuffer.write(sourcePtr, i, frames, i == numChannels - 1);
+        // Apply gain to temp buffer instead of modifying input
+        for (int j = 0; j < frames; j++)
+            tempPtr[j] = sourcePtr[j] * totalGain;
+
+        source->fifoBuffer.write(tempPtr, i, frames, i == numChannels - 1);
     }
 
-    auto sourcesFrameSize = frames;
-    auto doThisCallback = true;
-    for (auto& source : *asmd->sources)
+    // Check all sources: find minimum ready samples, return early if any active source has no data
+    int minReadySamples = -1;
+    int activeSourceCount = 0;
+    for (auto& src : *asmd->sources)
     {
-        auto sourceFrameSize = source.frames.load();
-        if (sourceFrameSize == 0)
-            continue;
-
-        asmd->sidechain_update_mutex.lock();
-        auto sourceRef = obs_weak_source_get_source(source.weak_sidechain);
+        std::scoped_lock lock(asmd->sidechain_update_mutex);
+        auto sourceRef = obs_weak_source_get_source(src.weak_sidechain);
         if (!sourceRef)
-        {
-            asmd->sidechain_update_mutex.unlock();
             continue;
-        }
         obs_source_release(sourceRef);
-        asmd->sidechain_update_mutex.unlock();
 
-        if (sourceFrameSize != sourcesFrameSize)
-        {
-            doThisCallback = false;
-            break;
-        }
-    }
-
-    if (!doThisCallback)
-    {
-        asmd->doRawCallback = true;
-        return;
-    }
-    asmd->doRawCallback = false;
-
-    auto sampleRate = audio_output_get_sample_rate(obs_get_audio());
-
-    for (auto& source : *asmd->sources)
-    {
-        asmd->sidechain_update_mutex.lock();
-        auto sourceRef = obs_weak_source_get_source(source.weak_sidechain);
-        if (!sourceRef)
-        {
-            asmd->sidechain_update_mutex.unlock();
+        if (!src.isActive.load(std::memory_order_acquire))
             continue;
-        }
-        obs_source_release(sourceRef);
-        asmd->sidechain_update_mutex.unlock();
 
-        auto numReady = source.fifoBuffer.getNumReady();
+        activeSourceCount++;
 
-        if (numReady < 2 * frames && source.isActive.load(std::memory_order_acquire))
+        auto numReady = src.fifoBuffer.getNumReady();
+        if (numReady == 0)
+        {
+            src.calls_since_empty = 0;
             return;
+        }
+
+        src.calls_since_empty++;
+        if (src.calls_since_empty >= 1024)
+        {
+            // This source is accumulating data faster than we're consuming it
+            // Reset its buffer and mark inactive to prevent blocking other sources
+            src.fifoBuffer.reset();
+            src.calls_since_empty = 0;
+            src.isActive.store(false, std::memory_order_release);
+            activeSourceCount--;
+            continue; // Skip this source but continue checking others
+        }
+
+        if (minReadySamples < 0 || numReady < minReadySamples)
+            minReadySamples = numReady;
     }
 
-    asmd->tempBuffer.resize(numChannels);
-    for (auto& buffer : asmd->tempBuffer)
-        buffer.resize(frames);
+    // If no active sources remain, or none have data ready, don't output
+    if (activeSourceCount == 0 || minReadySamples <= 0)
+        return;
 
-    for (auto& buffer : asmd->tempBuffer)
-        std::fill(buffer.begin(), buffer.end(), 0.0f);
+    // Prepare output buffer
+    if (asmd->tempBuffer.size() < numChannels)
+        asmd->tempBuffer.resize(numChannels);
 
     for (int i = 0; i < numChannels; i++)
+    {
+        if (asmd->tempBuffer[i].size() < minReadySamples)
+            asmd->tempBuffer[i].resize(minReadySamples);
+        std::fill_n(asmd->tempBuffer[i].data(), minReadySamples, 0.0f);
         asmd->audio_data.data[i] = (const uint8_t*)asmd->tempBuffer[i].data();
+    }
 
-    // auto sampleRate = audio_output_get_sample_rate(obs_get_audio());
-
+    // Set up output metadata
     asmd->audio_data.speakers =
         (speaker_layout)(asmd->speaker_layout.load() == 0 ? numChannels : asmd->speaker_layout.load());
     asmd->audio_data.samples_per_sec = sampleRate;
     asmd->audio_data.format = AUDIO_FORMAT_FLOAT_PLANAR;
+    asmd->audio_data.frames = minReadySamples;
 
-    asmd->audio_data.frames = frames;
+    // Use current system time for timestamp
     asmd->audio_data.timestamp = os_gettime_ns();
 
-    for (auto& source : *asmd->sources)
+    // Mix all sources into output
+    for (auto& src : *asmd->sources)
     {
-        asmd->sidechain_update_mutex.lock();
-        obs_weak_source_t* weak_sidechain = source.weak_sidechain;
-        asmd->sidechain_update_mutex.unlock();
+        std::scoped_lock lock(asmd->sidechain_update_mutex);
+        if (!src.weak_sidechain || src.fifoBuffer.getNumReady() < minReadySamples)
+            continue;
 
-        if (weak_sidechain)
+        int mixChannels = std::min<int>(numChannels, src.fifoBuffer.getNumChannels());
+        for (int i = 0; i < mixChannels; i++)
         {
-            auto numReady = source.fifoBuffer.getNumReady();
+            auto* targetPtr = (float*)asmd->audio_data.data[i];
+            auto* tempPtr = src.tempBuffer.data();
+            src.fifoBuffer.read(tempPtr, i, minReadySamples, i == mixChannels - 1);
 
-            if (numReady < frames || numReady > 2 * frames)
-            {
-                source.fifoBuffer.reset();
-
-                continue;
-            }
-
-            numChannels = (std::min)((int)numChannels, source.fifoBuffer.getNumChannels());
-
-            for (int i = 0; i < numChannels; i++)
-            {
-                auto* targetPtr = (float*)asmd->audio_data.data[i];
-                source.tempBuffer.clear();
-                auto* tempPtr = source.tempBuffer.data();
-                source.fifoBuffer.read(tempPtr, i, frames, i == numChannels - 1);
-
-                for (size_t j = 0; j < frames; j++)
-                    targetPtr[j] += tempPtr[j];
-            }
+            for (int j = 0; j < minReadySamples; j++)
+                targetPtr[j] += tempPtr[j];
         }
     }
-
-    asmd->audio_data.timestamp = os_gettime_ns();
 
     obs_source_output_audio(asmd->source, &asmd->audio_data);
 }
@@ -354,6 +322,8 @@ struct sidechain_prop_info
     obs_property_t* sources_list;
     obs_source_t* parent;
     audiosourcemixer_data* asmd;
+    const char* current_source;                // The source configured for THIS slot (allow it to appear)
+    std::set<std::string>* configured_sources; // Sources already used in OTHER slots
 };
 
 static bool add_sources(void* data, obs_source_t* source)
@@ -371,8 +341,18 @@ static bool add_sources(void* data, obs_source_t* source)
         return true;
 
     const char* name = obs_source_get_name(source);
+
+    // Check if this source is already configured in another slot
+    // Allow it if it's the current slot's source
+    if (info->configured_sources
+        && info->configured_sources->find(name) != info->configured_sources->end()
+        && (!info->current_source || strcmp(name, info->current_source) != 0))
+    {
+        return true; // Skip - already used in another slot
+    }
+
+    // Only add to the combo list; do not add per-source color properties
     obs_property_list_add_string(info->sources_list, name, name);
-    obs_properties_add_color(info->asmd->properties, name, name);
 
     return true;
 }
@@ -381,9 +361,9 @@ static obs_properties_t* properties(void* data)
 {
     struct audiosourcemixer_data* asmd = (struct audiosourcemixer_data*)data;
 
-    obs_properties_t* props = asmd->properties;
-    if (!props)
-        props = obs_properties_create();
+    // Recreate properties dynamically each time to reflect current source count (+1 extra slot)
+    obs_properties_t* props = obs_properties_create();
+    asmd->properties = props;
 
     auto* layout = obs_properties_add_list(props, S_LAYOUT, TEXT_LAYOUT, OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
 
@@ -392,16 +372,39 @@ static obs_properties_t* properties(void* data)
     obs_property_list_add_int(layout, TEXT_LAYOUT_STEREO, 2);
 
     obs_source_t* parent = nullptr;
-
     if (asmd)
         parent = obs_filter_get_parent(asmd->source);
 
-    for (int i = 0; i < MAX_AUDIO_CHANNELS; i++)
+    // Count configured sources (those with valid sidechain names)
+    size_t configured = 0;
+    if (asmd && asmd->sources)
     {
+        for (const auto& src : *asmd->sources)
+            if (src.sidechain_name && *src.sidechain_name)
+                configured++;
+    }
+
+    // Show minimum 8 slots, or configured+1 (one extra empty slot)
+    const size_t minSlots = 8;
+    const size_t totalSlots = std::max<size_t>(minSlots, configured + 1);
+
+    // Build set of all configured source names to exclude from other dropdowns
+    std::set<std::string> configured_sources;
+    if (asmd && asmd->sources)
+    {
+        for (const auto& src : *asmd->sources)
+            if (src.sidechain_name && *src.sidechain_name)
+                configured_sources.insert(src.sidechain_name);
+    }
+
+    for (size_t i = 0; i < totalSlots; ++i)
+    {
+        const int idx = (int)i + 1; // 1-based labels/keys
+
         std::string propText = S_SIDECHAIN_SOURCE;
-        propText += std::to_string(i + 1);
+        propText += std::to_string(idx);
         std::string textLabel = TEXT_SIDECHAIN_SOURCE;
-        textLabel += " " + std::to_string(i + 1);
+        textLabel += " " + std::to_string(idx);
         obs_property_t* sources = obs_properties_add_list(
             props,
             propText.c_str(),
@@ -413,20 +416,34 @@ static obs_properties_t* properties(void* data)
         obs_property_list_add_string(sources, obs_module_text("None"), "none");
 
         propText = S_GAIN_DB;
-        propText += std::to_string(i + 1);
+        propText += std::to_string(idx);
         textLabel = TEXT_GAIN_DB;
-        textLabel += " " + std::to_string(i + 1);
+        textLabel += " " + std::to_string(idx);
         obs_property_t* p =
             obs_properties_add_float_slider(props, propText.c_str(), textLabel.c_str(), -30.0, 30.0, 0.1);
         obs_property_float_set_suffix(p, " dB");
 
         propText = S_POSTMUTE;
-        propText += std::to_string(i + 1);
+        propText += std::to_string(idx);
         textLabel = TEXT_POSTMUTE;
-        textLabel += " " + std::to_string(i + 1);
+        textLabel += " " + std::to_string(idx);
         obs_properties_add_bool(props, propText.c_str(), textLabel.c_str());
 
-        struct sidechain_prop_info info = {sources, parent, asmd};
+        propText = S_POSTFADER;
+        propText += std::to_string(idx);
+        textLabel = TEXT_POSTFADER;
+        textLabel += " " + std::to_string(idx);
+        obs_properties_add_bool(props, propText.c_str(), textLabel.c_str());
+
+        // Get the current source for this slot
+        const char* current_source = nullptr;
+        if (asmd && asmd->sources && i < asmd->sources->size())
+        {
+            const auto& src = (*asmd->sources)[i];
+            current_source = src.sidechain_name;
+        }
+
+        struct sidechain_prop_info info = {sources, parent, asmd, current_source, &configured_sources};
         obs_enum_sources(add_sources, &info);
     }
 
@@ -444,6 +461,33 @@ static void update(void* data, obs_data_t* s)
 
     asmd->speaker_layout.store((int)layout);
 
+    // First pass: count how many sources are configured in the saved settings
+    size_t configuredCount = 0;
+    for (size_t i = 0; i < 1000; ++i) // reasonable upper limit
+    {
+        std::string sidechainText = S_SIDECHAIN_SOURCE;
+        sidechainText += std::to_string(i + 1);
+        const char* sidechain_name = obs_data_get_string(s, sidechainText.c_str());
+        if (!sidechain_name || !*sidechain_name || strcmp(sidechain_name, "none") == 0)
+            break;
+        configuredCount = i + 1;
+    }
+
+    // Ensure we have at least 8 sources, and enough for all configured sources + 1 empty
+    const size_t requiredSize = std::max<size_t>(8, configuredCount + 1);
+    while (asmd->sources->size() < requiredSize)
+    {
+        asmd->sources->emplace_back();
+        auto& newSrc = asmd->sources->back();
+        newSrc.fifoBuffer.setSize((int)audio_output_get_channels(obs_get_audio()), AUDIO_OUTPUT_FRAMES);
+    }
+
+    // Trim to maintain minimum 8 sources, or configuredCount+1 (one empty slot after configured)
+    const size_t targetSize = std::max<size_t>(8, configuredCount + 1);
+    while (asmd->sources->size() > targetSize)
+        asmd->sources->pop_back();
+
+    // Update existing sources from properties
     int i = 0;
     for (auto& source : *asmd->sources)
     {
@@ -460,9 +504,13 @@ static void update(void* data, obs_data_t* s)
         paramText += std::to_string(i + 1);
         source.postMute = obs_data_get_bool(s, paramText.c_str());
 
+        paramText = S_POSTFADER;
+        paramText += std::to_string(i + 1);
+        source.postFader = obs_data_get_bool(s, paramText.c_str());
+
         const char* sidechain_name = obs_data_get_string(s, sidechainText.c_str());
 
-        bool valid_sidechain = *sidechain_name && strcmp(sidechain_name, "none") != 0;
+        bool valid_sidechain = sidechain_name && *sidechain_name && strcmp(sidechain_name, "none") != 0;
         obs_weak_source_t* old_weak_sidechain = nullptr;
 
         asmd->sidechain_update_mutex.lock();
@@ -508,6 +556,29 @@ static void update(void* data, obs_data_t* s)
         }
         i++;
     }
+
+    // If the extra (last) slot is configured with a sidechain, append a new empty source
+    {
+        const int idx = (int)asmd->sources->size() + 1; // 1-based for property names
+        std::string sidechainText = S_SIDECHAIN_SOURCE;
+        sidechainText += std::to_string(idx);
+        const char* sidechain_name = obs_data_get_string(s, sidechainText.c_str());
+        const bool valid_sidechain = sidechain_name && *sidechain_name && strcmp(sidechain_name, "none") != 0;
+        if (valid_sidechain)
+        {
+            asmd->sources->emplace_back();
+            source_data& newSrc = asmd->sources->back();
+            newSrc.source = nullptr;
+            newSrc.weak_sidechain = nullptr;
+            newSrc.sidechain_name = bstrdup(sidechain_name);
+            newSrc.sidechain_check_time = os_gettime_ns() - 3000000000;
+            newSrc.gain =
+                obs_db_to_mul((float)obs_data_get_double(s, (std::string(S_GAIN_DB) + std::to_string(idx)).c_str()));
+            newSrc.postMute = obs_data_get_bool(s, (std::string(S_POSTMUTE) + std::to_string(idx)).c_str());
+            newSrc.postFader = obs_data_get_bool(s, (std::string(S_POSTFADER) + std::to_string(idx)).c_str());
+            newSrc.fifoBuffer.setSize((int)audio_output_get_channels(obs_get_audio()), AUDIO_OUTPUT_FRAMES);
+        }
+    }
 }
 
 static void* asmd_create(obs_data_t* settings, obs_source_t* source)
@@ -515,10 +586,11 @@ static void* asmd_create(obs_data_t* settings, obs_source_t* source)
     auto* asmd = new audiosourcemixer_data();
 
     asmd->source = source;
-    asmd->sources.reset(new std::vector<source_data>(MAX_AUDIO_CHANNELS));
+    // Start with 8 empty sources; the UI will expose one extra after all are filled
+    asmd->sources.reset(new std::deque<source_data>(8));
 
-    for (auto& source : *asmd->sources)
-        source.fifoBuffer.setSize((int)audio_output_get_channels(obs_get_audio()), AUDIO_OUTPUT_FRAMES);
+    for (auto& src : *asmd->sources)
+        src.fifoBuffer.setSize((int)audio_output_get_channels(obs_get_audio()), AUDIO_OUTPUT_FRAMES);
 
     asmd->audio_data.format = AUDIO_FORMAT_FLOAT_PLANAR;
 
@@ -541,16 +613,12 @@ static void asmd_tick(void* data, float seconds)
 
     uint64_t t = os_gettime_ns();
 
-    auto sampleRate = audio_output_get_sample_rate(obs_get_audio());
+    UNUSED_PARAMETER(seconds);
 
     for (auto& source : *asmd->sources)
     {
         char* new_name = nullptr;
         asmd->sidechain_update_mutex.lock();
-
-        if (t - source.last_callback_time.load(std::memory_order_acquire)
-            > (2.0 * source.frames.load()) / sampleRate * 1000000000)
-            source.isActive.store(false, std::memory_order_release);
 
         if (source.sidechain_name && !source.weak_sidechain)
         {
@@ -601,23 +669,6 @@ static void asmd_tick(void* data, float seconds)
 
             bfree(new_name);
         }
-    }
-
-    if (!asmd->doRawCallback.load(std::memory_order_acquire))
-    {
-        for (auto& source : *asmd->sources)
-        {
-            asmd->sidechain_update_mutex.lock();
-            auto* sourceRef = obs_weak_source_get_source(source.weak_sidechain);
-            if (sourceRef)
-            {
-                obs_source_release(sourceRef);
-                asmd->sidechain_update_mutex.unlock();
-                return;
-            }
-            asmd->sidechain_update_mutex.unlock();
-        }
-        asmd->doRawCallback.store(true, std::memory_order_release);
     }
 }
 

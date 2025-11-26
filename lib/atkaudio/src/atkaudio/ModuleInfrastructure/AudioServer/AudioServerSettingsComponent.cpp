@@ -38,7 +38,7 @@ void AudioServerSettingsComponent::DeviceChannelTreeItem::paintItem(juce::Graphi
 
     // Use default text color from Component
     g.setColour(lf.findColour(juce::Label::textColourId));
-    g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), height * 0.7f, juce::Font::plain));
+    g.setFont(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), height * 0.7f, juce::Font::plain));
 
     juce::String displayText = itemName;
     if (itemType == ItemType::Channel)
@@ -192,7 +192,7 @@ void AudioServerSettingsComponent::ChannelMappingMatrix::paintCell(
             if (mapped)
             {
                 g.setColour(juce::Colours::white);
-                g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 16.0f, juce::Font::bold));
+                g.setFont(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), 16.0f, juce::Font::bold));
                 g.drawText("X", 0, 0, width, height, juce::Justification::centred);
             }
 
@@ -549,7 +549,7 @@ AudioServerSettingsComponent::AudioServerSettingsComponent(AudioClient* audioCli
 {
     // Input tree
     inputTreeLabel.setText("Input", juce::dontSendNotification);
-    inputTreeLabel.setFont(juce::Font(16.0f, juce::Font::bold));
+    inputTreeLabel.setFont(juce::FontOptions(16.0f, juce::Font::bold));
     addAndMakeVisible(inputTreeLabel);
 
     inputTreeView = std::make_unique<juce::TreeView>();
@@ -563,7 +563,7 @@ AudioServerSettingsComponent::AudioServerSettingsComponent(AudioClient* audioCli
 
     // Output tree
     outputTreeLabel.setText("Output", juce::dontSendNotification);
-    outputTreeLabel.setFont(juce::Font(16.0f, juce::Font::bold));
+    outputTreeLabel.setFont(juce::FontOptions(16.0f, juce::Font::bold));
     addAndMakeVisible(outputTreeLabel);
 
     outputTreeView = std::make_unique<juce::TreeView>();

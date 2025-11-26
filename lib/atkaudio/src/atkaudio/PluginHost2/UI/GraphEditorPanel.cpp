@@ -160,16 +160,52 @@ struct GraphEditorPanel::PinComponent final
             else
             {
                 auto& processor = *node->getProcessor();
-                auto channel = processor.getOffsetInBusBufferForAbsoluteChannelIndex(isInput, pin.channelIndex, busIdx);
 
-                if (auto* bus = processor.getBus(isInput, busIdx))
-                    tip = bus->getName()
-                        + ": "
-                        + AudioChannelSet::getAbbreviatedChannelTypeName(
-                              bus->getCurrentLayout().getTypeOfChannel(channel)
-                        );
+                // Check if this is an Audio Input or Audio Output node FIRST
+                // (before checking for buses, as these nodes have default buses but we want custom names)
+                if (auto* ioProcessor = dynamic_cast<AudioProcessorGraphMT::AudioGraphIOProcessor*>(&processor))
+                {
+                    auto ioType = ioProcessor->getType();
+                    if (ioType == AudioProcessorGraphMT::AudioGraphIOProcessor::audioInputNode
+                        || ioType == AudioProcessorGraphMT::AudioGraphIOProcessor::audioOutputNode)
+                    {
+                        // Try to get actual channel name from the current audio device
+                        if (auto* device = graph.getMainHostWindow().getDeviceManager().getCurrentAudioDevice())
+                        {
+                            auto channelNames = ioType == AudioProcessorGraphMT::AudioGraphIOProcessor::audioInputNode
+                                                  ? device->getInputChannelNames()
+                                                  : device->getOutputChannelNames();
+
+                            if (pin.channelIndex < channelNames.size())
+                                tip = String(pin.channelIndex + 1) + ": " + channelNames[pin.channelIndex];
+                            else
+                                tip = String(pin.channelIndex + 1);
+                        }
+                        else
+                        {
+                            tip = String(pin.channelIndex + 1);
+                        }
+                    }
+                    else
+                    {
+                        tip = (isInput ? "MIDI Input" : "MIDI Output");
+                    }
+                }
                 else
-                    tip = (isInput ? "Main Input: " : "Main Output: ") + String(pin.channelIndex + 1);
+                {
+                    // For regular plugins, check if they have buses
+                    auto channel =
+                        processor.getOffsetInBusBufferForAbsoluteChannelIndex(isInput, pin.channelIndex, busIdx);
+
+                    if (auto* bus = processor.getBus(isInput, busIdx))
+                        tip = bus->getName()
+                            + ": "
+                            + AudioChannelSet::getAbbreviatedChannelTypeName(
+                                  bus->getCurrentLayout().getTypeOfChannel(channel)
+                            );
+                    else
+                        tip = (isInput ? "Main Input: " : "Main Output: ") + String(pin.channelIndex + 1);
+                }
             }
 
             setTooltip(tip);

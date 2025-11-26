@@ -155,6 +155,20 @@ PluginWindow* PluginGraph::getOrCreateWindowFor(AudioProcessorGraphMT::Node* nod
 
             if (!plugin->hasEditor() && description.pluginFormatName == "Internal")
             {
+                // Check if this is a MIDI I/O node
+                if (auto* ioProcessor = dynamic_cast<AudioProcessorGraphMT::AudioGraphIOProcessor*>(processor))
+                {
+                    auto ioType = ioProcessor->getType();
+                    if (ioType == AudioProcessorGraphMT::AudioGraphIOProcessor::midiInputNode
+                        || ioType == AudioProcessorGraphMT::AudioGraphIOProcessor::midiOutputNode)
+                    {
+                        // Open MIDI settings window for MIDI nodes
+                        mainHostWindow.getCommandManager().invokeDirectly(CommandIDs::showMidiSettings, false);
+                        return nullptr;
+                    }
+                }
+
+                // Open audio settings for other internal plugins without editor
                 mainHostWindow.getCommandManager().invokeDirectly(CommandIDs::showAudioSettings, false);
                 return nullptr;
             }

@@ -126,6 +126,13 @@ public:
     void processMidiInput(juce::MidiBuffer& midiMessages, int numSamples, double sampleRate);
     void processMidiOutput(const juce::MidiBuffer& midiMessages);
 
+    //==============================================================================
+    // Access to MainHostWindow for device manager and other services
+    MainHostWindow& getMainHostWindow()
+    {
+        return mainHostWindow;
+    }
+
 private:
     //==============================================================================
     MainHostWindow& mainHostWindow;

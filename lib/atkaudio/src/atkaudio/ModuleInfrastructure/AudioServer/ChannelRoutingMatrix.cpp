@@ -155,7 +155,7 @@ void ChannelRoutingMatrix::applyOutputRouting(
     {
         // No routing matrix - direct pass-through
         for (int ch = 0; ch < numObsChannels && ch < sourceBuffer.getNumChannels(); ++ch)
-            std::memcpy(obsBuffer[ch], sourceBuffer.getReadPointer(ch), numSamples * sizeof(float));
+            std::copy(sourceBuffer.getReadPointer(ch), sourceBuffer.getReadPointer(ch) + numSamples, obsBuffer[ch]);
         return;
     }
 
