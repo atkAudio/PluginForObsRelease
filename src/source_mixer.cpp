@@ -1,16 +1,16 @@
 #include "config.h"
 
 #include <algorithm>
-#include <atkaudio/FifoBuffer.h>
+#include <atkaudio/FifoBuffer2.h>
+#include <deque>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <obs-module.h>
 #include <obs.h>
-#include <set>
 #include <string>
 #include <util/platform.h>
 #include <vector>
-#include <deque>
 
 #define SOURCE_NAME "atkAudio Source Mixer"
 #define SOURCE_ID "atkaudio_source_mixer"
@@ -43,8 +43,11 @@ struct source_data
     bool postMute;
     bool postFader;
 
-    atk::FifoBuffer fifoBuffer;
-    std::vector<float> tempBuffer;
+    SyncBuffer syncBuffer;
+    std::vector<std::vector<float>> writeBuffer;
+    std::vector<float*> writePtrs;
+    std::vector<std::vector<float>> readBuffer;
+    std::vector<float*> readPtrs;
 
     std::atomic_bool isActive = false;
     std::atomic_uint64_t last_callback_time = 0;
@@ -160,91 +163,94 @@ static void asmd_capture(void* param, obs_source_t* sourceIn, const struct audio
     source->isActive.store(false, std::memory_order_release);
     if (muted && source->postMute)
     {
-        source->fifoBuffer.setSize(numChannels, fifoSize);
+        source->syncBuffer.reset();
         return;
     }
     source->isActive.store(true, std::memory_order_release);
 
-    // Clear stale data if callback hasn't been called in >2 seconds
-    uint64_t lastCallbackTime = source->last_callback_time.load(std::memory_order_acquire);
-    if (lastCallbackTime > 0 && (audio_data->timestamp - lastCallbackTime) > 2000000000ULL)
-        source->fifoBuffer.setSize(numChannels, fifoSize);
+    auto currentTime = os_gettime_ns();
+    auto lastCallbackTime = source->last_callback_time.load(std::memory_order_acquire);
+    if (lastCallbackTime > 0 && (currentTime - lastCallbackTime) > 3000000000)
+        source->syncBuffer.reset();
 
-    source->last_callback_time.store(audio_data->timestamp, std::memory_order_release);
+    source->last_callback_time.store(currentTime, std::memory_order_release);
 
-    // Ensure buffers are sized
-    if (source->tempBuffer.size() < fifoSize)
-        source->tempBuffer.resize(fifoSize, 0.0f);
-    if (source->fifoBuffer.getTotalSize() < fifoSize)
-        source->fifoBuffer.setSize(numChannels, fifoSize);
+    // Ensure write buffers are sized
+    if (source->writeBuffer.size() < numChannels)
+    {
+        source->writeBuffer.resize(numChannels);
+        source->writePtrs.resize(numChannels);
+    }
+    for (int i = 0; i < numChannels; i++)
+    {
+        if (source->writeBuffer[i].size() < frames)
+            source->writeBuffer[i].resize(frames);
+        source->writePtrs[i] = source->writeBuffer[i].data();
+    }
 
-    // Apply gain and write to FIFO with overflow protection
+    // Apply gain and write to SyncBuffer
     std::scoped_lock lock(asmd->captureCallbackMutex);
-
-    // Check if buffer is empty BEFORE writing new data - this is the optimal case
-    if (source->fifoBuffer.getNumReady() == 0)
-        source->calls_since_empty = 0;
 
     float totalGain = source->gain;
     if (source->postFader && sourceIn)
         totalGain *= obs_source_get_volume(sourceIn);
 
-    // Check overflow once before writing
-    if (source->fifoBuffer.getFreeSpace() < frames)
-        source->fifoBuffer.setSize(numChannels, fifoSize);
-
+    // Apply gain to write buffer
     for (int i = 0; i < numChannels; i++)
     {
         const float* sourcePtr = (const float*)audio_data->data[i];
-        float* tempPtr = source->tempBuffer.data();
+        float* writePtr = source->writeBuffer[i].data();
 
-        // Apply gain to temp buffer instead of modifying input
         for (int j = 0; j < frames; j++)
-            tempPtr[j] = sourcePtr[j] * totalGain;
-
-        source->fifoBuffer.write(tempPtr, i, frames, i == numChannels - 1);
+            writePtr[j] = sourcePtr[j] * totalGain;
     }
 
+    if (!source->syncBuffer.getIsPrepared())
+    {
+        source->syncBuffer.setTargetLevelFactor(1.0);
+        source->syncBuffer.setInterpolationType(atk::InterpolationType::Linear);
+        source->syncBuffer.prepare(numChannels, frames, sampleRate);
+    }
+
+    // Write to SyncBuffer with source sample rate
+    source->syncBuffer.write(source->writePtrs.data(), numChannels, frames, sampleRate);
+
     // Check all sources: find minimum ready samples, return early if any active source has no data
-    int minReadySamples = -1;
+    int minReadySamples = frames;
     int activeSourceCount = 0;
     for (auto& src : *asmd->sources)
     {
         std::scoped_lock lock(asmd->sidechain_update_mutex);
         auto sourceRef = obs_weak_source_get_source(src.weak_sidechain);
         if (!sourceRef)
-            continue;
+        {
+            src.syncBuffer.reset();
+            src.isActive.store(false, std::memory_order_release);
+        }
         obs_source_release(sourceRef);
 
         if (!src.isActive.load(std::memory_order_acquire))
             continue;
 
-        activeSourceCount++;
-
-        auto numReady = src.fifoBuffer.getNumReady();
-        if (numReady == 0)
+        // Check for timeout based on last callback time
+        auto prevSrcTime = src.last_callback_time.load(std::memory_order_acquire);
+        if (currentTime > prevSrcTime && currentTime - prevSrcTime > 3000000000)
         {
-            src.calls_since_empty = 0;
-            return;
-        }
-
-        src.calls_since_empty++;
-        if (src.calls_since_empty >= 1024)
-        {
-            // This source is accumulating data faster than we're consuming it
-            // Reset its buffer and mark inactive to prevent blocking other sources
-            src.fifoBuffer.reset();
-            src.calls_since_empty = 0;
+            src.syncBuffer.reset();
             src.isActive.store(false, std::memory_order_release);
-            activeSourceCount--;
-            continue; // Skip this source but continue checking others
+            continue;
         }
 
-        if (minReadySamples < 0 || numReady < minReadySamples)
+        auto numReady = src.syncBuffer.getNumReady();
+
+        // Find minimum samples across all sources
+        if (numReady < minReadySamples)
             minReadySamples = numReady;
+
+        activeSourceCount++;
     }
 
-    // If no active sources remain, or none have data ready, don't output
+    // If no active sources remain, don't output
     if (activeSourceCount == 0 || minReadySamples <= 0)
         return;
 
@@ -274,18 +280,36 @@ static void asmd_capture(void* param, obs_source_t* sourceIn, const struct audio
     for (auto& src : *asmd->sources)
     {
         std::scoped_lock lock(asmd->sidechain_update_mutex);
-        if (!src.weak_sidechain || src.fifoBuffer.getNumReady() < minReadySamples)
+        if (!src.weak_sidechain || !src.isActive.load(std::memory_order_acquire))
             continue;
 
-        int mixChannels = std::min<int>(numChannels, src.fifoBuffer.getNumChannels());
-        for (int i = 0; i < mixChannels; i++)
+        // Ensure read buffers are sized
+        if (src.readBuffer.size() < numChannels)
         {
-            auto* targetPtr = (float*)asmd->audio_data.data[i];
-            auto* tempPtr = src.tempBuffer.data();
-            src.fifoBuffer.read(tempPtr, i, minReadySamples, i == mixChannels - 1);
+            src.readBuffer.resize(numChannels);
+            src.readPtrs.resize(numChannels);
+        }
+        for (int i = 0; i < numChannels; i++)
+        {
+            if (src.readBuffer[i].size() < minReadySamples)
+                src.readBuffer[i].resize(minReadySamples);
+            // Clear buffer before reading
+            std::fill_n(src.readBuffer[i].data(), minReadySamples, 0.0f);
+            src.readPtrs[i] = src.readBuffer[i].data();
+        }
 
-            for (int j = 0; j < minReadySamples; j++)
-                targetPtr[j] += tempPtr[j];
+        // Read from SyncBuffer (addToBuffer=false since we cleared)
+        if (src.syncBuffer.read(src.readPtrs.data(), numChannels, minReadySamples, sampleRate))
+        {
+            // Add to output buffer
+            for (int i = 0; i < numChannels; i++)
+            {
+                auto* targetPtr = (float*)asmd->audio_data.data[i];
+                const float* readPtr = src.readBuffer[i].data();
+
+                for (int j = 0; j < minReadySamples; j++)
+                    targetPtr[j] += readPtr[j];
+            }
         }
     }
 
@@ -322,8 +346,6 @@ struct sidechain_prop_info
     obs_property_t* sources_list;
     obs_source_t* parent;
     audiosourcemixer_data* asmd;
-    const char* current_source;                // The source configured for THIS slot (allow it to appear)
-    std::set<std::string>* configured_sources; // Sources already used in OTHER slots
 };
 
 static bool add_sources(void* data, obs_source_t* source)
@@ -341,17 +363,6 @@ static bool add_sources(void* data, obs_source_t* source)
         return true;
 
     const char* name = obs_source_get_name(source);
-
-    // Check if this source is already configured in another slot
-    // Allow it if it's the current slot's source
-    if (info->configured_sources
-        && info->configured_sources->find(name) != info->configured_sources->end()
-        && (!info->current_source || strcmp(name, info->current_source) != 0))
-    {
-        return true; // Skip - already used in another slot
-    }
-
-    // Only add to the combo list; do not add per-source color properties
     obs_property_list_add_string(info->sources_list, name, name);
 
     return true;
@@ -387,15 +398,6 @@ static obs_properties_t* properties(void* data)
     // Show minimum 8 slots, or configured+1 (one extra empty slot)
     const size_t minSlots = 8;
     const size_t totalSlots = std::max<size_t>(minSlots, configured + 1);
-
-    // Build set of all configured source names to exclude from other dropdowns
-    std::set<std::string> configured_sources;
-    if (asmd && asmd->sources)
-    {
-        for (const auto& src : *asmd->sources)
-            if (src.sidechain_name && *src.sidechain_name)
-                configured_sources.insert(src.sidechain_name);
-    }
 
     for (size_t i = 0; i < totalSlots; ++i)
     {
@@ -435,15 +437,7 @@ static obs_properties_t* properties(void* data)
         textLabel += " " + std::to_string(idx);
         obs_properties_add_bool(props, propText.c_str(), textLabel.c_str());
 
-        // Get the current source for this slot
-        const char* current_source = nullptr;
-        if (asmd && asmd->sources && i < asmd->sources->size())
-        {
-            const auto& src = (*asmd->sources)[i];
-            current_source = src.sidechain_name;
-        }
-
-        struct sidechain_prop_info info = {sources, parent, asmd, current_source, &configured_sources};
+        struct sidechain_prop_info info = {sources, parent, asmd};
         obs_enum_sources(add_sources, &info);
     }
 
@@ -479,7 +473,6 @@ static void update(void* data, obs_data_t* s)
     {
         asmd->sources->emplace_back();
         auto& newSrc = asmd->sources->back();
-        newSrc.fifoBuffer.setSize((int)audio_output_get_channels(obs_get_audio()), AUDIO_OUTPUT_FRAMES);
     }
 
     // Trim to maintain minimum 8 sources, or configuredCount+1 (one empty slot after configured)
@@ -576,7 +569,6 @@ static void update(void* data, obs_data_t* s)
                 obs_db_to_mul((float)obs_data_get_double(s, (std::string(S_GAIN_DB) + std::to_string(idx)).c_str()));
             newSrc.postMute = obs_data_get_bool(s, (std::string(S_POSTMUTE) + std::to_string(idx)).c_str());
             newSrc.postFader = obs_data_get_bool(s, (std::string(S_POSTFADER) + std::to_string(idx)).c_str());
-            newSrc.fifoBuffer.setSize((int)audio_output_get_channels(obs_get_audio()), AUDIO_OUTPUT_FRAMES);
         }
     }
 }
@@ -588,9 +580,6 @@ static void* asmd_create(obs_data_t* settings, obs_source_t* source)
     asmd->source = source;
     // Start with 8 empty sources; the UI will expose one extra after all are filled
     asmd->sources.reset(new std::deque<source_data>(8));
-
-    for (auto& src : *asmd->sources)
-        src.fifoBuffer.setSize((int)audio_output_get_channels(obs_get_audio()), AUDIO_OUTPUT_FRAMES);
 
     asmd->audio_data.format = AUDIO_FORMAT_FLOAT_PLANAR;
 

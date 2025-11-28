@@ -59,36 +59,7 @@ public:
             if (!window)
                 return;
 
-            // If window is already on desktop, just toggle visibility
-            if (window->isOnDesktop())
-            {
-                window->setVisible(visible);
-                if (visible)
-                    window->toFront(true);
-                return;
-            }
-
-            // Lazy initialization - add to desktop on first show
-            if (visible)
-            {
-                // DocumentWindow (TopLevelWindow) requires calling through TopLevelWindow interface
-                if (auto* topLevel = dynamic_cast<juce::TopLevelWindow*>(window))
-                {
-                    topLevel->addToDesktop(); // TopLevelWindow has no-args version
-                }
-                else
-                {
-                    // Regular components can use flags
-                    window->addToDesktop(juce::ComponentPeer::windowAppearsOnTaskbar);
-                }
-
-                // Center the window on screen
-                if (auto* docWindow = dynamic_cast<juce::DocumentWindow*>(window))
-                    docWindow->centreWithSize(docWindow->getWidth(), docWindow->getHeight());
-                else
-                    window->centreWithSize(window->getWidth(), window->getHeight());
-            }
-
+            // Call setVisible - QtParentedDocumentWindow::setVisible handles addToDesktop if needed
             window->setVisible(visible);
 
             if (visible)

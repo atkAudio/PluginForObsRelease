@@ -3,6 +3,7 @@
 // #include "../FifoBuffer.h"
 #include "../FifoBuffer2.h"
 #include "../LookAndFeel.h"
+#include "../QtParentedWindow.h"
 #include "SettingsComponent.h"
 
 #include <juce_audio_utils/juce_audio_utils.h>
@@ -109,23 +110,22 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DeviceIoApp)
 };
 
-class AudioAppMainWindow final : public DocumentWindow
+class AudioAppMainWindow final : public atk::QtParentedDocumentWindow
 {
 public:
     AudioAppMainWindow(DeviceIoApp& demo)
-        : DocumentWindow(
-              "Audio Device Settings",
-              Colours::lightgrey,
-              DocumentWindow::minimiseButton | DocumentWindow::closeButton,
-              false
+        : atk::QtParentedDocumentWindow(
+              "DeviceIo Audio Settings",
+              juce::LookAndFeel::getDefaultLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId),
+              DocumentWindow::allButtons
           )
         , audioApp(demo)
     {
-        setUsingNativeTitleBar(true);
-        setContentOwned(&audioApp, false); // Don't take ownership - Impl owns it
+        setTitleBarButtonsRequired(DocumentWindow::closeButton, false);
+        setContentOwned(&demo, false); // Don't take ownership - Impl owns it
         setResizable(true, false);
 
-        // Don't add to desktop yet - AudioModule will handle this on first setVisible(true)
+        centreWithSize(demo.getWidth(), demo.getHeight());
     }
 
     ~AudioAppMainWindow() override

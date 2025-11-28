@@ -139,6 +139,9 @@ public:
                                                      : new GenericAudioProcessorEditor(*owner.getAudioProcessor())
           )
     {
+        // Ensure the component is opaque to prevent transparency/z-order issues
+        setOpaque(true);
+
         inputMutedValue.referTo(owner.pluginHolder->getMuteInputValue());
 
         if (editor != nullptr)
@@ -165,6 +168,11 @@ public:
             owner.pluginHolder->processor->editorBeingDeleted(editor.get());
             editor = nullptr;
         }
+    }
+
+    void paint(Graphics& g) override
+    {
+        g.fillAll(owner.getBackgroundColour());
     }
 
     void resized() override
@@ -296,7 +304,7 @@ HostEditorWindow::HostEditorWindow(
     std::function<bool()> getMultiCoreEnabledCallback,
     std::function<void(bool)> setMultiCoreEnabledCallback
 )
-    : DocumentWindow(title, backgroundColour, DocumentWindow::minimiseButton | DocumentWindow::closeButton, false)
+    : atk::QtParentedDocumentWindow(title, backgroundColour, DocumentWindow::allButtons)
     , pluginHolder(std::move(pluginHolderIn))
     , decoratorConstrainer(new DecoratorConstrainer())
     , getMultiCoreEnabled(getMultiCoreEnabledCallback)
@@ -367,9 +375,7 @@ HostEditorWindow::~HostEditorWindow()
 
 void HostEditorWindow::visibilityChanged()
 {
-    clearContentComponent();
-    if (isVisible())
-        updateContent();
+    // Empty - content is created once in constructor
 }
 
 AudioProcessor* HostEditorWindow::getAudioProcessor() const noexcept

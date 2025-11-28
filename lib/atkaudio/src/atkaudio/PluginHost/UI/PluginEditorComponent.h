@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../../QtParentedWindow.h"
 #include "../Core/HostAudioProcessor.h"
 #include "PluginHostFooter.h"
 #include "UICommon.h"
@@ -83,19 +84,19 @@ private:
     {
         if (audioWindow == nullptr)
         {
-            class AudioSettingsWindow : public juce::DocumentWindow
+            class AudioSettingsWindow : public atk::QtParentedDocumentWindow
             {
             public:
                 AudioSettingsWindow(HostAudioProcessorImpl* hostProc)
-                    : juce::DocumentWindow(
+                    : atk::QtParentedDocumentWindow(
                           "Audio",
                           juce::LookAndFeel::getDefaultLookAndFeel().findColour(
                               juce::ResizableWindow::backgroundColourId
                           ),
-                          juce::DocumentWindow::closeButton
+                          juce::DocumentWindow::allButtons
                       )
                 {
-                    setUsingNativeTitleBar(true);
+                    setTitleBarButtonsRequired(juce::DocumentWindow::closeButton, false);
                     setResizable(true, false);
 
                     auto* audioComponent = new atk::AudioServerSettingsComponent(&hostProc->audioClient);
@@ -289,19 +290,19 @@ private:
     {
         if (midiWindow == nullptr)
         {
-            class MidiSettingsWindow : public juce::DocumentWindow
+            class MidiSettingsWindow : public atk::QtParentedDocumentWindow
             {
             public:
                 MidiSettingsWindow(atk::MidiClient* client)
-                    : juce::DocumentWindow(
+                    : atk::QtParentedDocumentWindow(
                           "MIDI",
                           juce::LookAndFeel::getDefaultLookAndFeel().findColour(
                               juce::ResizableWindow::backgroundColourId
                           ),
-                          juce::DocumentWindow::closeButton
+                          juce::DocumentWindow::allButtons
                       )
                 {
-                    setUsingNativeTitleBar(true);
+                    setTitleBarButtonsRequired(juce::DocumentWindow::closeButton, false);
                     setResizable(true, false);
 
                     auto* midiComponent = new atk::MidiServerSettingsComponent(client);

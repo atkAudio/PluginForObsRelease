@@ -126,6 +126,9 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
             hostProc->setMultiCoreEnabled = [this](bool enabled) { setMultiCoreEnabled(enabled); };
         }
 
+        // Ensure window starts hidden (exactly like PluginHost2 does)
+        mainWindow->setVisible(false);
+
         // Thread pool will be initialized lazily in prepareProcessor
         // to avoid blocking constructor and prevent MessageManager deadlock
     }

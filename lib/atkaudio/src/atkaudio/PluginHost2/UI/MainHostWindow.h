@@ -3,6 +3,7 @@
 using namespace juce;
 
 #include "../../LookAndFeel.h"
+#include "../../QtParentedWindow.h"
 #include "../Core/PluginGraph.h"
 #include "GraphEditorPanel.h"
 #include "ScannerSubprocess.h"
@@ -48,7 +49,7 @@ constexpr const char* processUID = "atkAudioPluginHost2";
 
 //==============================================================================
 class MainHostWindow final
-    : public DocumentWindow
+    : public atk::QtParentedDocumentWindow
     , public MenuBarModel
     , public ApplicationCommandTarget
     , public ChangeListener
@@ -143,21 +144,8 @@ public:
 
     void handleAsyncUpdate() override
     {
-        File fileToOpen;
-
-        if (!fileToOpen.existsAsFile())
-        {
-            RecentlyOpenedFilesList recentFiles;
-            recentFiles.restoreFromString(getAppProperties().getUserSettings()->getValue("recentFilterGraphFiles"));
-
-            if (recentFiles.getNumFiles() > 0)
-                fileToOpen = recentFiles.getFile(0);
-        }
-
-        if (fileToOpen.existsAsFile())
-            if (auto* graph = this->graphHolder.get())
-                if (auto* ioGraph = graph->graph.get())
-                    ioGraph->loadFrom(fileToOpen, true);
+        // Each instance gets its graph from OBS's setState(), not from shared recent files
+        // This prevents graphs from being copied between instances
     }
 
     void getGraphXml(XmlElement& xml)
@@ -229,7 +217,7 @@ private:
 
     std::vector<PluginDescription> internalTypes;
     KnownPluginList knownPluginList;
-    KnownPluginList::SortMethod pluginSortMethod;
+    KnownPluginList::SortMethod pluginSortMethod = KnownPluginList::sortByManufacturer;
     Array<PluginDescriptionAndPreference> pluginDescriptionsAndPreference;
 
     class PluginListWindow;

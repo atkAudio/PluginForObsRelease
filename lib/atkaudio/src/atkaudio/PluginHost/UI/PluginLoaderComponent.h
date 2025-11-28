@@ -239,7 +239,7 @@ public:
                 options.dialogTitle = "Audio";
                 options.dialogBackgroundColour = juce::Colours::darkgrey;
                 options.escapeKeyTriggersCloseButton = true;
-                options.useNativeTitleBar = true;
+                options.useNativeTitleBar = false;
                 options.resizable = true;
                 options.launchAsync();
             }
@@ -257,7 +257,7 @@ public:
                 options.dialogTitle = "MIDI";
                 options.dialogBackgroundColour = juce::Colours::darkgrey;
                 options.escapeKeyTriggersCloseButton = true;
-                options.useNativeTitleBar = true;
+                options.useNativeTitleBar = false;
                 options.resizable = true;
                 options.launchAsync();
             }

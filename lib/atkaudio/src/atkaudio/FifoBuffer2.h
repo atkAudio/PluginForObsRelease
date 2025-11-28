@@ -18,25 +18,54 @@
 #endif
 
 static constexpr auto FIXED_BUFFER_SIZE = 65536;
-static constexpr auto TARGET_LEVEL_FACTOR = 1.5;
+static constexpr auto TARGET_SAFETY_BUFFER_LEVEL = 1.5;
 
 namespace atk
 {
 
-class LagrangeInterpolator
+enum class InterpolationType
+{
+    Linear,
+    Lagrange
+};
+
+class Interpolator
 {
 public:
-    LagrangeInterpolator() noexcept
+    virtual ~Interpolator() = default;
+    virtual void reset() noexcept = 0;
+    virtual int process(
+        double speedRatio,
+        const float* inputSamples,
+        float* outputSamples,
+        int numOutputSamples,
+        int numInputSamples,
+        int wrapAround
+    ) noexcept = 0;
+    virtual int processAdding(
+        double speedRatio,
+        const float* inputSamples,
+        float* outputSamples,
+        int numOutputSamples,
+        int numInputSamples,
+        int wrapAround,
+        float gain
+    ) noexcept = 0;
+};
+
+class LinearInterpolator : public Interpolator
+{
+public:
+    LinearInterpolator() noexcept
     {
         reset();
     }
 
-    void reset() noexcept
+    void reset() noexcept override
     {
-        subSamplePos = 1.0;
-        indexBuffer = 0;
-        for (int i = 0; i < 5; ++i)
-            lastInputSamples[i] = 0.0f;
+        lastInputSamples[0] = 0.0f;
+        lastInputSamples[1] = 0.0f;
+        subSamplePos = 0.0;
     }
 
     int process(
@@ -46,7 +75,7 @@ public:
         int numOutputSamples,
         int numInputSamples,
         int wrapAround
-    ) noexcept
+    ) noexcept override
     {
         (void)wrapAround; // Unused - reserved for future use
         if (speedRatio <= 0.0)
@@ -82,7 +111,111 @@ public:
         int numInputSamples,
         int wrapAround,
         float gain
-    ) noexcept
+    ) noexcept override
+    {
+        (void)wrapAround; // Unused - reserved for future use
+        if (speedRatio <= 0.0)
+            return 0;
+
+        int pos = 0;
+        auto* out = outputSamples;
+
+        while (numOutputSamples > 0)
+        {
+            while (subSamplePos >= 1.0)
+            {
+                if (pos >= numInputSamples)
+                    return pos;
+
+                pushInterpolationSample(inputSamples[pos++]);
+                subSamplePos -= 1.0;
+            }
+
+            *out++ += gain * interpolate();
+            subSamplePos += speedRatio;
+            --numOutputSamples;
+        }
+
+        return pos;
+    }
+
+private:
+    void pushInterpolationSample(float newValue) noexcept
+    {
+        lastInputSamples[0] = lastInputSamples[1];
+        lastInputSamples[1] = newValue;
+    }
+
+    float interpolate() const noexcept
+    {
+        auto alpha = static_cast<float>(subSamplePos);
+        return lastInputSamples[0] + alpha * (lastInputSamples[1] - lastInputSamples[0]);
+    }
+
+    float lastInputSamples[2];
+    double subSamplePos;
+};
+
+class LagrangeInterpolator : public Interpolator
+{
+public:
+    LagrangeInterpolator() noexcept
+    {
+        reset();
+    }
+
+    void reset() noexcept override
+    {
+        subSamplePos = 1.0;
+        indexBuffer = 0;
+        for (int i = 0; i < 5; ++i)
+            lastInputSamples[i] = 0.0f;
+    }
+
+    int process(
+        double speedRatio,
+        const float* inputSamples,
+        float* outputSamples,
+        int numOutputSamples,
+        int numInputSamples,
+        int wrapAround
+    ) noexcept override
+    {
+        (void)wrapAround; // Unused - reserved for future use
+        if (speedRatio <= 0.0)
+            return 0;
+
+        int pos = 0;
+        auto* out = outputSamples;
+
+        while (numOutputSamples > 0)
+        {
+            while (subSamplePos >= 1.0)
+            {
+                if (pos >= numInputSamples)
+                    return pos;
+
+                pushInterpolationSample(inputSamples[pos++]);
+                subSamplePos -= 1.0;
+            }
+
+            *out++ = interpolate();
+            subSamplePos += speedRatio;
+            --numOutputSamples;
+        }
+
+        return pos;
+    }
+
+    int processAdding(
+        double speedRatio,
+        const float* inputSamples,
+        float* outputSamples,
+        int numOutputSamples,
+        int numInputSamples,
+        int wrapAround,
+        float gain
+    ) noexcept override
     {
         (void)wrapAround; // Unused - reserved for future use
         if (speedRatio <= 0.0)
@@ -272,7 +405,41 @@ public:
         : isPrepared(false)
         , readerBufferSize(-1)
         , writerBufferSize(-1)
+        , targetLevelFactor(TARGET_SAFETY_BUFFER_LEVEL)
+        , interpolationType(atk::InterpolationType::Lagrange)
     {
+    }
+
+    void setTargetLevelFactor(double factor)
+    {
+        targetLevelFactor = factor;
+    }
+
+    double getTargetLevelFactor() const
+    {
+        return targetLevelFactor;
+    }
+
+    void setInterpolationType(atk::InterpolationType type)
+    {
+        std::lock_guard<std::mutex> lock1(writeLock);
+        std::lock_guard<std::mutex> lock2(readLock);
+
+        if (interpolationType != type)
+        {
+            interpolationType = type;
+            isPrepared = false; // Force re-prepare to recreate interpolators
+        }
+    }
+
+    atk::InterpolationType getInterpolationType() const
+    {
+        return interpolationType;
+    }
+
+    int getNumReady()
+    {
+        return fifoBuffer.getBuffer().getNumReady();
     }
 
     void clearPrepared()
@@ -283,6 +450,41 @@ public:
         readerBufferSize = -1;
         writerBufferSize = -1;
         isPrepared = false;
+    }
+
+    void reset()
+    {
+        std::lock_guard<std::mutex> lock1(writeLock);
+        std::lock_guard<std::mutex> lock2(readLock);
+
+        fifoBuffer.getBuffer().reset();
+
+        for (auto& interp : interpolators)
+            if (interp)
+                interp->reset();
+
+        readCallCount = 0;
+        historyIndex = 0;
+        if (!bufferLevelHistory.empty())
+            bufferLevelHistory.assign(BUFFER_HISTORY_SIZE, readerBufferSize);
+
+        bufferCompensation = 0.0;
+        wasAtTargetLevel = false;
+    }
+
+    void prepare(int numChannels, int bufferSize, double sampleRate)
+    {
+        std::lock_guard<std::mutex> lock1(writeLock);
+        std::lock_guard<std::mutex> lock2(readLock);
+
+        readerSampleRate = sampleRate;
+        writerSampleRate = sampleRate;
+        readerBufferSize = bufferSize;
+        writerBufferSize = bufferSize;
+        readerNumChannels = numChannels;
+        writerNumChannels = numChannels;
+
+        prepare();
     }
 
     void prepare()
@@ -301,9 +503,14 @@ public:
 
         numChannels = std::max(readerNumChannels, writerNumChannels);
 
-        interpolators.resize(writerNumChannels);
-        for (auto& interp : interpolators)
-            interp.reset();
+        interpolators.clear();
+        interpolators.reserve(writerNumChannels);
+
+        for (int i = 0; i < writerNumChannels; ++i)
+            if (interpolationType == atk::InterpolationType::Linear)
+                interpolators.push_back(std::make_unique<atk::LinearInterpolator>());
+            else
+                interpolators.push_back(std::make_unique<atk::LagrangeInterpolator>());
 
         fifoBuffer.setSize(numChannels, FIXED_BUFFER_SIZE);
 
@@ -394,7 +601,7 @@ public:
 
             int baseTargetLevel = static_cast<int>(std::ceil(readerBufferSize * ratio));
             baseTargetLevel = baseTargetLevel > maxBaseLevel ? maxBaseLevel : baseTargetLevel;
-            int targetMinLevel = static_cast<int>(std::ceil(baseTargetLevel * TARGET_LEVEL_FACTOR));
+            int targetMinLevel = static_cast<int>(std::ceil(baseTargetLevel * targetLevelFactor));
             int bufferLevelError = minBufferLevel - targetMinLevel;
 
             if (bufferLevelError != 0)
@@ -428,7 +635,7 @@ public:
         }
 
         auto compensatedRatio = ratio * (1.0 + bufferCompensation);
-        int writerSamplesNeeded = static_cast<int>(std::ceil(numSamples * compensatedRatio)) + 1;
+        int writerSamplesNeeded = static_cast<int>(std::ceil(numSamples * compensatedRatio));
 
         if (!addToBuffer)
             for (int ch = 0; ch < numChannels; ++ch)
@@ -491,7 +698,7 @@ public:
                 // First pass: write directly to destination
                 samplesConsumed =
                     interpolators[srcCh]
-                        .process(finalRatio, tempBuffer[srcCh].data(), dest[destCh], numSamples, writerSamples, 0);
+                        ->process(finalRatio, tempBuffer[srcCh].data(), dest[destCh], numSamples, writerSamples, 0);
 
                 if (channelGain != 1.0f)
                     for (int j = 0; j < numSamples; ++j)
@@ -500,7 +707,7 @@ public:
             else
             {
                 // Subsequent passes: add to destination
-                samplesConsumed = interpolators[srcCh].processAdding(
+                samplesConsumed = interpolators[srcCh]->processAdding(
                     finalRatio,
                     tempBuffer[srcCh].data(),
                     dest[destCh],
@@ -533,12 +740,18 @@ public:
         return true;
     }
 
+    auto getIsPrepared() const
+    {
+        return isPrepared.load(std::memory_order_acquire);
+    }
+
 private:
     std::atomic_bool isPrepared{false};
     int numChannels{0};
 
     FifoBuffer2 fifoBuffer;
-    std::vector<atk::LagrangeInterpolator> interpolators;
+    std::vector<std::unique_ptr<atk::Interpolator>> interpolators;
+    atk::InterpolationType interpolationType;
 
     std::vector<std::vector<float>> tempBuffer;
     std::vector<float*> tempPtrs;
@@ -559,6 +772,8 @@ private:
 
     double bufferCompensation{0.0};
     bool wasAtTargetLevel{false};
+
+    double targetLevelFactor{1.5};
 
     std::mutex readLock;
     std::mutex writeLock;

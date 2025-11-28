@@ -4,6 +4,7 @@
 using namespace juce;
 
 #include "../Core/ARAPlugin.h"
+#include "../../QtParentedWindow.h"
 #include "IOConfigurationWindow.h"
 
 #include <atkaudio/atkaudio.h>
@@ -134,7 +135,7 @@ private:
 /**
     A desktop window containing a plugin's GUI.
 */
-class PluginWindow final : public DocumentWindow
+class PluginWindow final : public atk::QtParentedDocumentWindow
 {
 public:
     enum class Type
@@ -149,15 +150,16 @@ public:
     };
 
     PluginWindow(AudioProcessorGraphMT::Node* n, Type t, OwnedArray<PluginWindow>& windowList)
-        : DocumentWindow(
+        : atk::QtParentedDocumentWindow(
               n->getProcessor()->getName() + getFormatSuffix(n->getProcessor()),
               LookAndFeel::getDefaultLookAndFeel().findColour(ResizableWindow::backgroundColourId),
-              DocumentWindow::minimiseButton | DocumentWindow::closeButton
+              DocumentWindow::allButtons
           )
         , activeWindowList(windowList)
         , node(n)
         , type(t)
     {
+        setTitleBarButtonsRequired(DocumentWindow::minimiseButton | DocumentWindow::closeButton, false);
         setSize(400, 300);
 
         if (auto* ui = createProcessorEditor(*node->getProcessor(), type))

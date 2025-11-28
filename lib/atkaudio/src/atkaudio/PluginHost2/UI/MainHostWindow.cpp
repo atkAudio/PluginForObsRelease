@@ -2,6 +2,7 @@
 
 #include "../../About.h"
 #include "../../DeviceIo/AudioDeviceSelectorComponent.h"
+#include "../../QtParentedWindow.h"
 #include "../Core/InternalPlugins.h"
 
 #include <atkaudio/ModuleInfrastructure/MidiServer/MidiServerSettingsComponent.h>
@@ -246,17 +247,18 @@ private:
 };
 
 //==============================================================================
-class MainHostWindow::PluginListWindow final : public DocumentWindow
+class MainHostWindow::PluginListWindow final : public atk::QtParentedDocumentWindow
 {
 public:
     PluginListWindow(MainHostWindow& mw, AudioPluginFormatManager& pluginFormatManager)
-        : DocumentWindow(
+        : atk::QtParentedDocumentWindow(
               "Available Plugins",
               LookAndFeel::getDefaultLookAndFeel().findColour(ResizableWindow::backgroundColourId),
-              DocumentWindow::minimiseButton | DocumentWindow::closeButton
+              DocumentWindow::allButtons
           )
         , owner(mw)
     {
+        setTitleBarButtonsRequired(DocumentWindow::minimiseButton | DocumentWindow::closeButton, false);
         auto deadMansPedalFile =
             owner.getAppProperties().getUserSettings()->getFile().getSiblingFile("RecentlyCrashedPluginsList");
 
@@ -299,11 +301,10 @@ private:
 
 //==============================================================================
 MainHostWindow::MainHostWindow()
-    : DocumentWindow(
+    : atk::QtParentedDocumentWindow(
           "atkAudio PluginHost2",
           LookAndFeel::getDefaultLookAndFeel().findColour(ResizableWindow::backgroundColourId),
-          DocumentWindow::allButtons,
-          false
+          DocumentWindow::allButtons
       )
 {
     // Initialize AudioServer and MidiServer
@@ -340,7 +341,7 @@ MainHostWindow::MainHostWindow()
 
     restoreWindowStateFromString(getAppProperties().getUserSettings()->getValue("mainWindowPos"));
 
-    setVisible(true);
+    // Window starts hidden - AudioModule::setVisible() will show it and call toFront()
 
     InternalPluginFormat internalFormat;
     internalTypes = internalFormat.getAllTypes();
