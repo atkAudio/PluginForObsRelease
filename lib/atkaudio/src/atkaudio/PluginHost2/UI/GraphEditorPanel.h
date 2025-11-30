@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../Core/PluginGraph.h"
+#include "../../CpuMeter.h"
 // Not using parallel graph implementation
 // #include "../../AudioProcessorGraphMT/AudioProcessorGraphMT_Impl.h"
 
@@ -98,22 +99,9 @@ public:
 
     ~GraphDocumentComponent() override;
 
-    float cpuLoadPrev = 0.0f;
-    int cpuHold = 0;
-
     void setCpuLoad()
     {
-        auto cpuLoad = deviceManager.getCpuUsage();
-        if (cpuLoad > cpuLoadPrev)
-        {
-            cpuHold = 100;
-        }
-        else if (cpuHold > 0)
-        {
-            --cpuHold;
-            cpuLoad = cpuLoadPrev;
-        }
-        cpuLoadPrev = cpuLoad;
+        auto cpuLoad = graphAudioCallback ? graphAudioCallback->getCpuLoad() : 0.0f;
 
         auto latencySamples = graph->graph.getLatencySamples();
         auto latencyMs =
@@ -202,6 +190,13 @@ private:
         int blockSize = 512;
         bool isPrepared = false;
         juce::AudioIODevice* currentDevice = nullptr;
+        atk::CpuMeter cpuMeter;
+
+    public:
+        float getCpuLoad() const
+        {
+            return cpuMeter.getLoad();
+        }
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(GraphAudioCallback)
     };

@@ -83,9 +83,19 @@ public:
         midiCc = apvts.getRawParameterValue("cc");
         midiLearn = apvts.getRawParameterValue("learn");
 
+        // Mute MIDI parameters
+        midiMuteEnabled = apvts.getRawParameterValue("midiMute");
+        midiMuteChannel = apvts.getRawParameterValue("muteCh");
+        midiMuteCc = apvts.getRawParameterValue("muteCc");
+        midiMuteLearn = apvts.getRawParameterValue("muteLearn");
+
         channelParam = apvts.getParameter("ch");
         ccParam = apvts.getParameter("cc");
         midiEnabledParam = apvts.getParameter("midi");
+
+        muteChannelParam = apvts.getParameter("muteCh");
+        muteCcParam = apvts.getParameter("muteCc");
+        midiMuteEnabledParam = apvts.getParameter("midiMute");
 
         startTimerHz(30); // Start the timer to process MIDI messages
     }
@@ -118,6 +128,21 @@ public:
             }
         }
 
+        // Update OBS source mute state if we've received a MIDI message
+        if (midiMuteEnabled->load(std::memory_order_acquire) > 0.5f)
+        {
+            if (muteStateUpdated.load(std::memory_order_acquire))
+            {
+                auto shouldMute = toUiMuteState.load(std::memory_order_acquire);
+
+                juce::ScopedLock lock(sourceUpdateMutex);
+                if (currentObsSource)
+                    obs_source_set_muted(currentObsSource, shouldMute);
+
+                muteStateUpdated.store(false, std::memory_order_release);
+            }
+        }
+
         if (midiLearn->load(std::memory_order_acquire) > 0.5f)
         {
             // Check if we've captured new values
@@ -141,6 +166,31 @@ public:
 
                 // Clear the capture flag
                 learnCaptured.store(false, std::memory_order_release);
+            }
+        }
+
+        // MIDI Learn for mute
+        if (midiMuteLearn->load(std::memory_order_acquire) > 0.5f)
+        {
+            if (muteLearnCaptured.load(std::memory_order_acquire))
+            {
+                auto cc = toUiMuteCc.load(std::memory_order_acquire);
+                auto ch = toUiMuteChannel.load(std::memory_order_acquire);
+
+                cc = muteCcParam->getNormalisableRange().convertTo0to1(cc);
+                ch = muteChannelParam->getNormalisableRange().convertTo0to1(ch);
+
+                muteCcParam->setValueNotifyingHost(cc);
+                muteChannelParam->setValueNotifyingHost(ch);
+
+                // Enable MIDI mute control
+                midiMuteEnabledParam->setValueNotifyingHost(1.0f);
+
+                // Turn off learn mode
+                auto* muteLearnParam = apvts.getParameter("muteLearn");
+                muteLearnParam->setValueNotifyingHost(0.0f);
+
+                muteLearnCaptured.store(false, std::memory_order_release);
             }
         }
     }
@@ -283,11 +333,6 @@ public:
 
             obs_source_add_audio_capture_callback(source, obs_capture_callback, this);
 
-            auto followVolume = apvts.state.getOrCreateChildWithName(FOLLOW_VOLUME_CHILD, nullptr)
-                                    .getProperty(FOLLOW_VOLUME_PROPERTY, false);
-            if (!followVolume)
-                obs_source_set_muted(source, true);
-
             currentObsSource = source;
         }
     }
@@ -329,7 +374,7 @@ public:
             }
         }
 
-        // MIDI Learn mode
+        // MIDI Learn mode for volume
         if (midiLearn->load(std::memory_order_acquire) > 0.5f)
         {
             for (const auto& metadata : midiBuffer)
@@ -341,6 +386,45 @@ public:
                     toUiChannel.store(message.getChannel(), std::memory_order_release);
                     toUiCc.store(message.getControllerNumber(), std::memory_order_release);
                     learnCaptured.store(true, std::memory_order_release);
+                    break;
+                }
+            }
+        }
+
+        // Process MIDI for mute toggle control
+        if (midiMuteEnabled->load(std::memory_order_acquire) > 0.5f)
+        {
+            for (const auto& metadata : midiBuffer)
+            {
+                const juce::MidiMessage message(metadata.data, metadata.numBytes, metadata.samplePosition);
+                if (message.isController())
+                {
+                    auto expectedChannel = static_cast<int>(midiMuteChannel->load(std::memory_order_acquire));
+                    auto expectedCc = static_cast<int>(midiMuteCc->load(std::memory_order_acquire));
+
+                    if (message.getChannel() == expectedChannel && message.getControllerNumber() == expectedCc)
+                    {
+                        // CC value > 63 = unmute (false), <= 63 = mute (true)
+                        bool shouldMute = message.getControllerValue() <= 63;
+                        toUiMuteState.store(shouldMute, std::memory_order_release);
+                        muteStateUpdated.store(true, std::memory_order_release);
+                    }
+                }
+            }
+        }
+
+        // MIDI Learn mode for mute
+        if (midiMuteLearn->load(std::memory_order_acquire) > 0.5f)
+        {
+            for (const auto& metadata : midiBuffer)
+            {
+                const juce::MidiMessage message(metadata.data, metadata.numBytes, metadata.samplePosition);
+
+                if (message.isController())
+                {
+                    toUiMuteChannel.store(message.getChannel(), std::memory_order_release);
+                    toUiMuteCc.store(message.getControllerNumber(), std::memory_order_release);
+                    muteLearnCaptured.store(true, std::memory_order_release);
                     break;
                 }
             }
@@ -407,6 +491,14 @@ private:
         params.push_back(std::make_unique<AudioParameterFloat>(ParameterID{"cc", 1}, "CC", ccRange, 1.0f));
         params.push_back(std::make_unique<AudioParameterBool>(ParameterID{"learn", 1}, "Learn", false));
 
+        // Mute MIDI parameters
+        params.push_back(std::make_unique<AudioParameterBool>(ParameterID{"midiMute", 1}, "MIDI Mute", false));
+        params.push_back(
+            std::make_unique<AudioParameterFloat>(ParameterID{"muteCh", 1}, "Mute Channel", channelRange, 1.0f)
+        );
+        params.push_back(std::make_unique<AudioParameterFloat>(ParameterID{"muteCc", 1}, "Mute CC", ccRange, 2.0f));
+        params.push_back(std::make_unique<AudioParameterBool>(ParameterID{"muteLearn", 1}, "Mute Learn", false));
+
         return {params.begin(), params.end()};
     }
 
@@ -414,21 +506,38 @@ private:
     obs_source_t* currentObsSource = nullptr;
     juce::AudioProcessorValueTreeState apvts;
 
-    // MIDI control parameters
+    // MIDI control parameters for volume
     std::atomic<float>* midiEnabled = nullptr;
     std::atomic<float>* midiChannel = nullptr;
     std::atomic<float>* midiCc = nullptr;
     std::atomic<float>* midiLearn = nullptr;
 
+    // MIDI control parameters for mute
+    std::atomic<float>* midiMuteEnabled = nullptr;
+    std::atomic<float>* midiMuteChannel = nullptr;
+    std::atomic<float>* midiMuteCc = nullptr;
+    std::atomic<float>* midiMuteLearn = nullptr;
+
     juce::RangedAudioParameter* channelParam = nullptr;
     juce::RangedAudioParameter* ccParam = nullptr;
     juce::RangedAudioParameter* midiEnabledParam = nullptr;
+
+    juce::RangedAudioParameter* muteChannelParam = nullptr;
+    juce::RangedAudioParameter* muteCcParam = nullptr;
+    juce::RangedAudioParameter* midiMuteEnabledParam = nullptr;
 
     std::atomic<float> toUiVolume = 0.0f;
     std::atomic<float> toUiChannel = 0.0f;
     std::atomic<float> toUiCc = 0.0f;
     std::atomic<bool> learnCaptured = false;
     std::atomic<bool> volumeUpdated = false;
+
+    // Mute MIDI state
+    std::atomic<float> toUiMuteChannel = 0.0f;
+    std::atomic<float> toUiMuteCc = 0.0f;
+    std::atomic<bool> toUiMuteState = false;
+    std::atomic<bool> muteLearnCaptured = false;
+    std::atomic<bool> muteStateUpdated = false;
 
     // Thread safety - separate concerns like OBS compressor
     mutable juce::CriticalSection sourceUpdateMutex; // Protects source pointer changes
@@ -469,15 +578,6 @@ public:
             bool newState = followVolumeToggle.getToggleState();
             state.getOrCreateChildWithName(FOLLOW_VOLUME_CHILD, nullptr)
                 .setProperty(FOLLOW_VOLUME_PROPERTY, newState, nullptr);
-
-            obs_source_t* currentSource = processor.getCurrentObsSource();
-            if (currentSource)
-            {
-                if (newState)
-                    obs_source_set_muted(currentSource, false);
-                else
-                    obs_source_set_muted(currentSource, true);
-            }
         };
 
         // Setup follow mute toggle checkbox
@@ -495,8 +595,8 @@ public:
                 .setProperty(FOLLOW_MUTE_PROPERTY, newState, nullptr);
         };
 
-        // Setup MIDI controls
-        midiEnabledToggle.setButtonText("MIDI Enabled");
+        // Setup MIDI controls for volume
+        midiEnabledToggle.setButtonText("MIDI Volume");
         addAndMakeVisible(midiEnabledToggle);
 
         midiChannelLabel.setText("MIDI Channel:", juce::dontSendNotification);
@@ -515,6 +615,32 @@ public:
         midiLearnButton.setClickingTogglesState(true);
         addAndMakeVisible(midiLearnButton);
 
+        // Separator line
+        addAndMakeVisible(separatorLine1);
+
+        // Setup MIDI controls for mute
+        midiMuteEnabledToggle.setButtonText("MIDI Mute");
+        addAndMakeVisible(midiMuteEnabledToggle);
+
+        midiMuteChannelLabel.setText("MIDI Channel:", juce::dontSendNotification);
+        midiMuteChannelLabel.attachToComponent(&midiMuteChannelSlider, true);
+        midiMuteChannelSlider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 50, 20);
+        addAndMakeVisible(midiMuteChannelLabel);
+        addAndMakeVisible(midiMuteChannelSlider);
+
+        midiMuteCcLabel.setText("MIDI CC:", juce::dontSendNotification);
+        midiMuteCcLabel.attachToComponent(&midiMuteCcSlider, true);
+        midiMuteCcSlider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 50, 20);
+        addAndMakeVisible(midiMuteCcLabel);
+        addAndMakeVisible(midiMuteCcSlider);
+
+        midiMuteLearnButton.setButtonText("MIDI Learn");
+        midiMuteLearnButton.setClickingTogglesState(true);
+        addAndMakeVisible(midiMuteLearnButton);
+
+        // Separator line
+        addAndMakeVisible(separatorLine2);
+
         addAndMakeVisible(followVolumeToggle);
         addAndMakeVisible(followMuteToggle);
         addAndMakeVisible(listBox);
@@ -529,9 +655,9 @@ public:
             }
         }
 
-        setSize(300, 470);
+        setSize(300, 600);
         setResizable(true, true);
-        setResizeLimits(300, 400, 400, 700);
+        setResizeLimits(300, 550, 400, 800);
     }
 
     void resized() override
@@ -541,8 +667,9 @@ public:
         auto checkboxHeight = 24;
         auto sliderHeight = 24;
         auto labelWidth = 100;
+        auto separatorHeight = 1;
 
-        // MIDI controls at top
+        // MIDI Volume controls at top
         midiEnabledToggle.setBounds(area.removeFromTop(checkboxHeight));
         area.removeFromTop(4);
 
@@ -555,6 +682,29 @@ public:
         area.removeFromTop(4);
 
         midiLearnButton.setBounds(area.removeFromTop(checkboxHeight));
+        area.removeFromTop(8);
+
+        // Separator line
+        separatorLine1.setBounds(area.removeFromTop(separatorHeight));
+        area.removeFromTop(8);
+
+        // MIDI Mute controls
+        midiMuteEnabledToggle.setBounds(area.removeFromTop(checkboxHeight));
+        area.removeFromTop(4);
+
+        auto muteChannelArea = area.removeFromTop(sliderHeight);
+        midiMuteChannelSlider.setBounds(muteChannelArea.withTrimmedLeft(labelWidth));
+        area.removeFromTop(4);
+
+        auto muteCcArea = area.removeFromTop(sliderHeight);
+        midiMuteCcSlider.setBounds(muteCcArea.withTrimmedLeft(labelWidth));
+        area.removeFromTop(4);
+
+        midiMuteLearnButton.setBounds(area.removeFromTop(checkboxHeight));
+        area.removeFromTop(8);
+
+        // Separator line
+        separatorLine2.setBounds(area.removeFromTop(separatorHeight));
         area.removeFromTop(8);
 
         // Volume/Mute controls
@@ -733,6 +883,21 @@ private:
     ObsSourceAudioProcessor& processor;
     MidiInputSelectorComponentListBox listBox;
 
+    // Separator line component
+    class SeparatorLine : public juce::Component
+    {
+    public:
+        void paint(juce::Graphics& g) override
+        {
+            g.setColour(findColour(juce::Label::textColourId).withAlpha(0.3f));
+            g.fillRect(getLocalBounds());
+        }
+    };
+
+    SeparatorLine separatorLine1;
+    SeparatorLine separatorLine2;
+
+    // Volume MIDI controls
     juce::ToggleButton midiEnabledToggle;
     juce::Slider midiChannelSlider;
     juce::Slider midiCcSlider;
@@ -744,6 +909,35 @@ private:
     juce::AudioProcessorValueTreeState::SliderAttachment midiChannelAttachment;
     juce::AudioProcessorValueTreeState::SliderAttachment midiCcAttachment;
     juce::AudioProcessorValueTreeState::ButtonAttachment midiLearnAttachment;
+
+    // Mute MIDI controls
+    juce::ToggleButton midiMuteEnabledToggle;
+    juce::Slider midiMuteChannelSlider;
+    juce::Slider midiMuteCcSlider;
+    juce::ToggleButton midiMuteLearnButton;
+    juce::Label midiMuteChannelLabel;
+    juce::Label midiMuteCcLabel;
+
+    juce::AudioProcessorValueTreeState::ButtonAttachment midiMuteEnabledAttachment{
+        processor.getApvts(),
+        "midiMute",
+        midiMuteEnabledToggle
+    };
+    juce::AudioProcessorValueTreeState::SliderAttachment midiMuteChannelAttachment{
+        processor.getApvts(),
+        "muteCh",
+        midiMuteChannelSlider
+    };
+    juce::AudioProcessorValueTreeState::SliderAttachment midiMuteCcAttachment{
+        processor.getApvts(),
+        "muteCc",
+        midiMuteCcSlider
+    };
+    juce::AudioProcessorValueTreeState::ButtonAttachment midiMuteLearnAttachment{
+        processor.getApvts(),
+        "muteLearn",
+        midiMuteLearnButton
+    };
 
     juce::ToggleButton followVolumeToggle;
     juce::ToggleButton followMuteToggle;

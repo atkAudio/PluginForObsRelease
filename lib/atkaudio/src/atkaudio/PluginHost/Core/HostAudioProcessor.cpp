@@ -67,7 +67,35 @@ HostAudioProcessorImpl::HostAudioProcessorImpl(int numChannels)
         }()
     );
 
-    pluginFormatManager.addDefaultFormats();
+    juce::addDefaultFormatsToManager(pluginFormatManager);
+
+#if JUCE_LINUX
+    // Add Flatpak extension plugin path if it exists
+    {
+        const File flatpakPluginPath("/app/extensions/Plugins");
+        if (flatpakPluginPath.isDirectory())
+        {
+            if (auto* props = appProperties.getUserSettings())
+            {
+                for (auto* format : pluginFormatManager.getFormats())
+                {
+                    const String formatName = format->getName();
+                    // JUCE uses "lastPluginScanPath_" prefix for PluginListComponent
+                    const String key = "lastPluginScanPath_" + formatName;
+                    FileSearchPath existingPaths(
+                        props->getValue(key, format->getDefaultLocationsToSearch().toString())
+                    );
+
+                    if (!existingPaths.toString().contains(flatpakPluginPath.getFullPathName()))
+                    {
+                        existingPaths.add(flatpakPluginPath);
+                        props->setValue(key, existingPaths.toString());
+                    }
+                }
+            }
+        }
+    }
+#endif
 
     if (auto savedPluginList = appProperties.getUserSettings()->getXmlValue("pluginList"))
         pluginList.recreateFromXml(*savedPluginList);

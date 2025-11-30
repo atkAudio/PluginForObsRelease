@@ -127,25 +127,6 @@ public:
         commandManager.registerAllCommandsForTarget(this);
 
         this->menuItemsChanged();
-
-        // Important note! We're going to use an async update here so that if we need
-        // to re-open a file and instantiate some plugins, it will happen AFTER this
-        // initialisation method has returned.
-        // On Windows this probably won't make a difference, but on OSX there's a subtle event loop
-        // issue that can happen if a plugin runs one of those irritating modal dialogs while it's
-        // being loaded. If that happens inside this method, the OSX event loop seems to be in some
-        // kind of special "initialisation" mode and things get confused. But if we load the plugin
-        // later when the normal event loop is running, everything's fine.
-
-        // TODO
-        // this->triggerAsyncUpdate();
-        juce::Timer::callAfterDelay(100, [this]() { handleAsyncUpdate(); });
-    }
-
-    void handleAsyncUpdate() override
-    {
-        // Each instance gets its graph from OBS's setState(), not from shared recent files
-        // This prevents graphs from being copied between instances
     }
 
     void getGraphXml(XmlElement& xml)

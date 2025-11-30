@@ -32,9 +32,19 @@ Develop your own audio processing plugins and integrate them into `PluginHost2` 
 
 ## Audio Source Mixer (OBS Source)
 
-- Mix audio from up to 8 OBS sources into a new OBS audio source
-- E.g. allows creating new submixes
-- Can be used as 'dummy' source to host Device IO
+- Mix audio from OBS sources into a new OBS audio source
+- Can be used as 'dummy' source to host filters, e.g. PluginHost2
+
+## Usage examples
+
+- Use Delay filter to manually delay/sync individual audio sources
+- Source Mixer can create submixes (or one main mix) from multiple OBS audio sources
+  - Mute original sources to prevent double/parallel audio
+- Use DeviceIo2 to route audio directly between OBS and audio devices (e.g. ASIO)
+- Put CPU intensive plugins into PluginHost and enable MT for better performance (multi-core, one buffer extra latency)
+- Use a sampler plugin with a MIDI keyboard in PluginHost as a soundboard
+- Do all of the above and more with PluginHost2
+  - MIDI control of OBS audio source volume & mute
 
 ## Build instructions
 

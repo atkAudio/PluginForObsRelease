@@ -1,11 +1,11 @@
 #include "PluginHost.h"
 
-#include "../AudioProcessorGraphMT/AdaptiveSpinLock.h"
 #include "../PluginHost2/Core/PluginGraph.h"
 #include "Core/HostAudioProcessor.h"
 #include "Core/PluginHolder.h"
 #include "UI/HostEditorWindow.h"
 #include "SecondaryThreadPool.h"
+#include <atkaudio/FifoBuffer.h>
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
@@ -38,70 +38,98 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
     // Track threading mode to detect transitions
     bool wasUsingThreading = false;
 
-    // Job context for audio processing
+    // Job context for FIFO-based audio processing
     struct ProcessJobContext
     {
         Impl* owner = nullptr;
-        int bufferIndex = 0;
-        int numSamples = 0;
-        std::atomic<bool> completed{false};
+        std::atomic<bool> completed{true}; // Start as completed (no pending job)
+        std::mutex mutex;
+        std::condition_variable cv;
 
         void reset()
         {
-            owner = nullptr;
-            bufferIndex = 0;
-            numSamples = 0;
             completed.store(false, std::memory_order_release);
+        }
+
+        void markCompleted()
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            completed.store(true, std::memory_order_release);
+            cv.notify_one();
+        }
+
+        void waitForCompletion()
+        {
+            std::unique_lock<std::mutex> lock(mutex);
+            cv.wait(lock, [this] { return completed.load(std::memory_order_acquire); });
+        }
+
+        bool isCompleted() const
+        {
+            return completed.load(std::memory_order_acquire);
         }
     };
 
-    // Job execution on SecondaryThreadPool worker
+    // Worker thread job for FIFO-based MT mode processing
+    // Called by SecondaryThreadPool worker thread, NOT the OBS audio thread.
+    // Processes ALL available data from input FIFOs and writes to output FIFOs.
+    // processBlock() is called here, which:
+    //   - Processes audio through the loaded plugin
+    //   - Pushes to device outputs via routing matrix (immediately, no latency)
+    //   - Pushes processed audio to output FIFO for OBS (one frame latency)
     static void executeProcessJob(void* userData)
     {
         auto* context = static_cast<ProcessJobContext*>(userData);
         if (!context || !context->owner)
         {
-            // Still mark as completed to prevent infinite wait
             if (context)
-                context->completed.store(true, std::memory_order_release);
+                context->markCompleted();
             return;
         }
 
         auto* impl = context->owner;
 
-        // Try to acquire locks on worker thread (non-blocking, realtime-safe)
-        if (!impl->mainWindow->getPluginHolderLock().tryEnter())
-        {
-            // Mark as completed even if we skip (output silence this frame)
-            context->completed.store(true, std::memory_order_release);
-            return;
-        }
-
+        // Acquire locks (blocking)
+        impl->mainWindow->getPluginHolderLock().enter();
         auto* processor = impl->mainWindow->getAudioProcessor();
-        if (!processor->getCallbackLock().tryEnter())
+        processor->getCallbackLock().enter();
+
+        // Process all available data at once from the input FIFOs
+        const int available = impl->inputFifo.getNumReady();
+        if (available > 0)
         {
-            impl->mainWindow->getPluginHolderLock().exit();
-            // Mark as completed even if we skip (output silence this frame)
-            context->completed.store(true, std::memory_order_release);
-            return;
+            auto& workBuffer = impl->workerBuffer;
+            auto& workMidi = impl->workerMidiBuffer;
+
+            // Prepare work buffer for all available samples
+            workBuffer.setSize(workBuffer.getNumChannels(), available, false, false, true);
+
+            // Read all available data from input FIFO
+            for (int ch = 0; ch < workBuffer.getNumChannels(); ++ch)
+            {
+                bool isLastChannel = (ch == workBuffer.getNumChannels() - 1);
+                impl->inputFifo.read(workBuffer.getWritePointer(ch), ch, available, isLastChannel);
+            }
+
+            // Clear MIDI (not implemented yet for FIFO-based approach)
+            workMidi.clear();
+
+            // Process audio through plugin
+            if (!processor->isSuspended())
+                processor->processBlock(workBuffer, workMidi);
+
+            // Write all processed data to output FIFO
+            for (int ch = 0; ch < workBuffer.getNumChannels(); ++ch)
+            {
+                bool isLastChannel = (ch == workBuffer.getNumChannels() - 1);
+                impl->outputFifo.write(workBuffer.getReadPointer(ch), ch, available, isLastChannel);
+            }
         }
 
-        // Process audio on worker thread using dedicated multi-core buffers
-        auto& buffer = impl->multiCoreBuffers[context->bufferIndex];
-        auto& midi = impl->multiCoreMidiBuffers[context->bufferIndex];
-
-        // Ensure correct size
-        buffer.setSize(buffer.getNumChannels(), context->numSamples, true, false, true);
-
-        if (!processor->isSuspended())
-            processor->processBlock(buffer, midi);
-
-        // Release locks
         processor->getCallbackLock().exit();
         impl->mainWindow->getPluginHolderLock().exit();
 
-        // Mark as completed
-        context->completed.store(true, std::memory_order_release);
+        context->markCompleted();
     }
 
     Impl()
@@ -115,9 +143,8 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
               )
           )
     {
-        // Initialize double buffer contexts
-        jobContexts[0].reset();
-        jobContexts[1].reset();
+        // Initialize job context (starts as completed)
+        jobContext.owner = this;
 
         // Set multi-core callbacks on the HostAudioProcessorImpl so the UI can access them
         if (auto* hostProc = mainWindow->getHostProcessor())
@@ -138,32 +165,11 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
         // Cancel any pending async updates
         cancelPendingUpdate();
 
-        // CRITICAL: Wait for any pending worker thread jobs to complete
+        // CRITICAL: Wait for any pending worker thread job to complete
         // This prevents crashes during destruction
-        // Note: Destructor is NOT on audio thread, so yield/sleep are acceptable
-        if (useThreadPool.load(std::memory_order_acquire))
-        {
-            // Wait for both jobs to complete with timeout
-            for (int i = 0; i < 2; ++i)
-            {
-                if (jobContexts[i].owner == nullptr)
-                    continue; // No active job
-
-                // Wait up to 100ms for completion
-                const int maxWaitMs = 100;
-                const int sleepMs = 1;
-                int elapsed = 0;
-
-                while (!jobContexts[i].completed.load(std::memory_order_acquire))
-                {
-                    if (elapsed >= maxWaitMs)
-                        break; // Timeout - give up to prevent hang
-
-                    juce::Thread::sleep(sleepMs);
-                    elapsed += sleepMs;
-                }
-            }
-        }
+        // Note: Destructor is NOT on audio thread, so blocking wait is acceptable
+        if (useThreadPool.load(std::memory_order_acquire) && !jobContext.isCompleted())
+            jobContext.waitForCompletion();
 
         // Safety check: If MessageManager is gone, we're in global shutdown
         // Don't try to clean up JUCE objects as this will crash
@@ -231,11 +237,12 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
             processor->setRateAndBufferSizeDetails(rate, samples);
             processor->prepareToPlay(rate, samples);
 
-            // Configure adaptive spin lock for realtime-safe waiting
-            spinLock.configure(samples, rate);
-
-            // Thread pool initialized in atk::create()
-            threadPoolInitialized = true;
+            // Initialize FIFOs for MT mode (8192 samples = ~170ms at 48kHz)
+            const int fifoSize = 8192; // although 1024 might be enough
+            inputFifo.setSize(channels * 2, fifoSize);
+            outputFifo.setSize(channels * 2, fifoSize);
+            workerBuffer.setSize(channels * 2, fifoSize); // Allocate for max FIFO size
+            workerMidiBuffer.ensureSize(fifoSize);
 
             isPrepared = true;
         }
@@ -257,24 +264,14 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
             numSamples = juce::jmax(numSamples, newNumSamples); // Allocate for the largest size seen
             sampleRate = newSampleRate;
 
-            // Resize both double buffers (for single-core and as fallback)
-            for (int i = 0; i < 2; ++i)
-            {
-                audioBuffers[i].setSize(newNumChannels * 2, numSamples, false, false, true);
-                midiBuffers[i].ensureSize(numSamples);
-                jobContexts[i].reset(); // Reset job contexts on reconfiguration
-            }
+            // Resize sync-mode buffer
+            syncBuffer.setSize(newNumChannels * 2, numSamples, false, false, true);
+            syncMidiBuffer.ensureSize(numSamples);
 
-            // Allocate dedicated multi-core buffers (always owned, never references)
-            for (int i = 0; i < 2; ++i)
-            {
-                multiCoreBuffers[i].setSize(newNumChannels * 2, numSamples, false, true, true);
-                multiCoreMidiBuffers[i].ensureSize(numSamples);
-            }
+            // Resize MT-mode FIFOs (will be properly initialized in prepareProcessorOnMessageThread)
+            // No immediate action needed here - FIFOs are allocated in prepare
 
-            // Schedule async preparation (can't block OBS audio thread)
-            // Note: This is different from standalone JUCE apps where audioDeviceAboutToStart
-            // is called before audio begins. In OBS plugins, we must handle dynamic changes.
+            // Schedule async preparation on message thread (can't block OBS audio thread)
             pendingChannels.store(newNumChannels);
             pendingSamples.store(numSamples);
             pendingSampleRate.store(newSampleRate);
@@ -289,110 +286,111 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
         if (!isPrepared)
             return;
 
-        // Multi-threading using dedicated PluginHost thread pool
+        //======================================================================
+        // PROCESSING MODE SELECTION: MT (multi-threaded) or SYNC (synchronous)
+        // These are mutually exclusive - only one path executes per callback.
+        //======================================================================
+
         auto* pool = atk::SecondaryThreadPool::getInstance();
         const bool canUseThreading = useThreadPool.load(std::memory_order_acquire) && pool && pool->isReady();
 
         if (canUseThreading)
         {
-            // If transitioning from sync to async, reset double-buffer state
+            //==================================================================
+            // MT MODE: FIFO-based processing on worker thread
+            //
+            // Pipeline:
+            //   1. Wait for previous worker job to complete
+            //   2. Push new input audio to input FIFO
+            //   3. Pop processed audio from output FIFO to OBS buffer
+            //   4. Kick worker to process all available FIFO data
+            //==================================================================
+            std::lock_guard<std::mutex> mtLock(mtProcessMutex);
+
+            // Transition from sync to MT: initialize FIFO state
             if (!wasUsingThreading)
             {
-                jobContexts[0].reset();
-                jobContexts[1].reset();
-                currentBufferIndex = 0;
-                // Mark context[0] as completed so first frame outputs it
-                jobContexts[0].completed.store(true, std::memory_order_release);
+                DBG("PluginHost: Enabling MT mode (FIFO-based)");
+                inputFifo.reset();
+                outputFifo.reset();
+                workerBuffer.clear();
+                workerMidiBuffer.clear();
                 wasUsingThreading = true;
             }
 
-            // DOUBLE-BUFFER PIPELINE (one frame latency):
-            // Frame N:   Copy input → Check prev job → Output prev result → Submit current for processing
-            // Frame N+1: Copy input → Check prev job → Output prev result → Submit current for processing
+            // Step 1: Wait for previous worker job to complete
+            if (!jobContext.isCompleted())
+                jobContext.waitForCompletion();
 
-            // Step 1: Copy input to current buffer
-            currentBufferIndex = 1 - currentBufferIndex;
-            auto& currentBuffer = multiCoreBuffers[currentBufferIndex];
-            auto& currentMidi = multiCoreMidiBuffers[currentBufferIndex];
-
-            // Ensure buffer is large enough
-            if (currentBuffer.getNumChannels() < newNumChannels * 2 || currentBuffer.getNumSamples() < newNumSamples)
+            // Step 2: Push new input audio to input FIFO
+            for (int ch = 0; ch < newNumChannels * 2; ++ch)
             {
-                int newCh = juce::jmax(currentBuffer.getNumChannels(), newNumChannels * 2);
-                int newSmp = juce::jmax(currentBuffer.getNumSamples(), newNumSamples);
-                currentBuffer.setSize(newCh, newSmp, true, true, true);
+                bool isLastChannel = (ch == newNumChannels * 2 - 1);
+                inputFifo.write(buffer[ch], ch, newNumSamples, isLastChannel);
             }
 
-            for (int ch = 0; ch < newNumChannels * 2 && ch < currentBuffer.getNumChannels(); ++ch)
-                juce::FloatVectorOperations::copy(currentBuffer.getWritePointer(ch), buffer[ch], newNumSamples);
-            currentMidi.clear();
+            // Step 3: Pop processed audio from output FIFO to OBS buffer
+            const int available = outputFifo.getNumReady();
+            const int toRead = juce::jmin(available, newNumSamples);
 
-            // Step 2: Check if previous job completed
-            const int prevIndex = 1 - currentBufferIndex;
-            auto& prevContext = jobContexts[prevIndex];
-
-            bool prevCompleted = prevContext.completed.load(std::memory_order_acquire);
-
-            if (prevCompleted)
+            // Read what's available from output FIFO, pad with zeros if needed
+            for (int ch = 0; ch < newNumChannels * 2; ++ch)
             {
-                // Previous frame completed - output it
-                auto& prevBuffer = multiCoreBuffers[prevIndex];
-                for (int ch = 0; ch < newNumChannels * 2 && ch < prevBuffer.getNumChannels(); ++ch)
-                    juce::FloatVectorOperations::copy(buffer[ch], prevBuffer.getReadPointer(ch), newNumSamples);
-            }
-            else
-            {
-                // First frame or previous job still running - output silence
-                for (int ch = 0; ch < newNumChannels * 2; ++ch)
-                    juce::FloatVectorOperations::clear(buffer[ch], newNumSamples);
+                bool isLastChannel = (ch == newNumChannels * 2 - 1);
+                if (toRead > 0)
+                    outputFifo.read(buffer[ch], ch, toRead, isLastChannel);
+                if (toRead < newNumSamples)
+                    juce::FloatVectorOperations::clear(buffer[ch] + toRead, newNumSamples - toRead);
             }
 
-            // Step 3: Submit current buffer for async processing
-            auto& context = jobContexts[currentBufferIndex];
-            context.reset();
-            context.owner = this;
-            context.bufferIndex = currentBufferIndex;
-            context.numSamples = newNumSamples;
-
-            // Submit to SecondaryThreadPool
-            pool->addJob(&Impl::executeProcessJob, &context);
+            // Step 4: Kick worker to process available input FIFO data
+            jobContext.reset();
+            pool->addJob(&Impl::executeProcessJob, &jobContext);
             pool->kickWorkers();
 
-            return; // Done with async path
+            return; // MT path complete - do NOT fall through to sync path
         }
 
-        // SYNCHRONOUS PROCESSING (only when MT is disabled)
-        // Mark that we're not using threading (for transition detection)
-        wasUsingThreading = false;
+        //======================================================================
+        // SYNC MODE: Direct in-place processing on OBS audio thread
+        //
+        // No double-buffering, no latency. processBlock() is called directly
+        // with the OBS buffer. Device outputs and OBS output are in sync.
+        //======================================================================
 
+        // Transition from MT to sync
+        if (wasUsingThreading)
+        {
+            // Wait for worker to finish before switching modes
+            if (!jobContext.isCompleted())
+                jobContext.waitForCompletion();
+            DBG("PluginHost: Disabling MT mode");
+            wasUsingThreading = false;
+        }
+
+        // Try to acquire locks (non-blocking to avoid audio glitches)
         if (!mainWindow->getPluginHolderLock().tryEnter())
         {
-            // Can't get lock - output silence
             for (int ch = 0; ch < newNumChannels * 2; ++ch)
                 juce::FloatVectorOperations::clear(buffer[ch], newNumSamples);
             return;
         }
 
         auto* processor = mainWindow->getAudioProcessor();
-
         if (!processor->getCallbackLock().tryEnter())
         {
             mainWindow->getPluginHolderLock().exit();
-            // Can't get lock - output silence
             for (int ch = 0; ch < newNumChannels * 2; ++ch)
                 juce::FloatVectorOperations::clear(buffer[ch], newNumSamples);
             return;
         }
 
-        // Process audio in-place
-        auto& currentBuffer = audioBuffers[currentBufferIndex];
-        auto& currentMidi = midiBuffers[currentBufferIndex];
-
-        currentBuffer.setDataToReferTo(buffer, newNumChannels * 2, newNumSamples);
-        currentMidi.clear();
+        // Process in-place: syncBuffer references the OBS buffer directly
+        syncBuffer.setDataToReferTo(buffer, newNumChannels * 2, newNumSamples);
+        syncMidiBuffer.clear();
 
         if (!processor->isSuspended())
-            processor->processBlock(currentBuffer, currentMidi);
+            processor->processBlock(syncBuffer, syncMidiBuffer);
 
         processor->getCallbackLock().exit();
         mainWindow->getPluginHolderLock().exit();
@@ -457,8 +455,8 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
                 multiEnabled = (header.find(":1") != std::string::npos);
                 pluginState = s.substr(newlinePos + 1);
 
-                // Restore multi-core setting
-                useThreadPool.store(multiEnabled, std::memory_order_release);
+                // Restore multi-core setting (pool initialized lazily in setMultiCoreEnabled)
+                setMultiCoreEnabled(multiEnabled);
             }
         }
 
@@ -518,58 +516,32 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
 
         if (enabled && !wasEnabled)
         {
-            // ENABLING: Initialize dedicated thread pool
+            // ENABLING: Initialize dedicated thread pool (lazy create + init)
             auto* pool = atk::SecondaryThreadPool::getInstance();
-            if (!pool->isReady())
-                pool->initialize();
+            pool->initialize();
         }
         else if (!enabled && wasEnabled)
         {
-            // DISABLING: Wait for any pending jobs to complete
-
-            for (int i = 0; i < 2; ++i)
-            {
-                if (jobContexts[i].owner == nullptr)
-                    continue;
-
-                const int maxWaitMs = 100;
-                const int sleepMs = 1;
-                int elapsed = 0;
-
-                while (!jobContexts[i].completed.load(std::memory_order_acquire))
-                {
-                    if (elapsed >= maxWaitMs)
-                        break;
-
-                    juce::Thread::sleep(sleepMs);
-                    elapsed += sleepMs;
-                }
-
-                // Clear the context
-                jobContexts[i].owner = nullptr;
-            }
+            // DISABLING: Wait for any pending job to complete
+            // Note: This is called from UI thread, NOT audio thread, so blocking wait is acceptable
+            if (!jobContext.isCompleted())
+                jobContext.waitForCompletion();
         }
     }
 
 private:
     std::unique_ptr<HostEditorWindow> mainWindow;
 
-    // Separate buffer sets for single-core and multi-core modes
-    // Single-core uses audioBuffers[0] as a reference (setDataToReferTo)
-    // Multi-core uses multiCoreBuffers[0] and [1] as owned double-buffers
-    juce::AudioBuffer<float> audioBuffers[2];     // Used by single-core (buffer 0) and as fallback
-    juce::AudioBuffer<float> multiCoreBuffers[2]; // Dedicated owned buffers for multi-core
-    juce::MidiBuffer midiBuffers[2];
-    juce::MidiBuffer multiCoreMidiBuffers[2];
+    // Sync mode: buffer references OBS buffer directly (setDataToReferTo)
+    juce::AudioBuffer<float> syncBuffer;
+    juce::MidiBuffer syncMidiBuffer;
 
-    // Job contexts for double-buffering
-    ProcessJobContext jobContexts[2];
-
-    // Adaptive spin lock for waiting on job completion (realtime-safe)
-    atk::AdaptiveSpinLock spinLock;
-
-    // Double-buffer index (toggles between 0 and 1)
-    int currentBufferIndex = 0;
+    // MT mode: FIFO-based processing with worker thread
+    atk::FifoBuffer inputFifo;             // OBS audio thread -> worker thread
+    atk::FifoBuffer outputFifo;            // Worker thread -> OBS audio thread
+    juce::AudioBuffer<float> workerBuffer; // Worker's processing buffer
+    juce::MidiBuffer workerMidiBuffer;     // Worker's MIDI buffer
+    ProcessJobContext jobContext;          // Single job context for worker
 
     int numChannels = 0;
     int numSamples = 0;
@@ -577,7 +549,10 @@ private:
 
     bool isPrepared = false;
     std::atomic<bool> useThreadPool{false}; // Multi-core processing disabled by default
-    bool threadPoolInitialized = false;     // Lazy initialization flag
+
+    // Mutex to serialize MT processing when multiple sources call process() concurrently
+    // (e.g., PluginHost as filter on Source Mixer with multiple audio sources)
+    std::mutex mtProcessMutex;
 };
 
 void atk::PluginHost::process(float** buffer, int numChannels, int numSamples, double sampleRate)

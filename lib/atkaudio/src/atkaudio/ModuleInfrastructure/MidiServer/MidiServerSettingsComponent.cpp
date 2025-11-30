@@ -41,6 +41,9 @@ MidiServerSettingsComponent::MidiServerSettingsComponent(MidiClient* client)
         std::make_unique<juce::MidiKeyboardComponent>(*keyboardState, juce::MidiKeyboardComponent::horizontalKeyboard);
     addAndMakeVisible(keyboardComponent.get());
 
+    // Use listener for immediate note callbacks (avoids polling delay that causes hanging notes)
+    keyboardState->addListener(this);
+
     // MIDI Panic button
     panicButton = std::make_unique<juce::TextButton>("MIDI Reset");
     panicButton->onClick = [this] { sendMidiPanic(); };
@@ -89,6 +92,10 @@ MidiServerSettingsComponent::MidiServerSettingsComponent(MidiClient* client)
 MidiServerSettingsComponent::~MidiServerSettingsComponent()
 {
     stopTimer();
+
+    // Remove keyboard listener
+    if (keyboardState)
+        keyboardState->removeListener(this);
 
     // Remove MIDI input callbacks
     if (server != nullptr)
@@ -292,54 +299,8 @@ void MidiServerSettingsComponent::handleIncomingMidiMessage(juce::MidiInput* sou
 
 void MidiServerSettingsComponent::timerCallback()
 {
-    static int timerCount = 0;
-    if (++timerCount % 50 == 0) // Log every 5 seconds
-    {
-        DBG("[MIDI_SRV] Timer active. Client: "
-            << (client ? "YES" : "NO")
-            << ", KeyboardState: "
-            << (keyboardState ? "YES" : "NO"));
-    }
-
-    // Process virtual keyboard MIDI if we have a client
-    if (client && keyboardState)
-    {
-        juce::MidiBuffer keyboardMidi;
-        keyboardState->processNextMidiBuffer(keyboardMidi, 0, 512, true);
-
-        if (!keyboardMidi.isEmpty())
-        {
-            DBG("[MIDI_SRV] Virtual keyboard generated " << keyboardMidi.getNumEvents() << " MIDI events");
-            // Inject keyboard MIDI into the client (as if from input device)
-            client->injectMidi(keyboardMidi);
-
-            // Also add to monitor display
-            for (const auto metadata : keyboardMidi)
-            {
-                const juce::MidiMessage& message = metadata.getMessage();
-                juce::String messageText;
-                messageText << "Virtual Keyboard: ";
-
-                if (message.isNoteOn())
-                    messageText
-                        << "Note On: "
-                        << juce::MidiMessage::getMidiNoteName(message.getNoteNumber(), true, true, 4)
-                        << " Vel: "
-                        << message.getVelocity();
-                else if (message.isNoteOff())
-                    messageText
-                        << "Note Off: "
-                        << juce::MidiMessage::getMidiNoteName(message.getNoteNumber(), true, true, 4);
-                else if (message.isController())
-                    messageText << "CC: " << message.getControllerNumber() << " Val: " << message.getControllerValue();
-                else
-                    messageText << "Other";
-
-                juce::ScopedLock lock(monitorMutex);
-                pendingMonitorMessages.add(messageText);
-            }
-        }
-    }
+    // Timer is now only used for updating the monitor display
+    // Virtual keyboard events are handled immediately via handleNoteOn/handleNoteOff listeners
 
     // Update monitor display
     juce::ScopedLock lock(monitorMutex);
@@ -362,6 +323,62 @@ void MidiServerSettingsComponent::timerCallback()
     monitorTextEditor->moveCaretToEnd();
 
     pendingMonitorMessages.clear();
+}
+
+void MidiServerSettingsComponent::handleNoteOn(
+    juce::MidiKeyboardState* source,
+    int midiChannel,
+    int midiNoteNumber,
+    float velocity
+)
+{
+    juce::ignoreUnused(source);
+
+    if (!client)
+        return;
+
+    // Immediately inject note-on into the MIDI client
+    auto message = juce::MidiMessage::noteOn(midiChannel, midiNoteNumber, velocity);
+    juce::MidiBuffer buffer;
+    buffer.addEvent(message, 0);
+    client->injectMidi(buffer);
+
+    // Add to monitor display
+    juce::String messageText;
+    messageText
+        << "Virtual Keyboard: Note On: "
+        << juce::MidiMessage::getMidiNoteName(midiNoteNumber, true, true, 4)
+        << " Vel: "
+        << static_cast<int>(velocity * 127.0f);
+
+    juce::ScopedLock lock(monitorMutex);
+    pendingMonitorMessages.add(messageText);
+}
+
+void MidiServerSettingsComponent::handleNoteOff(
+    juce::MidiKeyboardState* source,
+    int midiChannel,
+    int midiNoteNumber,
+    float velocity
+)
+{
+    juce::ignoreUnused(source);
+
+    if (!client)
+        return;
+
+    // Immediately inject note-off into the MIDI client
+    auto message = juce::MidiMessage::noteOff(midiChannel, midiNoteNumber, velocity);
+    juce::MidiBuffer buffer;
+    buffer.addEvent(message, 0);
+    client->injectMidi(buffer);
+
+    // Add to monitor display
+    juce::String messageText;
+    messageText << "Virtual Keyboard: Note Off: " << juce::MidiMessage::getMidiNoteName(midiNoteNumber, true, true, 4);
+
+    juce::ScopedLock lock(monitorMutex);
+    pendingMonitorMessages.add(messageText);
 }
 
 void MidiServerSettingsComponent::sendMidiPanic()

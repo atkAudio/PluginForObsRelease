@@ -323,8 +323,36 @@ MainHostWindow::MainHostWindow()
 
     // AudioDeviceManager setup is now handled by PluginHost2::Impl via ModuleDeviceManager
 
-    formatManager.addDefaultFormats();
-    formatManager.addFormat(new InternalPluginFormat());
+    juce::addDefaultFormatsToManager(formatManager);
+    formatManager.addFormat(std::make_unique<InternalPluginFormat>());
+
+#if JUCE_LINUX
+    // Add Flatpak extension plugin path if it exists
+    {
+        const File flatpakPluginPath("/app/extensions/Plugins");
+        if (flatpakPluginPath.isDirectory())
+        {
+            if (auto* props = getAppProperties().getUserSettings())
+            {
+                for (auto* format : formatManager.getFormats())
+                {
+                    const String formatName = format->getName();
+                    // JUCE uses "lastPluginScanPath_" prefix for PluginListComponent
+                    const String key = "lastPluginScanPath_" + formatName;
+                    FileSearchPath existingPaths(
+                        props->getValue(key, format->getDefaultLocationsToSearch().toString())
+                    );
+
+                    if (!existingPaths.toString().contains(flatpakPluginPath.getFullPathName()))
+                    {
+                        existingPaths.add(flatpakPluginPath);
+                        props->setValue(key, existingPaths.toString());
+                    }
+                }
+            }
+        }
+    }
+#endif
 
     setResizable(true, false);
     setResizeLimits(500, 400, 10000, 10000);

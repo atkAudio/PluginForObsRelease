@@ -195,6 +195,26 @@ public:
 
     ~PluginWindow() override
     {
+        // For normal editor windows, we need to notify the processor that
+        // its editor is being deleted before actually deleting it.
+        // This is required because AudioProcessorEditor's destructor asserts
+        // that editorBeingDeleted() was called beforehand.
+        if (type == Type::normal)
+        {
+            if (auto* editor = dynamic_cast<AudioProcessorEditor*>(getContentComponent()))
+            {
+                // The editor knows which processor it belongs to (could be an inner
+                // processor in the case of InternalPlugin wrappers)
+                editor->getAudioProcessor()->editorBeingDeleted(editor);
+
+                // For InternalPlugin wrappers, we also need to clear the wrapper's
+                // activeEditor since createEditorIfNeeded() was called on the wrapper
+                // which then delegated to inner->createEditorIfNeeded()
+                if (auto* wrapperProcessor = node->getProcessor())
+                    if (wrapperProcessor->getActiveEditor() == editor)
+                        wrapperProcessor->editorBeingDeleted(editor);
+            }
+        }
         clearContentComponent();
     }
 

@@ -82,6 +82,7 @@ public:
                      - lastVersionFile.getLastModificationTime().toMilliseconds()
                  < 7 * 24 * 60 * 60 * 1000)
         {
+            DBG("last modification time: " << lastVersionFile.getLastModificationTime().toString(true, true));
             return;
         }
 
@@ -104,6 +105,10 @@ public:
 
         latestRemoteVersion = remoteVersionString;
 
+#ifdef SIMULATE_UPDATE_CHECK
+        latestRemoteVersion = "99.99.99";
+#endif
+
         // Update mod time now that we've checked
         lastVersionFile.setLastModificationTime(juce::Time::getCurrentTime());
 
@@ -112,14 +117,14 @@ public:
         if (skippedVersion.isNotEmpty() && skippedVersion == latestRemoteVersion)
             return;
 
-        auto isRemoteVersionNewer = isNewerVersionThanCurrent(remoteVersionString);
+        auto isRemoteVersionNewer = isNewerVersionThanCurrent(latestRemoteVersion);
 
         if (isRemoteVersionNewer)
         {
             juce::AlertWindow::showYesNoCancelBox(
                 juce::AlertWindow::InfoIcon,
                 PLUGIN_DISPLAY_NAME,
-                "A new version is available: " + remoteVersionString,
+                "A new version is available: " + latestRemoteVersion,
                 "Download",
                 "Skip this version",
                 "Cancel",

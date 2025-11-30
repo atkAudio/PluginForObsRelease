@@ -11,8 +11,8 @@ function(_check_dependencies_macos)
 
   file(READ "${CMAKE_CURRENT_SOURCE_DIR}/buildspec.json" buildspec)
 
-  # Use build-directory-specific dependency directory
-  set(dependencies_dir "${CMAKE_BINARY_DIR}/obs-deps")
+  # Use source-directory-based dependency directory to persist across cache clears
+  set(dependencies_dir "${CMAKE_SOURCE_DIR}/_deps")
   set(prebuilt_filename "macos-deps-VERSION-ARCH_REVISION.tar.xz")
   set(prebuilt_destination "obs-deps-VERSION-ARCH")
   set(qt6_filename "macos-deps-qt6-VERSION-ARCH-REVISION.tar.xz")
@@ -23,10 +23,9 @@ function(_check_dependencies_macos)
 
   _check_dependencies()
 
+  # Remove quarantine flags from downloaded dependencies (ignore errors on read-only git pack files)
   execute_process(
-    COMMAND "xattr" -r -d com.apple.quarantine "${dependencies_dir}"
-    RESULT_VARIABLE result
-    COMMAND_ERROR_IS_FATAL ANY
+    COMMAND bash -c "find '${dependencies_dir}' -not -path '*/.git/*' -exec xattr -d com.apple.quarantine {} \\; 2>/dev/null || true"
   )
 
   list(APPEND CMAKE_FRAMEWORK_PATH "${dependencies_dir}/Frameworks")

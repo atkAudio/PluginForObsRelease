@@ -1,5 +1,6 @@
-# Exclude everything
+# ignore everything
 /*
+/.*
 
 # Except for default project files
 !/.github
@@ -25,17 +26,3 @@
 
 !/lib
 !.vscode
-
-# Exclude lock files
-*.lock.json
-
-# Exclude macOS legacy resource forks
-.DS_Store
-
-
-
-# Exclude generated packages
-/packages
-
-# Exclude dependency cache (now in build directories)
-/.deps

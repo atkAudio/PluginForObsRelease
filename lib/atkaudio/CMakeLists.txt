@@ -17,13 +17,15 @@ set(target ${PROJECT_NAME})
 # Always use JUCE modules only (no helper tools)
 set(JUCE_MODULES_ONLY ON CACHE BOOL "Only build JUCE modules" FORCE)
 
+# Store FetchContent downloads in _deps to persist across cache clears
+set(FETCHCONTENT_BASE_DIR "${CMAKE_SOURCE_DIR}/_deps" CACHE PATH "" FORCE)
+
 include(FetchContent)
 FetchContent_Declare(
     juce
     EXCLUDE_FROM_ALL
     GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
-    GIT_TAG        master
-    GIT_SHALLOW    TRUE
+    GIT_TAG        230340dbfc580628596243bb63b31aeb4d6b5a6d  # develop 2025-11-27
 )
 FetchContent_MakeAvailable(juce)
 # _juce_initialise_target(${target} ${target})
@@ -52,6 +54,8 @@ target_compile_definitions(
     JUCE_MODAL_LOOPS_PERMITTED=1 # we use QT event loop, so this is needed
     # Disable DBG() output in CI/GitHub Actions RelWithDebInfo builds (keeps debug symbols but no console spam in CI)
     $<$<AND:$<CONFIG:RelWithDebInfo>,$<OR:$<BOOL:$ENV{CI}>,$<BOOL:$ENV{GITHUB_ACTIONS}>>>:JUCE_DISABLE_ASSERTIONS>
+    # SIMULATE_UPDATE_CHECK # Uncomment to test update dialog without network
+    SIMULATE_UPDATE_CHECK # Testing update dialog
 )
 
 set_target_properties(${PROJECT_NAME} PROPERTIES
@@ -91,42 +95,25 @@ if(NOT WIN32)
         )
 endif()
 
-# ASIO SDK is only needed on Windows
+# ASIO SDK (Windows only)
 if(WIN32)
-    set(ASIO_SDK_URL "https://www.steinberg.net/asiosdk")
-    set(ASIO_SDK_TEMPDIR "${CMAKE_CURRENT_BINARY_DIR}/asiosdk_temp")
-    set(ASIO_SDK_DIR "${CMAKE_CURRENT_BINARY_DIR}/asiosdk")
-
+    set(ASIO_SDK_DIR "${CMAKE_SOURCE_DIR}/_deps/asiosdk")
     if(NOT EXISTS "${ASIO_SDK_DIR}")
+        set(_asio_zip "${CMAKE_SOURCE_DIR}/_deps/asiosdk.zip")
+        set(_asio_temp "${CMAKE_SOURCE_DIR}/_deps/asiosdk_temp")
         message(STATUS "Downloading ASIO SDK...")
-        file(DOWNLOAD "${ASIO_SDK_URL}" "${CMAKE_CURRENT_BINARY_DIR}/asiosdk.zip"
-            STATUS download_status
-            SHOW_PROGRESS
-        )
-        if(download_status)
-            message(STATUS "Extracting ASIO SDK...")
-            file(ARCHIVE_EXTRACT 
-                INPUT "${CMAKE_CURRENT_BINARY_DIR}/asiosdk.zip"
-                DESTINATION "${ASIO_SDK_TEMPDIR}"
-            )
-            file(GLOB ASIO_SDK_DIRS "${ASIO_SDK_TEMPDIR}/*")
-            foreach(dir ${ASIO_SDK_DIRS})
-                if(IS_DIRECTORY ${dir} AND dir MATCHES ".*asiosdk.*")
-                message(STATUS "ASIO SDK extracted to ${dir}")
-                file(RENAME ${dir} ${ASIO_SDK_DIR})
-                break()
-                endif()
-            endforeach()
+        file(DOWNLOAD "https://www.steinberg.net/asiosdk" "${_asio_zip}" STATUS _status SHOW_PROGRESS)
+        list(GET _status 0 _code)
+        if(_code EQUAL 0)
+            file(ARCHIVE_EXTRACT INPUT "${_asio_zip}" DESTINATION "${_asio_temp}")
+            file(GLOB _dirs "${_asio_temp}/*")
+            list(GET _dirs 0 _extracted)
+            file(RENAME "${_extracted}" "${ASIO_SDK_DIR}")
+            file(REMOVE_RECURSE "${_asio_temp}" "${_asio_zip}")
+            message(STATUS "ASIO SDK installed to ${ASIO_SDK_DIR}")
         endif()
     endif()
-
-    target_include_directories(
-        ${PROJECT_NAME}
-        PRIVATE
-            ${CMAKE_CURRENT_BINARY_DIR}/asiosdk/common
-    )
-
-    target_include_directories(${PROJECT_NAME} PRIVATE "${ASIO_SDK_DIR}")
+    target_include_directories(${PROJECT_NAME} PRIVATE "${ASIO_SDK_DIR}/common")
 endif()
 
 if(WIN32)

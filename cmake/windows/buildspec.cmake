@@ -9,8 +9,8 @@ function(_check_dependencies_windows)
   set(arch ${CMAKE_VS_PLATFORM_NAME})
   set(platform windows-${arch})
 
-  # Use build-directory-specific dependency directories to avoid conflicts
-  set(dependencies_dir "${CMAKE_BINARY_DIR}/obs-deps")
+  # Use source-directory-based dependency directory to persist across cache clears
+  set(dependencies_dir "${CMAKE_SOURCE_DIR}/_deps/${arch}")
   set(prebuilt_filename "windows-deps-VERSION-ARCH-REVISION.zip")
   set(prebuilt_destination "obs-deps-VERSION-ARCH")
   set(qt6_filename "windows-deps-qt6-VERSION-ARCH-REVISION.zip")
@@ -34,8 +34,8 @@ endfunction()
 function(_download_x64_qt_for_arm64)
   set(arch "x64")
   set(platform "windows-x64")
-  # Store x64 tools in the build deps directory for cross-compilation
-  set(dependencies_dir "${CMAKE_BINARY_DIR}/obs-deps")
+  # Store x64 tools in a persistent deps directory for cross-compilation
+  set(dependencies_dir "${CMAKE_SOURCE_DIR}/_deps/x64")
   set(qt6_filename "windows-deps-qt6-VERSION-ARCH-REVISION.zip")
   set(qt6_destination "obs-deps-qt6-VERSION-ARCH")
   set(dependencies_list qt6)

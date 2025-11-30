@@ -14,6 +14,7 @@ namespace atk
 class MidiServerSettingsComponent
     : public juce::Component
     , private juce::MidiInputCallback
+    , private juce::MidiKeyboardState::Listener
     , private juce::Timer
 {
 public:
@@ -44,6 +45,10 @@ private:
 
     // MidiInputCallback
     void handleIncomingMidiMessage(juce::MidiInput* source, const juce::MidiMessage& message) override;
+
+    // MidiKeyboardState::Listener - immediate callbacks for virtual keyboard
+    void handleNoteOn(juce::MidiKeyboardState* source, int midiChannel, int midiNoteNumber, float velocity) override;
+    void handleNoteOff(juce::MidiKeyboardState* source, int midiChannel, int midiNoteNumber, float velocity) override;
 
     // Timer for monitoring display updates
     void timerCallback() override;

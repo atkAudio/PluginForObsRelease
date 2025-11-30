@@ -22,48 +22,27 @@ include(helpers)
 file(READ "${CMAKE_SOURCE_DIR}/buildspec.json" buildspec)
 string(JSON QT6_VERSION GET ${buildspec} dependencies qt6 version)
 
-# Define architecture-specific dependency directory in the build directory
-# Use CMAKE_BINARY_DIR so it works with any configured build directory
-set(DEPS_DIR "${CMAKE_BINARY_DIR}/obs-deps")
+# Persistent dependency directory (survives cache clears)
+if(WIN32)
+    set(DEPS_DIR "${CMAKE_SOURCE_DIR}/_deps/${CMAKE_VS_PLATFORM_NAME}")
+else()
+    set(DEPS_DIR "${CMAKE_SOURCE_DIR}/_deps")
+endif()
 
-# Configure Qt paths for cross-compilation on Windows
+# Qt paths for Windows builds
 if(WIN32)
     if(CMAKE_VS_PLATFORM_NAME STREQUAL "ARM64")
-        # ARM64 Cross-compilation setup
-        set(QT_HOST_PATH "${DEPS_DIR}/obs-deps-qt6-${QT6_VERSION}-x64")
-        set(Qt6_DIR "${DEPS_DIR}/obs-deps-qt6-${QT6_VERSION}-ARM64/lib/cmake/Qt6" CACHE STRING "Qt6 ARM64 CMake directory" FORCE)
-        
-        message(STATUS "ARM64 Cross-compilation detected")
-        message(STATUS "QT_HOST_PATH: ${QT_HOST_PATH}")
-        message(STATUS "Qt6_DIR: ${Qt6_DIR}")
-        
-        # Check if x64 Qt host tools exist
-        if(EXISTS "${QT_HOST_PATH}/bin/moc.exe")
-            message(STATUS "Found x64 Qt host tools at: ${QT_HOST_PATH}")
-        else()
-            message(FATAL_ERROR "x64 Qt host tools not found at: ${QT_HOST_PATH}. ARM64 cross-compilation requires both x64 and ARM64 Qt dependencies.")
-        endif()
-        
-        # Set Qt host tools for cross-compilation (use x64 tools for ARM64 builds)
-        set(Qt6CoreTools_DIR "${QT_HOST_PATH}/lib/cmake/Qt6CoreTools" CACHE STRING "Qt6 x64 Core Tools" FORCE)
-        set(Qt6GuiTools_DIR "${QT_HOST_PATH}/lib/cmake/Qt6GuiTools" CACHE STRING "Qt6 x64 GUI Tools" FORCE)
-        set(Qt6WidgetsTools_DIR "${QT_HOST_PATH}/lib/cmake/Qt6WidgetsTools" CACHE STRING "Qt6 x64 Widget Tools" FORCE)
-        
-        # Explicitly set tool executables that AUTOMOC/AUTOUIC/AUTORCC will use
-        set(CMAKE_AUTOMOC_MOC_EXECUTABLE "${QT_HOST_PATH}/bin/moc.exe" CACHE FILEPATH "MOC executable for ARM64 cross-compilation" FORCE)
-        set(CMAKE_AUTOUIC_UIC_EXECUTABLE "${QT_HOST_PATH}/bin/uic.exe" CACHE FILEPATH "UIC executable for ARM64 cross-compilation" FORCE)
-        set(CMAKE_AUTORCC_RCC_EXECUTABLE "${QT_HOST_PATH}/bin/rcc.exe" CACHE FILEPATH "RCC executable for ARM64 cross-compilation" FORCE)
-        
-        # Also set the legacy variables for compatibility
-        set(QT_MOC_EXECUTABLE "${QT_HOST_PATH}/bin/moc.exe")
-        set(QT_RCC_EXECUTABLE "${QT_HOST_PATH}/bin/rcc.exe")
-        set(QT_UIC_EXECUTABLE "${QT_HOST_PATH}/bin/uic.exe")
-        
-        message(STATUS "Set CMAKE_AUTOMOC_MOC_EXECUTABLE to: ${CMAKE_AUTOMOC_MOC_EXECUTABLE}")
+        # ARM64 cross-compilation: use x64 Qt tools with ARM64 libraries
+        set(QT_HOST_PATH "${CMAKE_SOURCE_DIR}/_deps/x64/obs-deps-qt6-${QT6_VERSION}-x64")
+        set(Qt6_DIR "${DEPS_DIR}/obs-deps-qt6-${QT6_VERSION}-ARM64/lib/cmake/Qt6" CACHE PATH "" FORCE)
+        set(Qt6CoreTools_DIR "${QT_HOST_PATH}/lib/cmake/Qt6CoreTools" CACHE PATH "" FORCE)
+        set(Qt6GuiTools_DIR "${QT_HOST_PATH}/lib/cmake/Qt6GuiTools" CACHE PATH "" FORCE)
+        set(Qt6WidgetsTools_DIR "${QT_HOST_PATH}/lib/cmake/Qt6WidgetsTools" CACHE PATH "" FORCE)
+        set(CMAKE_AUTOMOC_MOC_EXECUTABLE "${QT_HOST_PATH}/bin/moc.exe" CACHE FILEPATH "" FORCE)
+        set(CMAKE_AUTOUIC_UIC_EXECUTABLE "${QT_HOST_PATH}/bin/uic.exe" CACHE FILEPATH "" FORCE)
+        set(CMAKE_AUTORCC_RCC_EXECUTABLE "${QT_HOST_PATH}/bin/rcc.exe" CACHE FILEPATH "" FORCE)
     else()
-        # x64 build - set paths to x64 Qt
-        set(Qt6_DIR "${DEPS_DIR}/obs-deps-qt6-${QT6_VERSION}-x64/lib/cmake/Qt6" CACHE STRING "Qt6 x64 CMake directory" FORCE)
-        message(STATUS "x64 build detected - using x64 Qt at: ${Qt6_DIR}")
+        set(Qt6_DIR "${DEPS_DIR}/obs-deps-qt6-${QT6_VERSION}-x64/lib/cmake/Qt6" CACHE PATH "" FORCE)
     endif()
 endif()
 

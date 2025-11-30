@@ -70,7 +70,6 @@ public:
     void clear();
 
     PluginWindow* getOrCreateWindowFor(AudioProcessorGraphMT::Node*, PluginWindow::Type);
-    void closeCurrentlyOpenWindowsFor(AudioProcessorGraphMT::NodeID);
     bool closeAnyOpenPluginWindows();
 
     //==============================================================================

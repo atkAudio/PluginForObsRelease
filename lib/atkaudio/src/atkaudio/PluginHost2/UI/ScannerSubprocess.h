@@ -10,7 +10,7 @@ class PluginScannerSubprocess final
 public:
     PluginScannerSubprocess()
     {
-        formatManager.addDefaultFormats();
+        juce::addDefaultFormatsToManager(formatManager);
     }
 
     using ChildProcessWorker::initialiseFromCommandLine;
@@ -73,8 +73,9 @@ private:
 
         OwnedArray<PluginDescription> results;
 
-        if (matchingFormat != nullptr && (MessageManager::getInstance()->isThisTheMessageThread() ||
-                                          matchingFormat->requiresUnblockedMessageThreadDuringCreation(pd)))
+        if (matchingFormat != nullptr
+            && (MessageManager::getInstance()->isThisTheMessageThread()
+                || matchingFormat->requiresUnblockedMessageThreadDuringCreation(pd)))
         {
             matchingFormat->findAllTypesForFile(results, identifier);
         }

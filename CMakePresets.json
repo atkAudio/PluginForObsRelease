@@ -15,6 +15,16 @@
       }
     },
     {
+      "name": "ci-template",
+      "hidden": true,
+      "environment": {
+        "CI": "true"
+      },
+      "cacheVariables": {
+        "CMAKE_COMPILE_WARNING_AS_ERROR": false
+      }
+    },
+    {
       "name": "ubuntu-cross-compile-template",
       "hidden": true,
       "inherits": [
@@ -64,13 +74,13 @@
     {
       "name": "macos-ci",
       "inherits": [
-        "macos"
+        "macos",
+        "ci-template"
       ],
       "displayName": "macOS Universal CI build",
       "description": "Build for macOS 12.0+ (Universal binary) for CI",
       "generator": "Xcode",
       "cacheVariables": {
-        "CMAKE_COMPILE_WARNING_AS_ERROR": false,
         "CMAKE_OSX_DEPLOYMENT_TARGET": "12.0"
       }
     },
@@ -100,13 +110,11 @@
     {
       "name": "windows-ci-x64",
       "inherits": [
-        "windows-x64"
+        "windows-x64",
+        "ci-template"
       ],
       "displayName": "Windows x64 CI build",
-      "description": "Build for Windows x64 on CI",
-      "cacheVariables": {
-        "CMAKE_COMPILE_WARNING_AS_ERROR": false
-      }
+      "description": "Build for Windows x64 on CI"
     },
     {
       "name": "windows-arm64",
@@ -134,13 +142,11 @@
     {
       "name": "windows-ci-arm64",
       "inherits": [
-        "windows-arm64"
+        "windows-arm64",
+        "ci-template"
       ],
       "displayName": "Windows ARM64 CI build",
-      "description": "Build for Windows ARM64 on CI",
-      "cacheVariables": {
-        "CMAKE_COMPILE_WARNING_AS_ERROR": false
-      }
+      "description": "Build for Windows ARM64 on CI"
     },
     {
       "name": "ubuntu-x86_64",
@@ -169,14 +175,11 @@
     {
       "name": "ubuntu-ci-x86_64",
       "inherits": [
-        "ubuntu-x86_64"
+        "ubuntu-x86_64",
+        "ci-template"
       ],
       "displayName": "Ubuntu x86_64 CI build",
-      "description": "Build for Ubuntu x86_64 on CI",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "CMAKE_COMPILE_WARNING_AS_ERROR": false
-      }
+      "description": "Build for Ubuntu x86_64 on CI"
     }
   ],
   "buildPresets": [
@@ -202,13 +205,6 @@
       "configuration": "RelWithDebInfo"
     },
     {
-      "name": "windows-x64-release",
-      "configurePreset": "windows-x64",
-      "displayName": "Windows x64 Release",
-      "description": "Windows build for x64",
-      "configuration": "Release"
-    },
-    {
       "name": "windows-ci-x64",
       "configurePreset": "windows-ci-x64",
       "displayName": "Windows x64 CI",
@@ -221,13 +217,6 @@
       "displayName": "Windows ARM64",
       "description": "Windows build for ARM64",
       "configuration": "RelWithDebInfo"
-    },
-    {
-      "name": "windows-arm64-release",
-      "configurePreset": "windows-arm64",
-      "displayName": "Windows ARM64 Release",
-      "description": "Windows build for ARM64",
-      "configuration": "Release"
     },
     {
       "name": "windows-ci-arm64",

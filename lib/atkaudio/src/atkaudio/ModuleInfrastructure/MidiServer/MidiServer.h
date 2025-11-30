@@ -92,8 +92,14 @@ private:
 };
 
 /**
- * Lock-free MIDI message queue for real-time safe communication
- * Uses JUCE AbstractFifo for SPSC (Single Producer Single Consumer) operation
+ * Thread-safe MIDI message queue for real-time safe communication
+ * Uses JUCE AbstractFifo with spinlock protection for MPSC (Multi-Producer Single-Consumer) operation
+ *
+ * Multiple producers (MIDI input thread, UI thread for virtual keyboard) can safely push.
+ * Single consumer (audio thread) reads without blocking.
+ *
+ * Messages pushed with samplePosition=0 automatically get incrementing positions (0,1,2,...)
+ * to preserve ordering of rapid MIDI events. The counter resets after each popAll() call.
  */
 class MidiMessageQueue
 {
@@ -124,18 +130,33 @@ public:
     }
 
     /**
-     * Add a MIDI message to the queue (producer side - MIDI input thread)
+     * Add a MIDI message to the queue (producer side - MPSC safe)
+     * Multiple threads can call push() concurrently.
+     * Uses spinlock for short critical section (real-time safe with brief spin).
+     *
+     * If samplePosition is 0, an auto-incrementing position is used to preserve
+     * ordering of rapid MIDI messages that arrive between audio callbacks.
+     *
      * @return true if message was added, false if queue is full
      */
     bool push(const juce::MidiMessage& message, int samplePosition)
     {
+        // Spinlock to serialize multiple producers
+        // The critical section is very short (just FIFO index update + message copy)
+        juce::SpinLock::ScopedLockType lock(producerLock);
+
         int start1, size1, start2, size2;
         fifo.prepareToWrite(1, start1, size1, start2, size2);
 
         if (size1 > 0)
         {
             messages[start1].message = message;
-            messages[start1].samplePosition = samplePosition;
+            // For messages with position 0, use auto-incrementing position to preserve order
+            // This ensures rapid note-on/note-off pairs don't get identical timestamps
+            if (samplePosition == 0)
+                messages[start1].samplePosition = autoIncrementPosition++;
+            else
+                messages[start1].samplePosition = samplePosition;
             fifo.finishedWrite(1);
             return true;
         }
@@ -150,6 +171,13 @@ public:
      */
     void popAll(juce::MidiBuffer& outBuffer, int maxSamples = 65536)
     {
+        // Reset auto-increment counter for next batch of messages
+        // This ensures each audio callback starts fresh from position 0
+        {
+            juce::SpinLock::ScopedLockType lock(producerLock);
+            autoIncrementPosition = 0;
+        }
+
         int start1, size1, start2, size2;
         const int numReady = fifo.getNumReady();
 
@@ -203,6 +231,8 @@ public:
     }
 
 private:
+    juce::SpinLock producerLock;   // Protects push() for MPSC safety
+    int autoIncrementPosition = 0; // Auto-incrementing position for rapid MIDI messages
     juce::AbstractFifo fifo;
     std::vector<TimestampedMidiMessage> messages;
 };

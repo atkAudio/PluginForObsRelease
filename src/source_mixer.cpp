@@ -542,6 +542,24 @@ static void update(void* data, obs_data_t* s)
             {
                 source.source = nullptr;
                 obs_source_remove_audio_capture_callback(old_sidechain, asmd_capture, asmd);
+
+                // Check if this source is still used in any other slot
+                bool stillUsed = false;
+                for (const auto& otherSource : *asmd->sources)
+                {
+                    if (&otherSource == &source)
+                        continue;
+                    if (otherSource.weak_sidechain)
+                    {
+                        obs_source_t* otherSidechain = obs_weak_source_get_source(otherSource.weak_sidechain);
+                        if (otherSidechain == old_sidechain)
+                            stillUsed = true;
+                        obs_source_release(otherSidechain);
+                        if (stillUsed)
+                            break;
+                    }
+                }
+
                 obs_source_release(old_sidechain);
             }
 
@@ -594,6 +612,15 @@ static void* asmd_create(obs_data_t* settings, obs_source_t* source)
 static void compressor_defaults(obs_data_t* s)
 {
     obs_data_set_default_string(s, S_SIDECHAIN_SOURCE, "none");
+
+    // Set defaults for all slots (support up to 100 slots)
+    for (int i = 1; i <= 100; ++i)
+    {
+        std::string postFaderKey = S_POSTFADER + std::to_string(i);
+        std::string postMuteKey = S_POSTMUTE + std::to_string(i);
+        obs_data_set_default_bool(s, postFaderKey.c_str(), true); // Follow source volume enabled by default
+        obs_data_set_default_bool(s, postMuteKey.c_str(), false); // Post-mute disabled by default
+    }
 }
 
 static void asmd_tick(void* data, float seconds)

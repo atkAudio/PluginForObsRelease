@@ -85,12 +85,6 @@ void atk::destroy()
 
     g_messagePump = nullptr;
 
-    if (updateCheck != nullptr)
-    {
-        delete updateCheck;
-        updateCheck = nullptr;
-    }
-
     if (auto* midiServer = atk::MidiServer::getInstance())
     {
         midiServer->shutdown();

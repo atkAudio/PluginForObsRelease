@@ -85,6 +85,8 @@ void GraphDocumentComponent::GraphAudioCallback::audioDeviceIOCallbackWithContex
         return;
     }
 
+    cpuMeter.start();
+
     auto* graph = owner.graph.get();
     auto& audioGraph = graph->graph;
 
@@ -116,6 +118,8 @@ void GraphDocumentComponent::GraphAudioCallback::audioDeviceIOCallbackWithContex
     // 5. Send MIDI output to external MIDI device if configured
     if (owner.midiOutput != nullptr)
         owner.midiOutput->sendBlockOfMessagesNow(midiMessages);
+
+    cpuMeter.stop(numSamples, sampleRate);
 }
 
 void GraphDocumentComponent::GraphAudioCallback::audioDeviceIOCallback(
@@ -287,10 +291,6 @@ struct GraphEditorPanel::PluginComponent final
 
     ~PluginComponent() override
     {
-        setVisible(false);
-        setComponentEffect(nullptr);
-        stopTimer();
-
         if (auto f = graph.graph.getNodeForId(pluginID))
         {
             if (auto* processor = f->getProcessor())
@@ -908,7 +908,6 @@ GraphEditorPanel::GraphEditorPanel(PluginGraph& g)
 
 GraphEditorPanel::~GraphEditorPanel()
 {
-    setVisible(false);
     graph.removeChangeListener(this);
     draggingConnector = nullptr;
     nodes.clear();

@@ -21,7 +21,7 @@ public:
         addAndMakeVisible(actionButton);
 
         multiToggle.setButtonText("MT");
-        multiToggle.setTooltip("Enable multithreading using secondary job queue");
+        multiToggle.setTooltip("Multi-threading (extra buffer latency)");
         multiToggle.setClickingTogglesState(true);
 
         if (showLinkButton)
@@ -33,7 +33,7 @@ public:
 
     void setMultiCoreCallbacks(std::function<bool()> getEnabledCallback, std::function<void(bool)> setEnabledCallback)
     {
-        // Set initial state
+        // Set initial toggle state
         if (getEnabledCallback)
             multiToggle.setToggleState(getEnabledCallback(), juce::dontSendNotification);
 

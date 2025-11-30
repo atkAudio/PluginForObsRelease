@@ -21,6 +21,19 @@ public:
         setBusesLayout(inner->getBusesLayout());
     }
 
+    ~InternalPlugin() override
+    {
+        // Clear active editor on both the wrapper and inner processor.
+        // When PluginWindow calls createEditorIfNeeded() on this wrapper,
+        // it sets activeEditor on the wrapper, and our createEditor() then
+        // calls inner->createEditorIfNeeded() which sets it on inner too.
+        // Both must be cleared before their destructors run.
+        if (auto* editor = getActiveEditor())
+            editorBeingDeleted(editor);
+        if (auto* editor = inner->getActiveEditor())
+            inner->editorBeingDeleted(editor);
+    }
+
     //==============================================================================
     const String getName() const override
     {
@@ -49,7 +62,9 @@ public:
 
     AudioProcessorEditor* createEditor() override
     {
-        return inner->createEditor();
+        // Use createEditorIfNeeded() to properly track the editor in the inner processor,
+        // following the same pattern as ARAPluginInstanceWrapper and VST3/AU plugin formats
+        return inner->createEditorIfNeeded();
     }
 
     bool hasEditor() const override
