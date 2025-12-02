@@ -2,7 +2,7 @@
 
 #include "../FifoBuffer2.h"
 #include "../LookAndFeel.h"
-#include "../QtParentedWindow.h"
+
 #include "DeviceIo2SettingsComponent.h"
 
 #include <juce_audio_utils/juce_audio_utils.h>
@@ -111,11 +111,11 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DeviceIo2App)
 };
 
-class AudioAppMainWindow final : public atk::QtParentedDocumentWindow
+class AudioAppMainWindow final : public juce::DocumentWindow
 {
 public:
     AudioAppMainWindow(DeviceIo2App& demo)
-        : atk::QtParentedDocumentWindow("", Colours::lightgrey, DocumentWindow::allButtons)
+        : juce::DocumentWindow("", Colours::lightgrey, DocumentWindow::allButtons)
         , audioApp(demo)
     {
         setTitleBarButtonsRequired(DocumentWindow::minimiseButton | DocumentWindow::closeButton, false);
@@ -123,6 +123,9 @@ public:
         setResizable(true, false);
 
         centreWithSize(demo.getWidth(), demo.getHeight());
+
+        // Window starts off-desktop - AudioModule::setVisible() will add to desktop and show
+        removeFromDesktop();
     }
 
     ~AudioAppMainWindow() override

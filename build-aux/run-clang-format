@@ -1,0 +1,49 @@
+#!/bin/sh
+# Run clang-format on all C/C++ files in the project
+# Usage: ./run-clang-format [--check]
+
+set -e
+
+ROOT_DIR=$(git rev-parse --show-toplevel 2>/dev/null || dirname "$(dirname "$0")")
+
+# Find clang-format
+if command -v clang-format >/dev/null 2>&1; then
+    CLANG_FORMAT="clang-format"
+elif command -v clang-format-19 >/dev/null 2>&1; then
+    CLANG_FORMAT="clang-format-19"
+elif command -v clang-format-18 >/dev/null 2>&1; then
+    CLANG_FORMAT="clang-format-18"
+else
+    echo "Error: clang-format not found"
+    exit 1
+fi
+
+echo "Using: $($CLANG_FORMAT --version)"
+
+# Find all C/C++ files
+CPP_FILES=$(find "$ROOT_DIR/src" "$ROOT_DIR/lib" "$ROOT_DIR/tests" -type f \( -name "*.c" -o -name "*.cpp" -o -name "*.h" -o -name "*.hpp" \) 2>/dev/null || true)
+
+if [ -z "$CPP_FILES" ]; then
+    echo "No C/C++ files found"
+    exit 0
+fi
+
+if [ "$1" = "--check" ]; then
+    echo "Checking formatting..."
+    FAILED=0
+    for file in $CPP_FILES; do
+        if ! $CLANG_FORMAT --style=file --dry-run --Werror "$file" 2>/dev/null; then
+            echo "Needs formatting: $file"
+            FAILED=1
+        fi
+    done
+    if [ $FAILED -eq 1 ]; then
+        echo "Some files need formatting. Run without --check to format."
+        exit 1
+    fi
+    echo "All files are properly formatted."
+else
+    echo "Formatting files..."
+    echo "$CPP_FILES" | xargs $CLANG_FORMAT --style=file -i
+    echo "Done."
+fi

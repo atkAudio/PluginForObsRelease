@@ -6,7 +6,7 @@ option(ENABLE_COMPILER_TRACE "Enable clang time-trace" OFF)
 mark_as_advanced(ENABLE_COMPILER_TRACE)
 
 if(NOT XCODE)
-  message(FATAL_ERROR "Building OBS Studio on macOS requires Xcode generator.")
+    message(FATAL_ERROR "Building OBS Studio on macOS requires Xcode generator.")
 endif()
 
 include(compiler_common)
@@ -48,16 +48,16 @@ string(APPEND CMAKE_OBJCXX_FLAGS_RELWITHDEBINFO " -g")
 # * -Wno-non-virtual-dtor
 
 add_compile_definitions(
-  $<$<NOT:$<COMPILE_LANGUAGE:Swift>>:$<$<CONFIG:DEBUG>:DEBUG>>
-  $<$<NOT:$<COMPILE_LANGUAGE:Swift>>:$<$<CONFIG:DEBUG>:_DEBUG>>
-  $<$<NOT:$<COMPILE_LANGUAGE:Swift>>:SIMDE_ENABLE_OPENMP>
+    $<$<NOT:$<COMPILE_LANGUAGE:Swift>>:$<$<CONFIG:DEBUG>:DEBUG>>
+    $<$<NOT:$<COMPILE_LANGUAGE:Swift>>:$<$<CONFIG:DEBUG>:_DEBUG>>
+    $<$<NOT:$<COMPILE_LANGUAGE:Swift>>:SIMDE_ENABLE_OPENMP>
 )
 
 if(ENABLE_COMPILER_TRACE)
-  add_compile_options(
-    $<$<NOT:$<COMPILE_LANGUAGE:Swift>>:-ftime-trace>
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xfrontend -debug-time-expression-type-checking>"
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xfrontend -debug-time-function-bodies>"
-  )
-  add_link_options(LINKER:-print_statistics)
+    add_compile_options(
+        $<$<NOT:$<COMPILE_LANGUAGE:Swift>>:-ftime-trace>
+        "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xfrontend -debug-time-expression-type-checking>"
+        "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xfrontend -debug-time-function-bodies>"
+    )
+    add_link_options(LINKER:-print_statistics)
 endif()

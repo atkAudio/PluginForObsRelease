@@ -401,23 +401,40 @@ private:
 class SyncBuffer
 {
 public:
-    SyncBuffer()
-        : isPrepared(false)
+    SyncBuffer(const juce::String& debugTag = "")
+        : tag(debugTag)
+        , isPrepared(false)
         , readerBufferSize(-1)
         , writerBufferSize(-1)
         , targetLevelFactor(TARGET_SAFETY_BUFFER_LEVEL)
+        , hysteresis(0.5)
         , interpolationType(atk::InterpolationType::Lagrange)
     {
     }
 
-    void setTargetLevelFactor(double factor)
+    void setTag(const juce::String& debugTag)
     {
-        targetLevelFactor = factor;
+        tag = debugTag;
     }
 
-    double getTargetLevelFactor() const
+    void setTargetLevelFactor(float factor)
     {
-        return targetLevelFactor;
+        targetLevelFactor.store(factor, std::memory_order_release);
+    }
+
+    float getTargetLevelFactor() const
+    {
+        return targetLevelFactor.load(std::memory_order_acquire);
+    }
+
+    void setHysteresis(float value)
+    {
+        hysteresis.store(value, std::memory_order_release);
+    }
+
+    float getHysteresis() const
+    {
+        return hysteresis.load(std::memory_order_acquire);
     }
 
     void setInterpolationType(atk::InterpolationType type)
@@ -599,39 +616,51 @@ public:
                 maxBaseLevel = std::max(maxBaseLevel, bufferLevelHistory[i]);
             }
 
-            int baseTargetLevel = static_cast<int>(std::ceil(readerBufferSize * ratio));
-            baseTargetLevel = baseTargetLevel > maxBaseLevel ? maxBaseLevel : baseTargetLevel;
-            int targetMinLevel = static_cast<int>(std::ceil(baseTargetLevel * targetLevelFactor));
-            int bufferLevelError = minBufferLevel - targetMinLevel;
+            int baseTargetLevel = std::min(static_cast<int>(std::ceil(readerBufferSize * ratio)), maxBaseLevel);
 
-            if (bufferLevelError != 0)
+            float targetFactor = targetLevelFactor.load(std::memory_order_acquire);
+            float hyst = hysteresis.load(std::memory_order_acquire);
+            int targetLevel = static_cast<int>(baseTargetLevel * targetFactor);
+            int lowThreshold = static_cast<int>(baseTargetLevel * (targetFactor - hyst));
+            int highThreshold = static_cast<int>(baseTargetLevel * (targetFactor + hyst));
+
+            // Hysteresis: only adjust when outside [low, high] range
+            if (minBufferLevel < lowThreshold || minBufferLevel > highThreshold)
             {
-                int64_t samplesReadInWindow = static_cast<int64_t>(readerBufferSize) * BUFFER_HISTORY_SIZE;
-                bufferCompensation = static_cast<double>(bufferLevelError) / samplesReadInWindow;
+                int error = minBufferLevel - targetLevel;
+                int64_t windowSamples = static_cast<int64_t>(readerBufferSize) * BUFFER_HISTORY_SIZE;
+                bufferCompensation = static_cast<double>(error) / windowSamples;
+                wasAtTargetLevel = (minBufferLevel >= lowThreshold);
             }
             else
             {
                 bufferCompensation = 0.0;
-            }
-
-            bool currentlyAtTarget = (minBufferLevel >= targetMinLevel);
-            if (currentlyAtTarget && !wasAtTargetLevel)
-            {
+                if (!wasAtTargetLevel)
+                {
 #ifdef ATK_DEBUG
-                auto now = std::chrono::system_clock::now();
-                auto time_t_now = std::chrono::system_clock::to_time_t(now);
-                std::ostringstream oss;
-                oss << std::put_time(std::localtime(&time_t_now), "%H:%M:%S");
-                auto timestamp = oss.str();
-                DBG("[SYNC] "
-                    << timestamp
-                    << " Buffer level RECOVERED - min = "
-                    << minBufferLevel
-                    << ", target = "
-                    << targetMinLevel);
+                    auto now = std::chrono::system_clock::now();
+                    auto time_t_now = std::chrono::system_clock::to_time_t(now);
+                    std::ostringstream oss;
+                    oss << std::put_time(std::localtime(&time_t_now), "%H:%M:%S");
+                    auto timestamp = oss.str();
+                    DBG("[SYNC] "
+                        << (tag.isNotEmpty() ? tag + " " : "")
+                        << timestamp
+                        << " RECOVERED - current="
+                        << samplesInFifo
+                        << " histMin="
+                        << minBufferLevel
+                        << " histMax="
+                        << maxBaseLevel
+                        << " range=["
+                        << lowThreshold
+                        << ","
+                        << highThreshold
+                        << "]");
 #endif
+                    wasAtTargetLevel = true;
+                }
             }
-            wasAtTargetLevel = currentlyAtTarget;
         }
 
         auto compensatedRatio = ratio * (1.0 + bufferCompensation);
@@ -670,16 +699,29 @@ public:
             std::ostringstream oss;
             oss << std::put_time(std::localtime(&time_t_now), "%H:%M:%S");
             auto timestamp = oss.str();
+
+            int histMin = samplesInFifo, histMax = 0;
+            for (int i = 0; i < BUFFER_HISTORY_SIZE; ++i)
+            {
+                histMin = std::min(histMin, bufferLevelHistory[i]);
+                histMax = std::max(histMax, bufferLevelHistory[i]);
+            }
+
             DBG("[SYNC] "
+                << (tag.isNotEmpty() ? tag + " " : "")
                 << timestamp
-                << " UNDERFLOW - need "
+                << " UNDERFLOW - current="
+                << samplesInFifo
+                << " histMin="
+                << histMin
+                << " histMax="
+                << histMax
+                << " need="
                 << writerSamplesNeeded
-                << " samples, only got "
+                << " got="
                 << writerSamples
-                << " - reduced ratio from "
-                << compensatedRatio
-                << " to "
-                << finalRatio);
+                << " ratio="
+                << juce::String(finalRatio, 4));
 #endif
         }
         int maxSamplesConsumed = 0;
@@ -726,12 +768,32 @@ public:
         if (maxSamplesConsumed > writerSamples)
         {
 #ifdef ATK_DEBUG
-            DBG("[SYNC] INFO - Interpolator consumed "
+            auto now = std::chrono::system_clock::now();
+            auto time_t_now = std::chrono::system_clock::to_time_t(now);
+            std::ostringstream oss;
+            oss << std::put_time(std::localtime(&time_t_now), "%H:%M:%S");
+            auto timestamp = oss.str();
+
+            int histMin = samplesInFifo, histMax = 0;
+            for (int i = 0; i < BUFFER_HISTORY_SIZE; ++i)
+            {
+                histMin = std::min(histMin, bufferLevelHistory[i]);
+                histMax = std::max(histMax, bufferLevelHistory[i]);
+            }
+
+            DBG("[SYNC] "
+                << (tag.isNotEmpty() ? tag + " " : "")
+                << timestamp
+                << " INTERP_OVERSHOOT - current="
+                << samplesInFifo
+                << " histMin="
+                << histMin
+                << " histMax="
+                << histMax
+                << " consumed="
                 << maxSamplesConsumed
-                << " but only "
-                << writerSamples
-                << " available - advancing by "
-                << samplesToAdvance);
+                << " available="
+                << writerSamples);
 #endif
         }
 
@@ -746,6 +808,7 @@ public:
     }
 
 private:
+    juce::String tag;
     std::atomic_bool isPrepared{false};
     int numChannels{0};
 
@@ -773,7 +836,8 @@ private:
     double bufferCompensation{0.0};
     bool wasAtTargetLevel{false};
 
-    double targetLevelFactor{1.5};
+    std::atomic<float> targetLevelFactor{1.5f};
+    std::atomic<float> hysteresis{0.5f};
 
     std::mutex readLock;
     std::mutex writeLock;

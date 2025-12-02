@@ -5,12 +5,12 @@
 #include "../CpuInfo.h"
 #include "../RealtimeThread.h"
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
 #include <vector>
-#include <algorithm>
 
 namespace atk
 {
@@ -101,6 +101,8 @@ private:
     public:
         explicit Worker(SecondaryThreadPool& p)
             : pool(p)
+            , shouldExit(false)
+            , ready(false)
             , thread(&Worker::run, this)
         {
             // Try to set realtime priority, ignore failure (falls back to normal)
@@ -109,16 +111,23 @@ private:
 
         ~Worker()
         {
-            shouldExit.store(true, std::memory_order_release);
-            wakeUp();
+            {
+                std::lock_guard<std::mutex> lock(wakeMutex);
+                shouldExit.store(true, std::memory_order_release);
+                ready = true;
+            }
+            wakeCV.notify_one();
             if (thread.joinable())
                 thread.join();
         }
 
         void wakeUp()
         {
-            pending.store(true, std::memory_order_release);
-            cv.notify_one();
+            {
+                std::lock_guard<std::mutex> lock(wakeMutex);
+                ready = true;
+            }
+            wakeCV.notify_one();
         }
 
     private:
@@ -137,23 +146,21 @@ private:
                         pool.jobs[t % pool.jobs.size()].run();
                 }
 
-                // Wait for work
-                std::unique_lock<std::mutex> lock(mtx);
-                cv.wait(
-                    lock,
-                    [this]
-                    { return pending.load(std::memory_order_acquire) || shouldExit.load(std::memory_order_acquire); }
-                );
-                pending.store(false, std::memory_order_release);
+                // Wait for work signal
+                {
+                    std::unique_lock<std::mutex> lock(wakeMutex);
+                    wakeCV.wait(lock, [this] { return ready || shouldExit.load(std::memory_order_acquire); });
+                    ready = false;
+                }
             }
         }
 
         SecondaryThreadPool& pool;
+        std::mutex wakeMutex;
+        std::condition_variable wakeCV;
+        std::atomic<bool> shouldExit;
+        bool ready;
         std::thread thread;
-        std::mutex mtx;
-        std::condition_variable cv;
-        std::atomic<bool> pending{false};
-        std::atomic<bool> shouldExit{false};
     };
 
     SecondaryThreadPool() = default;

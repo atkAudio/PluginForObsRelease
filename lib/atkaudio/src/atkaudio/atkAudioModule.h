@@ -59,11 +59,19 @@ public:
             if (!window)
                 return;
 
-            // Call setVisible - QtParentedDocumentWindow::setVisible handles addToDesktop if needed
-            window->setVisible(visible);
-
             if (visible)
             {
+                // Ensure window is on desktop before showing
+                if (!window->isOnDesktop())
+                {
+                    // Use TopLevelWindow's addToDesktop() which uses correct flags
+                    if (auto* tlw = dynamic_cast<juce::TopLevelWindow*>(window))
+                        tlw->addToDesktop();
+                    else
+                        window->addToDesktop(0);
+                }
+
+                window->setVisible(true);
                 window->toFront(true);
 
                 // Handle minimised state if the window supports it
@@ -72,6 +80,10 @@ public:
                     if (docWindow->isMinimised())
                         docWindow->setMinimised(false);
                 }
+            }
+            else
+            {
+                window->setVisible(false);
             }
         };
 

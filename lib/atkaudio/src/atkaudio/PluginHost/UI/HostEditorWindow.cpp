@@ -1,5 +1,6 @@
 #include "HostEditorWindow.h"
 
+#include <atkaudio/SharedPluginList.h>
 #include <juce_gui_extra/juce_gui_extra.h>
 
 using namespace juce;
@@ -13,7 +14,7 @@ HostAudioProcessorEditor::HostAudioProcessorEditor(HostAudioProcessorImpl& owner
     , loader(
           owner.pluginFormatManager,
           owner.pluginList,
-          owner.appProperties.getUserSettings(),
+          atk::SharedPluginList::getInstance()->getPropertiesFile(),
           &owner,
           [&owner](const PluginDescription& pd, EditorStyle editorStyle) { owner.setNewPlugin(pd, editorStyle); }
       )
@@ -304,7 +305,7 @@ HostEditorWindow::HostEditorWindow(
     std::function<bool()> getMultiCoreEnabledCallback,
     std::function<void(bool)> setMultiCoreEnabledCallback
 )
-    : atk::QtParentedDocumentWindow(title, backgroundColour, DocumentWindow::allButtons)
+    : juce::DocumentWindow(title, backgroundColour, DocumentWindow::allButtons)
     , pluginHolder(std::move(pluginHolderIn))
     , decoratorConstrainer(new DecoratorConstrainer())
     , getMultiCoreEnabled(getMultiCoreEnabledCallback)
@@ -355,6 +356,9 @@ HostEditorWindow::HostEditorWindow(
     if (auto* processor = getAudioProcessor())
         if (auto* editor = processor->getActiveEditor())
             setResizable(editor->isResizable(), false);
+
+    // Window starts off-desktop - AudioModule::setVisible() will add to desktop and show
+    removeFromDesktop();
 }
 
 HostEditorWindow::~HostEditorWindow()
@@ -380,12 +384,12 @@ void HostEditorWindow::visibilityChanged()
 
 AudioProcessor* HostEditorWindow::getAudioProcessor() const noexcept
 {
-    return pluginHolder->processor.get();
+    return pluginHolder ? pluginHolder->processor.get() : nullptr;
 }
 
 HostAudioProcessorImpl* HostEditorWindow::getHostProcessor() const noexcept
 {
-    return pluginHolder->getHostProcessor();
+    return pluginHolder ? pluginHolder->getHostProcessor() : nullptr;
 }
 
 CriticalSection& HostEditorWindow::getPluginHolderLock()

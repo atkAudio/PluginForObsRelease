@@ -10,6 +10,7 @@
 !/src
 !.clang-format
 !.cmake-format.json
+!.gersemirc
 !.gitattributes
 !.gitignore
 !buildspec.json

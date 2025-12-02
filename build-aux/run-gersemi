@@ -1,0 +1,44 @@
+#!/bin/sh
+# Run gersemi on all CMake files in the project
+# Usage: ./run-gersemi [--check]
+
+set -e
+
+ROOT_DIR=$(git rev-parse --show-toplevel 2>/dev/null || dirname "$(dirname "$0")")
+
+# Check if gersemi is available
+if ! command -v gersemi >/dev/null 2>&1; then
+    echo "Error: gersemi not found"
+    echo "Install with: pip install gersemi"
+    exit 1
+fi
+
+echo "Using: $(gersemi --version)"
+
+# Find all CMake files
+CMAKE_FILES=$(find "$ROOT_DIR" -type f \( -name "CMakeLists.txt" -o -name "*.cmake" \) -not -path "*/_deps/*" -not -path "*/build*" 2>/dev/null || true)
+
+if [ -z "$CMAKE_FILES" ]; then
+    echo "No CMake files found"
+    exit 0
+fi
+
+if [ "$1" = "--check" ]; then
+    echo "Checking formatting..."
+    FAILED=0
+    for file in $CMAKE_FILES; do
+        if ! gersemi --check "$file" 2>/dev/null; then
+            echo "Needs formatting: $file"
+            FAILED=1
+        fi
+    done
+    if [ $FAILED -eq 1 ]; then
+        echo "Some files need formatting. Run without --check to format."
+        exit 1
+    fi
+    echo "All files are properly formatted."
+else
+    echo "Formatting files..."
+    echo "$CMAKE_FILES" | xargs gersemi -i
+    echo "Done."
+fi

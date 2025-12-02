@@ -2345,7 +2345,12 @@ public:
         SubgraphExtractor extractor;
         subgraphs = extractor.extractUniversalParallelization(graph);
         connectionsVec = c.getConnections();
-        extractor.buildSubgraphDependencies(subgraphs, connectionsVec);
+
+        // Get worker count for load-balanced level assignment
+        // Use numWorkers + 1 because the main thread also processes jobs
+        auto* audioPool = atk::AudioThreadPool::getInstance();
+        const size_t totalWorkers = audioPool ? static_cast<size_t>(audioPool->getNumWorkers() + 1) : SIZE_MAX;
+        extractor.buildSubgraphDependencies(subgraphs, connectionsVec, totalWorkers);
 
         DBG("[PARALLEL] Extracted " << subgraphs.size() << " subgraphs");
         for (size_t i = 0; i < subgraphs.size(); ++i)
@@ -2825,8 +2830,7 @@ public:
             if (!chainsByLevel[level].empty() && numWorkers > 0)
             {
                 // Create barrier: numWorkers + 1 (for main thread participation)
-                auto barrier = atk::ThreadBarrier::make(numWorkers + 1);
-                barrier->configure(s.blockSize, s.sampleRate);
+                auto barrier = atk::makeBarrier(numWorkers + 1);
                 barriers.push_back(std::move(barrier));
             }
             else
@@ -3115,9 +3119,6 @@ public:
                     continue;
                 }
 
-                // Reconfigure barrier for current block size (no allocation - just updates atomics)
-                barrier->configure(numSamples, settings.sampleRate);
-
                 // Prepare jobs for parallel processing
                 pool->prepareJobs(barrier);
 
@@ -3160,7 +3161,7 @@ public:
 
                 // Wait for all worker threads to complete (barrier synchronization)
                 // Each worker arrives once after processing all its jobs
-                barrier->arriveAndWait();
+                barrier->arrive_and_wait();
 
                 // All chains at this level have completed - now route outputs to dependents
                 // This must be done serially after the barrier to ensure all processing is complete
@@ -3347,7 +3348,7 @@ private:
 
     // Pre-allocated resources for realtime-safe parallel processing
     // These are allocated during graph rebuild (message thread) and reused during process() (audio thread)
-    std::vector<atk::ThreadBarrier::Ptr> barriers;                    // One barrier per topological level
+    std::vector<atk::ThreadBarrier> barriers;                         // One barrier per topological level
     std::vector<std::vector<ChainProcessingJob>> jobsPerLevel;        // Pre-allocated job contexts per level
     std::vector<std::vector<AudioBuffer<float>>> bufferViewsPerLevel; // Pre-allocated buffer views per level
 

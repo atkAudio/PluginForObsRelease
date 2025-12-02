@@ -33,6 +33,12 @@ public:
     // Enable/disable multi-core processing (threadpool vs synchronous)
     void setMultiCoreEnabled(bool enabled);
 
+    // Get current CPU load (0.0 to 1.0+) with peak hold
+    float getCpuLoad() const;
+
+    // Get plugin latency in milliseconds
+    int getLatencyMs() const;
+
 protected:
     // AudioModule interface - only need to provide the window component
     juce::Component* getWindowComponent() override;

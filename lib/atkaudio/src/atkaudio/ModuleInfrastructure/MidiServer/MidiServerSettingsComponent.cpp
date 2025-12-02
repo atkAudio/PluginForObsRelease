@@ -65,9 +65,9 @@ MidiServerSettingsComponent::MidiServerSettingsComponent(MidiClient* client)
     updateDeviceLists();
 
     // Load current subscription state
-    if (server != nullptr && client != nullptr)
+    if (client != nullptr)
     {
-        auto state = server->getClientState(client);
+        auto state = client->getSubscriptions();
         setSubscriptionState(state);
     }
 
@@ -256,16 +256,16 @@ void MidiServerSettingsComponent::updateSubscriptions()
 void MidiServerSettingsComponent::handleIncomingMidiMessage(juce::MidiInput* source, const juce::MidiMessage& message)
 {
     // Only show messages from subscribed devices
-    if (client != nullptr && server != nullptr)
+    if (client != nullptr)
     {
-        auto state = server->getClientState(client);
+        auto state = client->getSubscriptions();
         if (!state.subscribedInputDevices.contains(source->getName()))
             return; // Not subscribed to this device
     }
 
-    // Add to keyboard state if it's a note on/off
-    if (message.isNoteOnOrOff())
-        keyboardState->processNextMidiEvent(message);
+    // Note: Don't call keyboardState->processNextMidiEvent() here - that would trigger
+    // handleNoteOn/handleNoteOff listeners which would double-inject and double-log the MIDI.
+    // Hardware MIDI goes through MidiServer -> client queue -> plugin, not through the virtual keyboard.
 
     // Format message for monitor
     juce::String messageText;
@@ -383,7 +383,7 @@ void MidiServerSettingsComponent::handleNoteOff(
 
 void MidiServerSettingsComponent::sendMidiPanic()
 {
-    if (!server || !client)
+    if (!client)
         return;
 
     DBG("[MIDI_SRV] Sending MIDI Panic");
@@ -403,8 +403,8 @@ void MidiServerSettingsComponent::sendMidiPanic()
         panicMessages.addEvent(juce::MidiMessage::controllerEvent(channel, 123, 0), 0);
     }
 
-    // Inject panic messages to the client
-    server->injectMidiToClient(client, panicMessages);
+    // Inject panic messages directly to the client (lock-free)
+    client->injectMidi(panicMessages);
 
     // Also clear the virtual keyboard state
     if (keyboardState)

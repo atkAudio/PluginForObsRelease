@@ -39,6 +39,9 @@ void atk::create()
     // Initialize LookAndFeel singleton
     juce::SharedResourcePointer<atk::LookAndFeel> lookAndFeel;
 
+    // Sync OBS theme colors to JUCE LookAndFeel
+    getQtMainWindowHandle();
+
     // Initialize MIDI server
     if (auto* midiServer = atk::MidiServer::getInstance())
         midiServer->initialize();

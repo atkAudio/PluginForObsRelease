@@ -1,5 +1,5 @@
 #include <algorithm>
-#include <atkaudio/FifoBuffer.h>
+#include <atkaudio/FifoBuffer2.h>
 #include <atkaudio/PluginHost/PluginHost.h>
 #include <inttypes.h>
 #include <math.h>
@@ -31,7 +31,8 @@ struct pluginhost_data
 
     std::vector<std::vector<float>> sidechainTempBuffer;
     std::vector<float*> pointersToProcess;
-    atk::FifoBuffer sidechain_fifo;
+    std::vector<const float*> sidechainWritePtrs;
+    SyncBuffer sidechain_sync;
 
     size_t envelope_buf_len;
 
@@ -68,27 +69,15 @@ static void sidechain_capture(void* param, obs_source_t* source, const struct au
 
     UNUSED_PARAMETER(source);
 
-    if (ph->max_sidechain_frames < audio_data->frames)
-        ph->max_sidechain_frames = audio_data->frames;
-
-    size_t expected_size = ph->max_sidechain_frames * sizeof(float);
-
     if (muted)
         return;
 
-    auto samples = (float**)audio_data->data;
+    auto samples = (const float* const*)audio_data->data;
+    int numChannels = static_cast<int>(ph->num_channels);
+    int numSamples = static_cast<int>(audio_data->frames);
+    double sampleRate = static_cast<double>(ph->sample_rate);
 
-    auto numChannels = ph->sidechain_fifo.getNumChannels();
-    auto numSamples = ph->sidechain_fifo.getTotalSize() - 1;
-
-    if (numChannels != ph->num_channels || numSamples < ph->max_sidechain_frames)
-        ph->sidechain_fifo.setSize((int)ph->num_channels, (int)ph->max_sidechain_frames);
-
-    for (int i = 0; i < ph->num_channels; i++)
-    {
-        auto* sourcePtr = samples[i];
-        ph->sidechain_fifo.write(sourcePtr, i, audio_data->frames, i == ph->num_channels - 1);
-    }
+    ph->sidechain_sync.write(samples, numChannels, numSamples, sampleRate);
 }
 
 static void save(void* data, obs_data_t* settings)
@@ -182,7 +171,13 @@ static void* pluginhost_create(obs_data_t* settings, obs_source_t* filter)
 
     ph->pointersToProcess.resize(ph->num_channels * 2, nullptr);
     ph->sidechainTempBuffer.resize(ph->num_channels, std::vector<float>(AUDIO_OUTPUT_FRAMES, 0.0f));
-    ph->sidechain_fifo.setSize((int)ph->num_channels, AUDIO_OUTPUT_FRAMES);
+
+    // Configure SyncBuffer for sidechain: linear interpolation, target level 1.0
+    // (minimal latency)
+    ph->sidechain_sync.setInterpolationType(atk::InterpolationType::Linear);
+    ph->sidechain_sync.setTargetLevelFactor(1.0f);
+    ph->sidechain_sync.setHysteresis(0.25f);
+
     return ph;
 }
 
@@ -269,32 +264,36 @@ static struct obs_audio_data* pluginhost_filter_audio(void* data, struct obs_aud
     // buffer should hold 2x number of channels (main bus + sidechain)
     // if no sidechain, then second half of buffer should be zeroed
 
-    ph->sidechainTempBuffer.resize(ph->num_channels);
-    for (auto& i : ph->sidechainTempBuffer)
+    int numChannels = static_cast<int>(ph->num_channels);
+    double sampleRate = static_cast<double>(ph->sample_rate);
+
+    // Ensure temp buffer is sized correctly
+    ph->sidechainTempBuffer.resize(numChannels);
+    for (auto& ch : ph->sidechainTempBuffer)
     {
-        std::fill(i.begin(), i.end(), 0.0f);
-        if (i.size() < num_samples)
-            i.resize(num_samples, 0.0f);
+        if (ch.size() < static_cast<size_t>(num_samples))
+            ch.resize(num_samples, 0.0f);
+        std::fill(ch.begin(), ch.begin() + num_samples, 0.0f);
     }
 
-    auto numSidechainSamplesReady = ph->sidechain_fifo.getNumReady();
-    if (numSidechainSamplesReady >= num_samples)
-        for (int i = 0; i < ph->num_channels; i++)
-            ph->sidechain_fifo.read(ph->sidechainTempBuffer[i].data(), i, num_samples, i == ph->num_channels - 1);
+    // Set up pointers for SyncBuffer read
+    std::vector<float*> sidechainReadPtrs(numChannels);
+    for (int i = 0; i < numChannels; i++)
+        sidechainReadPtrs[i] = ph->sidechainTempBuffer[i].data();
 
-    numSidechainSamplesReady = ph->sidechain_fifo.getNumReady();
-    if (numSidechainSamplesReady >= num_samples)
-        ph->sidechain_fifo.advanceRead(numSidechainSamplesReady);
+    // Read sidechain audio using SyncBuffer - handles timing drift with
+    // interpolation
+    ph->sidechain_sync.read(sidechainReadPtrs.data(), numChannels, num_samples, sampleRate);
 
-    ph->pointersToProcess.resize(ph->num_channels * 2);
+    ph->pointersToProcess.resize(numChannels * 2);
 
-    for (size_t i = 0; i < ph->num_channels; i++)
+    for (int i = 0; i < numChannels; i++)
     {
         ph->pointersToProcess[i] = samples[i];
-        ph->pointersToProcess[i + ph->num_channels] = ph->sidechainTempBuffer[i].data();
+        ph->pointersToProcess[i + numChannels] = ph->sidechainTempBuffer[i].data();
     }
 
-    ph->pluginHost.process(ph->pointersToProcess.data(), (int)ph->num_channels, num_samples, (double)ph->sample_rate);
+    ph->pluginHost.process(ph->pointersToProcess.data(), numChannels, num_samples, sampleRate);
 
     return audio;
 }

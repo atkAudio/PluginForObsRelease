@@ -16,7 +16,7 @@ namespace atk
     based on each callback's actual buffer size, making it accurate for variable
     buffer sizes.
 
-    Shows instantaneous load with peak hold (3 seconds).
+    Shows load with 3-second peak hold.
 
     Usage:
         - Call start() at the beginning of audio callback
@@ -35,7 +35,7 @@ public:
     /** Call at the start of audio processing */
     void start()
     {
-        startTime = std::chrono::high_resolution_clock::now();
+        startTime = std::chrono::steady_clock::now();
     }
 
     /** Call at the end of audio processing with actual buffer size */
@@ -44,36 +44,24 @@ public:
         if (sampleRate <= 0.0 || numSamples <= 0)
             return;
 
-        auto endTime = std::chrono::high_resolution_clock::now();
-        auto processingTimeNs = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime - startTime).count();
-
-        // Calculate available time for this buffer in nanoseconds
-        double availableTimeNs = (numSamples / sampleRate) * 1e9;
-
-        // Calculate load for this callback
-        float thisLoad = static_cast<float>(processingTimeNs / availableTimeNs);
-
-        // Store instantaneous load
-        currentLoad.store(thisLoad, std::memory_order_relaxed);
+        auto endTime = std::chrono::steady_clock::now();
+        auto processingNs = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime - startTime).count();
+        double availableNs = (numSamples / sampleRate) * 1e9;
+        float load = static_cast<float>(processingNs / availableNs);
 
         // Update peak with 3-second hold
         auto now = std::chrono::steady_clock::now();
         float peak = peakLoad.load(std::memory_order_relaxed);
 
-        if (thisLoad >= peak)
+        if (load >= peak)
         {
-            peakLoad.store(thisLoad, std::memory_order_relaxed);
+            peakLoad.store(load, std::memory_order_relaxed);
             peakTime = now;
         }
-        else
+        else if (std::chrono::duration_cast<std::chrono::seconds>(now - peakTime).count() >= 3)
         {
-            // Check if 3 seconds have passed since peak
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - peakTime).count();
-            if (elapsed > 3000)
-            {
-                peakLoad.store(thisLoad, std::memory_order_relaxed);
-                peakTime = now;
-            }
+            peakLoad.store(load, std::memory_order_relaxed);
+            peakTime = now;
         }
     }
 
@@ -83,23 +71,15 @@ public:
         return peakLoad.load(std::memory_order_relaxed);
     }
 
-    /** Get instantaneous load without peak hold */
-    float getInstantLoad() const
-    {
-        return currentLoad.load(std::memory_order_relaxed);
-    }
-
     /** Reset the meter */
     void reset()
     {
-        currentLoad.store(0.0f, std::memory_order_relaxed);
         peakLoad.store(0.0f, std::memory_order_relaxed);
     }
 
 private:
-    std::chrono::high_resolution_clock::time_point startTime;
+    std::chrono::steady_clock::time_point startTime;
     std::chrono::steady_clock::time_point peakTime;
-    std::atomic<float> currentLoad{0.0f};
     std::atomic<float> peakLoad{0.0f};
 };
 

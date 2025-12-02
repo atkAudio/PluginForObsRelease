@@ -11,6 +11,9 @@ constexpr auto VERSION = PLUGIN_VERSION;
 constexpr auto JSON_VALUE = "tag_name";
 constexpr auto FILENAME = "atkaudio-pluginforobs.zip";
 
+// Define to always check for updates and simulate newer version available
+// #define SIMULATE_UPDATE_CHECK
+
 class UpdateCheck
     : public juce::ModalComponentManager::Callback
     , public juce::DeletedAtShutdown
@@ -65,6 +68,7 @@ public:
 
         juce::File lastVersionFile = appDir.getChildFile("version_check");
 
+#ifndef SIMULATE_UPDATE_CHECK
         if (lastVersionFile.existsAsFile())
         {
             auto creationTime = lastVersionFile.getCreationTime();
@@ -85,6 +89,7 @@ public:
             DBG("last modification time: " << lastVersionFile.getLastModificationTime().toString(true, true));
             return;
         }
+#endif
 
         // Past 7 days - do the check
         juce::URL versionURL("https://api.github.com/repos/" + owner + "/" + repo + "/releases/latest");
@@ -96,12 +101,13 @@ public:
         if (inStream == nullptr)
             return;
 
-        auto remoteVersionString = inStream->readEntireStreamAsString().trim();
+        auto jsonResponse = inStream->readEntireStreamAsString().trim();
 
-        if (remoteVersionString.isEmpty())
+        if (jsonResponse.isEmpty())
             return;
 
-        remoteVersionString = getValueFromJson(remoteVersionString, JSON_VALUE);
+        auto remoteVersionString = getValueFromJson(jsonResponse, JSON_VALUE);
+        releaseNotes = getValueFromJson(jsonResponse, "body");
 
         latestRemoteVersion = remoteVersionString;
 
@@ -109,6 +115,7 @@ public:
         latestRemoteVersion = "99.99.99";
 #endif
 
+#ifndef SIMULATE_UPDATE_CHECK
         // Update mod time now that we've checked
         lastVersionFile.setLastModificationTime(juce::Time::getCurrentTime());
 
@@ -116,15 +123,23 @@ public:
         auto skippedVersion = lastVersionFile.loadFileAsString().trim();
         if (skippedVersion.isNotEmpty() && skippedVersion == latestRemoteVersion)
             return;
+#endif
 
         auto isRemoteVersionNewer = isNewerVersionThanCurrent(latestRemoteVersion);
 
         if (isRemoteVersionNewer)
         {
+            juce::String message = "A new version is available: " + latestRemoteVersion;
+            if (releaseNotes.isNotEmpty())
+            {
+                auto formattedNotes = releaseNotes.replace("\n", "\n\n");
+                message += "\n\n" + formattedNotes;
+            }
+
             juce::AlertWindow::showYesNoCancelBox(
                 juce::AlertWindow::InfoIcon,
                 PLUGIN_DISPLAY_NAME,
-                "A new version is available: " + latestRemoteVersion,
+                message,
                 "Download",
                 "Skip this version",
                 "Cancel",
@@ -157,6 +172,7 @@ private:
     juce::String owner;
     juce::String repo;
     juce::String latestRemoteVersion;
+    juce::String releaseNotes;
 
     JUCE_DECLARE_SINGLETON(UpdateCheck, true)
 };

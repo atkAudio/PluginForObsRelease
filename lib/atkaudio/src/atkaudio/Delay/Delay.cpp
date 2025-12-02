@@ -55,7 +55,8 @@ struct atk::Delay::Impl : public juce::Timer
 
     void process(float** buffer, int newNumChannels, int newNumSamples, double newSampleRate)
     {
-        if (this->numChannels != newNumChannels || this->numSamples != newNumSamples
+        if (this->numChannels != newNumChannels
+            || this->numSamples != newNumSamples
             || this->sampleRate != newSampleRate)
         {
             this->numChannels = newNumChannels;

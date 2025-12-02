@@ -279,12 +279,23 @@ public:
     }
 
     /**
-     * @brief Build subgraph dependencies and assign topological levels.
+     * @brief Build subgraph dependencies and assign topological levels using ASAP scheduling
+     * with worker-aware load balancing.
+     *
+     * Uses As-Soon-As-Possible (ASAP) scheduling with load balancing:
+     * - Each subgraph is assigned to the earliest possible level (after all dependencies)
+     * - If a level exceeds numWorkers capacity, excess subgraphs with slack are pushed to later levels
+     * - A subgraph has "slack" if its earliest dependent is more than 1 level away
      *
      * @param subgraphs Vector of subgraphs (modified in-place)
      * @param nodes Original node graph
+     * @param numWorkers Number of worker threads (0 or negative = no load balancing)
      */
-    void buildSubgraphDependencies(std::vector<Subgraph>& subgraphs, const std::map<NodeIDType, Node>& nodes)
+    void buildSubgraphDependencies(
+        std::vector<Subgraph>& subgraphs,
+        const std::map<NodeIDType, Node>& nodes,
+        size_t numWorkers = SIZE_MAX
+    )
     {
         if (subgraphs.empty())
             return;
@@ -333,13 +344,19 @@ public:
             }
         }
 
-        // Assign topological levels
+        // ALAP (As-Late-As-Possible) scheduling:
+        // Assign each subgraph to the latest level where all dependents can still be satisfied
+        // This minimizes buffering by running things just-in-time
+
+        // Step 1: Find max depth (longest path from any source to any sink)
+        // First do ASAP to find the critical path length
         levelAssigned.clear();
         levelAssigned.resize(subgraphs.size(), false);
 
-        while (true)
+        bool changed = true;
+        while (changed)
         {
-            bool assignedAny = false;
+            changed = false;
 
             for (size_t i = 0; i < subgraphs.size(); ++i)
             {
@@ -364,39 +381,162 @@ public:
                 {
                     subgraphs[i].topologicalLevel = maxDepLevel + 1;
                     levelAssigned[i] = true;
-                    assignedAny = true;
+                    changed = true;
                 }
             }
+        }
 
-            if (!assignedAny)
+        // Handle any remaining unassigned (cycles)
+        int maxLevel = 0;
+        for (const auto& sg : subgraphs)
+            maxLevel = std::max(maxLevel, sg.topologicalLevel);
+
+        for (size_t i = 0; i < subgraphs.size(); ++i)
+        {
+            if (!levelAssigned[i])
             {
-                // Handle cycles: assign remaining and break cycles
-                int currentLevel = 0;
-                for (size_t i = 0; i < subgraphs.size(); ++i)
-                    if (levelAssigned[i])
-                        currentLevel = std::max(currentLevel, subgraphs[i].topologicalLevel);
+                subgraphs[i].topologicalLevel = maxLevel + 1;
+                levelAssigned[i] = true;
+            }
+        }
 
-                for (size_t i = 0; i < subgraphs.size(); ++i)
+        // Recompute max level
+        maxLevel = 0;
+        for (const auto& sg : subgraphs)
+            maxLevel = std::max(maxLevel, sg.topologicalLevel);
+
+        // Step 2: ALAP - push subgraphs as late as possible
+        // Work backwards from sinks: each subgraph goes to (min dependent level - 1)
+        // Sinks stay at maxLevel
+        levelAssigned.assign(subgraphs.size(), false);
+
+        // First assign sinks (no dependents) to maxLevel
+        for (size_t i = 0; i < subgraphs.size(); ++i)
+        {
+            if (subgraphs[i].dependents.empty())
+            {
+                subgraphs[i].topologicalLevel = maxLevel;
+                levelAssigned[i] = true;
+            }
+        }
+
+        // Work backwards: assign each subgraph to (min dependent level - 1)
+        changed = true;
+        while (changed)
+        {
+            changed = false;
+
+            for (size_t i = 0; i < subgraphs.size(); ++i)
+            {
+                if (levelAssigned[i])
+                    continue;
+
+                // Check if all dependents are assigned
+                bool canAssign = true;
+                int minDepLevel = std::numeric_limits<int>::max();
+
+                for (auto depIdx : subgraphs[i].dependents)
                 {
-                    if (!levelAssigned[i])
+                    if (!levelAssigned[depIdx])
                     {
-                        subgraphs[i].topologicalLevel = currentLevel + 1;
-                        levelAssigned[i] = true;
-
-                        // Remove cyclic dependencies
-                        toRemove.clear();
-                        for (auto depIdx : subgraphs[i].dependsOn)
-                            if (!levelAssigned[depIdx] || subgraphs[depIdx].topologicalLevel >= currentLevel)
-                                toRemove.push_back(depIdx);
-
-                        for (auto idx : toRemove)
-                        {
-                            removeElement(subgraphs[i].dependsOn, idx);
-                            removeElement(subgraphs[idx].dependents, i);
-                        }
+                        canAssign = false;
+                        break;
                     }
+                    minDepLevel = std::min(minDepLevel, subgraphs[depIdx].topologicalLevel);
                 }
-                break;
+
+                if (canAssign)
+                {
+                    // ALAP: assign to level just before earliest dependent
+                    subgraphs[i].topologicalLevel = minDepLevel - 1;
+                    levelAssigned[i] = true;
+                    changed = true;
+                }
+            }
+        }
+
+        // Handle any remaining unassigned (shouldn't happen, but safety)
+        for (size_t i = 0; i < subgraphs.size(); ++i)
+        {
+            if (!levelAssigned[i])
+            {
+                subgraphs[i].topologicalLevel = 0;
+                levelAssigned[i] = true;
+            }
+        }
+
+        // Worker-aware load balancing (only if numWorkers is a reasonable limit)
+        if (numWorkers == 0 || numWorkers == SIZE_MAX)
+            return;
+
+        // For each level (from last to first), if over capacity, pull subgraphs to earlier levels
+        // Special case: at level 0, we push to later levels instead (can't go negative)
+        int stabilityLimit = static_cast<int>(subgraphs.size()) * 2 + maxLevel + 10;
+        int iterations = 0;
+
+        for (int level = maxLevel; level >= 0 && iterations < stabilityLimit; --level, ++iterations)
+        {
+            // Collect subgraphs at this level
+            levelIndices.clear();
+            for (size_t i = 0; i < subgraphs.size(); ++i)
+                if (subgraphs[i].topologicalLevel == level)
+                    levelIndices.push_back(i);
+
+            // If at or under capacity, nothing to do
+            if (levelIndices.size() <= numWorkers)
+                continue;
+
+            // Calculate slack for each subgraph at this level
+            // Slack = current level - max(dependency levels) - 1
+            // Higher slack means more room to move earlier
+            // Source subgraphs (no dependencies) have slack = level (can go all the way to 0)
+            slackValues.clear();
+            slackValues.reserve(levelIndices.size());
+
+            for (size_t idx : levelIndices)
+            {
+                int slack;
+                if (subgraphs[idx].dependsOn.empty())
+                {
+                    // Source subgraph - can be pulled to level 0
+                    slack = subgraphs[idx].topologicalLevel;
+                }
+                else
+                {
+                    int maxDependencyLevel = -1;
+                    for (auto depIdx : subgraphs[idx].dependsOn)
+                        maxDependencyLevel = std::max(maxDependencyLevel, subgraphs[depIdx].topologicalLevel);
+
+                    slack = subgraphs[idx].topologicalLevel - maxDependencyLevel - 1;
+                }
+                slackValues.push_back({idx, slack});
+            }
+
+            // Sort by slack (descending) - keep subgraphs with less slack at current level
+            // Move subgraphs with more slack to earlier levels
+            std::sort(
+                slackValues.begin(),
+                slackValues.end(),
+                [](const auto& a, const auto& b) { return a.second > b.second; }
+            );
+
+            // At level 0, we can't pull earlier - topology is at its limit
+            // Subgraphs here have dependents at level 1, so they must stay
+            if (level == 0)
+                continue;
+
+            // Move excess subgraphs to earlier level (if they have slack)
+            for (size_t i = 0; i < slackValues.size() - numWorkers; ++i)
+            {
+                size_t idx = slackValues[i].first;
+                int slack = slackValues[i].second;
+
+                if (slack > 0)
+                {
+                    // Pull to previous level
+                    subgraphs[idx].topologicalLevel = level - 1;
+                }
+                // If slack == 0, can't move - dependency is at previous level
             }
         }
     }
@@ -410,6 +550,8 @@ private:
     std::vector<Subgraph> subgraphs;
     std::vector<bool> levelAssigned;
     std::vector<size_t> toRemove;
+    std::vector<size_t> levelIndices;
+    std::vector<std::pair<size_t, int>> slackValues;
 
     // Thread synchronization
     std::mutex visitedMutex;

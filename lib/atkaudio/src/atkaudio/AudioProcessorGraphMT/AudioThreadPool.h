@@ -5,19 +5,29 @@
 #include "../CpuInfo.h"
 #include "../RealtimeThread.h"
 
+#include <algorithm>
 #include <atomic>
+#include <barrier>
 #include <cassert>
 #include <condition_variable>
+#include <cstdio>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
-#include <algorithm>
-#include <cstdio>
 
 namespace atk
 {
+
+//==============================================================================
+/** Thread barrier type alias using C++20 std::barrier */
+using ThreadBarrier = std::shared_ptr<std::barrier<>>;
+
+inline ThreadBarrier makeBarrier(int numThreadsToSynchronise)
+{
+    return std::make_shared<std::barrier<>>(numThreadsToSynchronise);
+}
 
 //==============================================================================
 /**
@@ -83,62 +93,6 @@ struct AudioJobContext
 
 //==============================================================================
 /**
-    Thread barrier for real-time audio thread synchronization.
-*/
-class ThreadBarrier
-{
-public:
-    using Ptr = std::shared_ptr<ThreadBarrier>;
-
-    static Ptr make(int numThreadsToSynchronise)
-    {
-        return std::make_shared<ThreadBarrier>(numThreadsToSynchronise);
-    }
-
-    explicit ThreadBarrier(int numThreadsToSynchronise)
-        : threadCount(numThreadsToSynchronise)
-        , blockCount(0)
-        , generation(0)
-    {
-    }
-
-    void configure(int /*samplesPerBlock*/, double /*sampleRate*/)
-    {
-    }
-
-    void arriveAndWait()
-    {
-        std::unique_lock<std::mutex> lk{mutex};
-
-        const int myGeneration = generation;
-        [[maybe_unused]] const int c = ++blockCount;
-
-        assert(c <= threadCount);
-
-        if (blockCount == threadCount)
-        {
-            blockCount = 0;
-            ++generation;
-            cv.notify_all();
-            return;
-        }
-
-        cv.wait(lk, [this, myGeneration] { return generation != myGeneration; });
-    }
-
-private:
-    std::mutex mutex;
-    std::condition_variable cv;
-    int blockCount;
-    int generation;
-    const int threadCount;
-
-    ThreadBarrier(const ThreadBarrier&) = delete;
-    ThreadBarrier& operator=(const ThreadBarrier&) = delete;
-};
-
-//==============================================================================
-/**
     Lock-free job queue for parallel audio processing.
 */
 class RealtimeJobQueue
@@ -150,7 +104,7 @@ public:
         : head(0)
         , tail(0)
     {
-        jobs.resize(1024);
+        jobs.resize(8192);
     }
 
     void reset()
@@ -246,7 +200,7 @@ private:
        prepareJobs(barrier);          // Main thread: setup barrier, reset queue
        addJob(...);                   // Main thread: add jobs (max 1024)
        kickWorkers();                 // Main thread: wake workers
-       barrier->arriveAndWait();      // Wait for completion
+       barrier->arrive_and_wait();    // Wait for completion
 */
 class AudioThreadPool
 {
@@ -282,11 +236,7 @@ public:
         workerThreads.reserve(numWorkers);
 
         for (int i = 0; i < numWorkers; ++i)
-        {
-            workerThreads.push_back(
-                std::make_unique<WorkerThread>(jobQueue, &currentBarrier, sharedWakeMutex, sharedWakeCV)
-            );
-        }
+            workerThreads.push_back(std::make_unique<WorkerThread>(*this));
 
         isInitialized = true;
 
@@ -325,9 +275,9 @@ public:
         // Reserved for future use (e.g., adaptive spin lock tuning)
     }
 
-    void prepareJobs(ThreadBarrier::Ptr barrier)
+    void prepareJobs(ThreadBarrier newBarrier)
     {
-        currentBarrier = std::move(barrier);
+        barrier = std::move(newBarrier);
         jobQueue.reset();
     }
 
@@ -338,13 +288,15 @@ public:
 
     void kickWorkers()
     {
+        // Set all ready flags first
         for (auto& worker : workerThreads)
             if (worker != nullptr)
-                worker->notify();
+                worker->setReady();
 
+        // Wake all workers at once
         {
-            std::lock_guard<std::mutex> lock(sharedWakeMutex);
-            sharedWakeCV.notify_all();
+            std::lock_guard<std::mutex> lock(mutex);
+            cv.notify_all();
         }
     }
 
@@ -360,9 +312,9 @@ public:
         return false;
     }
 
-    ThreadBarrier::Ptr getCurrentBarrier() const
+    ThreadBarrier getBarrier() const
     {
-        return currentBarrier;
+        return barrier;
     }
 
     bool isCalledFromWorkerThread() const
@@ -374,21 +326,28 @@ public:
         return false;
     }
 
+    RealtimeJobQueue& getJobQueue()
+    {
+        return jobQueue;
+    }
+
+    std::mutex& getMutex()
+    {
+        return mutex;
+    }
+
+    std::condition_variable& getCV()
+    {
+        return cv;
+    }
+
 private:
     class WorkerThread
     {
     public:
-        WorkerThread(
-            RealtimeJobQueue& queue,
-            ThreadBarrier::Ptr* barrierPtr,
-            std::mutex& sharedMutex,
-            std::condition_variable& sharedCV
-        )
-            : jobQueue(queue)
-            , currentBarrier(barrierPtr)
-            , wakeMutex(sharedMutex)
-            , cv(sharedCV)
-            , workFlag(false)
+        explicit WorkerThread(AudioThreadPool& poolRef)
+            : pool(poolRef)
+            , ready(false)
             , shouldExit(false)
             , thread(&WorkerThread::run, this)
         {
@@ -399,17 +358,17 @@ private:
         {
             shouldExit.store(true, std::memory_order_release);
             {
-                std::lock_guard<std::mutex> lock(wakeMutex);
-                workFlag.store(true, std::memory_order_release);
-                cv.notify_all();
+                std::lock_guard<std::mutex> lock(pool.getMutex());
+                ready.store(true, std::memory_order_release);
             }
+            pool.getCV().notify_all();
             if (thread.joinable())
                 thread.join();
         }
 
-        void notify()
+        void setReady()
         {
-            workFlag.store(true, std::memory_order_release);
+            ready.store(true, std::memory_order_release);
         }
 
         std::thread::id getThreadId() const
@@ -422,27 +381,23 @@ private:
         {
             while (!shouldExit.load(std::memory_order_acquire))
             {
+                // Wait for work signal
                 {
-                    std::unique_lock<std::mutex> lock(wakeMutex);
-                    cv.wait(
+                    std::unique_lock<std::mutex> lock(pool.getMutex());
+                    pool.getCV().wait(
                         lock,
                         [this]
-                        {
-                            return workFlag.load(std::memory_order_acquire)
-                                || shouldExit.load(std::memory_order_acquire);
-                        }
+                        { return ready.load(std::memory_order_acquire) || shouldExit.load(std::memory_order_acquire); }
                     );
+                    ready.store(false, std::memory_order_release);
                 }
 
                 if (shouldExit.load(std::memory_order_acquire))
                     return;
 
-                workFlag.store(false, std::memory_order_release);
-
-                auto barrier = currentBarrier ? *currentBarrier : nullptr;
-
+                // Process all available jobs
                 RealtimeJobQueue::Job* job = nullptr;
-                while (jobQueue.tryClaimJob(job))
+                while (pool.getJobQueue().tryClaimJob(job))
                 {
                     if (job && job->isValid())
                     {
@@ -454,20 +409,14 @@ private:
                         return;
                 }
 
-                if (barrier != nullptr)
-                {
-                    auto currentBarrierSnapshot = currentBarrier ? *currentBarrier : nullptr;
-                    if (barrier == currentBarrierSnapshot)
-                        barrier->arriveAndWait();
-                }
+                // Synchronize at barrier
+                if (auto syncBarrier = pool.getBarrier())
+                    syncBarrier->arrive_and_wait();
             }
         }
 
-        RealtimeJobQueue& jobQueue;
-        ThreadBarrier::Ptr* currentBarrier;
-        std::mutex& wakeMutex;
-        std::condition_variable& cv;
-        std::atomic<bool> workFlag;
+        AudioThreadPool& pool;
+        std::atomic<bool> ready;
         std::atomic<bool> shouldExit;
         std::thread thread;
     };
@@ -488,12 +437,13 @@ private:
 
     std::vector<std::unique_ptr<WorkerThread>> workerThreads;
     RealtimeJobQueue jobQueue;
-    ThreadBarrier::Ptr currentBarrier;
+    ThreadBarrier barrier;
     std::mutex poolMutex;
     std::atomic<bool> isInitialized{false};
 
-    std::mutex sharedWakeMutex;
-    std::condition_variable sharedWakeCV;
+    // Shared condition variable for all workers
+    std::mutex mutex;
+    std::condition_variable cv;
 
     AudioThreadPool(const AudioThreadPool&) = delete;
     AudioThreadPool& operator=(const AudioThreadPool&) = delete;

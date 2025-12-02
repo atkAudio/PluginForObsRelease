@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../../LookAndFeel.h"
-#include "../../QtParentedWindow.h"
+
 #include "../Core/HostAudioProcessor.h"
 #include "../Core/PluginHolder.h"
 #include "PluginEditorComponent.h"
@@ -30,11 +30,11 @@ private:
     void pluginChanged();
     void clearPlugin();
 
-    class ScaledDocumentWindow final : public atk::QtParentedDocumentWindow
+    class ScaledDocumentWindow final : public juce::DocumentWindow
     {
     public:
         ScaledDocumentWindow(juce::Colour bg, float scale)
-            : atk::QtParentedDocumentWindow("Editor", bg, juce::DocumentWindow::allButtons)
+            : juce::DocumentWindow("Editor", bg, juce::DocumentWindow::allButtons)
             , desktopScale(scale)
         {
             setTitleBarButtonsRequired(juce::DocumentWindow::closeButton, false);
@@ -68,7 +68,7 @@ private:
  * Contains the plugin editor and manages window state.
  */
 class HostEditorWindow
-    : public atk::QtParentedDocumentWindow
+    : public juce::DocumentWindow
     , private juce::Button::Listener
 {
 public:

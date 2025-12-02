@@ -36,6 +36,15 @@ else
     exit 1
 fi
 
+# Install scanner (sandboxed plugin scanner executable)
+if [ -f "$SCRIPT_DIR/obs-plugins/64bit/atkaudio-pluginforobs_scanner" ]; then
+    cp "$SCRIPT_DIR/obs-plugins/64bit/atkaudio-pluginforobs_scanner" "$INSTALL_DIR/bin/64bit/"
+    chmod +x "$INSTALL_DIR/bin/64bit/atkaudio-pluginforobs_scanner"
+    echo "✓ Installed plugin scanner"
+else
+    echo "⚠ Warning: Scanner not found (plugin scanning will use in-process mode)"
+fi
+
 echo ""
 echo "================================================================================"
 echo "Installation complete!"

@@ -49,6 +49,7 @@ public:
      * @brief Atomically loads and returns the shared_ptr
      * @param order Memory ordering constraint
      * @return A copy of the stored shared_ptr
+     * @note When the returned shared_ptr goes out of scope, it may trigger delete
      */
     std::shared_ptr<T> load(std::memory_order order = std::memory_order_seq_cst) const
     {

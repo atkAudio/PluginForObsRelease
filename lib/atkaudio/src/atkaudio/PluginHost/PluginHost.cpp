@@ -1,11 +1,13 @@
 #include "PluginHost.h"
 
+#include "../CpuMeter.h"
 #include "../PluginHost2/Core/PluginGraph.h"
 #include "Core/HostAudioProcessor.h"
 #include "Core/PluginHolder.h"
 #include "UI/HostEditorWindow.h"
 #include "SecondaryThreadPool.h"
 #include <atkaudio/FifoBuffer.h>
+#include <chrono>
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
@@ -64,6 +66,12 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
             cv.wait(lock, [this] { return completed.load(std::memory_order_acquire); });
         }
 
+        bool waitForCompletionWithTimeout(std::chrono::microseconds timeout)
+        {
+            std::unique_lock<std::mutex> lock(mutex);
+            return cv.wait_for(lock, timeout, [this] { return completed.load(std::memory_order_acquire); });
+        }
+
         bool isCompleted() const
         {
             return completed.load(std::memory_order_acquire);
@@ -89,10 +97,20 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
 
         auto* impl = context->owner;
 
-        // Acquire locks (blocking)
-        impl->mainWindow->getPluginHolderLock().enter();
+        // Try to acquire locks (non-blocking to avoid deadlock with UI thread)
+        if (!impl->mainWindow->getPluginHolderLock().tryEnter())
+        {
+            context->markCompleted();
+            return;
+        }
+
         auto* processor = impl->mainWindow->getAudioProcessor();
-        processor->getCallbackLock().enter();
+        if (!processor->getCallbackLock().tryEnter())
+        {
+            impl->mainWindow->getPluginHolderLock().exit();
+            context->markCompleted();
+            return;
+        }
 
         // Process all available data at once from the input FIFOs
         const int available = impl->inputFifo.getNumReady();
@@ -116,7 +134,11 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
 
             // Process audio through plugin
             if (!processor->isSuspended())
+            {
+                impl->cpuMeter.start();
                 processor->processBlock(workBuffer, workMidi);
+                impl->cpuMeter.stop(available, impl->sampleRate);
+            }
 
             // Write all processed data to output FIFO
             for (int ch = 0; ch < workBuffer.getNumChannels(); ++ch)
@@ -146,11 +168,13 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
         // Initialize job context (starts as completed)
         jobContext.owner = this;
 
-        // Set multi-core callbacks on the HostAudioProcessorImpl so the UI can access them
+        // Set callbacks on the HostAudioProcessorImpl so the UI can access them
         if (auto* hostProc = mainWindow->getHostProcessor())
         {
             hostProc->getMultiCoreEnabled = [this]() { return useThreadPool.load(std::memory_order_acquire); };
             hostProc->setMultiCoreEnabled = [this](bool enabled) { setMultiCoreEnabled(enabled); };
+            hostProc->getCpuLoad = [this]() { return getCpuLoad(); };
+            hostProc->getLatencyMs = [this]() { return getLatencyMs(); };
         }
 
         // Ensure window starts hidden (exactly like PluginHost2 does)
@@ -165,11 +189,29 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
         // Cancel any pending async updates
         cancelPendingUpdate();
 
+        // CRITICAL: Acquire timer mutex to wait for any in-flight callback to complete
+        std::lock_guard<std::mutex> lock(timerMutex);
+
+        // Clear callbacks
+        if (mainWindow)
+        {
+            if (auto* hostProc = mainWindow->getHostProcessor())
+            {
+                hostProc->getMultiCoreEnabled = nullptr;
+                hostProc->setMultiCoreEnabled = nullptr;
+                hostProc->getCpuLoad = nullptr;
+                hostProc->getLatencyMs = nullptr;
+            }
+        }
+
         // CRITICAL: Wait for any pending worker thread job to complete
         // This prevents crashes during destruction
-        // Note: Destructor is NOT on audio thread, so blocking wait is acceptable
+        // Use timeout to avoid hanging if worker is stuck (e.g., plugin freeze)
         if (useThreadPool.load(std::memory_order_acquire) && !jobContext.isCompleted())
-            jobContext.waitForCompletion();
+        {
+            const auto timeout = std::chrono::milliseconds(100);
+            jobContext.waitForCompletionWithTimeout(timeout);
+        }
 
         // Safety check: If MessageManager is gone, we're in global shutdown
         // Don't try to clean up JUCE objects as this will crash
@@ -180,11 +222,8 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
             return;
         }
 
-        // IMPORTANT: All JUCE plugin operations MUST happen on the message thread
-        // VST3 plugins especially require this (JUCE_ASSERT_MESSAGE_THREAD)
-        // Just schedule the entire cleanup asynchronously
+        // Schedule async deletion - safe because callbacks are cleared
         auto* window = mainWindow.release();
-
         juce::MessageManager::callAsync([window]() { delete window; });
     }
 
@@ -318,9 +357,18 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
                 wasUsingThreading = true;
             }
 
-            // Step 1: Wait for previous worker job to complete
+            // Step 1: Wait for previous worker job with timeout (half frame time)
+            // This balances latency vs glitch-free operation
             if (!jobContext.isCompleted())
-                jobContext.waitForCompletion();
+            {
+                const double frameTimeSeconds = newNumSamples / sampleRate;
+                const double halfFrameTimeUs = frameTimeSeconds * 1000000.0 / 2.0;
+                const auto timeout = std::chrono::microseconds(static_cast<long long>(halfFrameTimeUs));
+
+                std::unique_lock<std::mutex> lock(jobContext.mutex);
+                jobContext.cv
+                    .wait_for(lock, timeout, [this] { return jobContext.completed.load(std::memory_order_acquire); });
+            }
 
             // Step 2: Push new input audio to input FIFO
             for (int ch = 0; ch < newNumChannels * 2; ++ch)
@@ -343,10 +391,13 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
                     juce::FloatVectorOperations::clear(buffer[ch] + toRead, newNumSamples - toRead);
             }
 
-            // Step 4: Kick worker to process available input FIFO data
-            jobContext.reset();
-            pool->addJob(&Impl::executeProcessJob, &jobContext);
-            pool->kickWorkers();
+            // Step 4: Kick worker to process available input FIFO data (if not already busy)
+            if (jobContext.isCompleted())
+            {
+                jobContext.reset();
+                pool->addJob(&Impl::executeProcessJob, &jobContext);
+                pool->kickWorkers();
+            }
 
             return; // MT path complete - do NOT fall through to sync path
         }
@@ -390,7 +441,11 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
         syncMidiBuffer.clear();
 
         if (!processor->isSuspended())
+        {
+            cpuMeter.start();
             processor->processBlock(syncBuffer, syncMidiBuffer);
+            cpuMeter.stop(newNumSamples, sampleRate);
+        }
 
         processor->getCallbackLock().exit();
         mainWindow->getPluginHolderLock().exit();
@@ -426,6 +481,7 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
     {
         juce::ScopedLock lock(mainWindow->getPluginHolderLock());
         auto* processor = mainWindow->getAudioProcessor();
+        juce::ScopedLock callbackLock(processor->getCallbackLock());
         juce::MemoryBlock state;
         processor->getStateInformation(state);
         auto stateString = state.toString().toStdString();
@@ -522,11 +578,67 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
         }
         else if (!enabled && wasEnabled)
         {
-            // DISABLING: Wait for any pending job to complete
-            // Note: This is called from UI thread, NOT audio thread, so blocking wait is acceptable
+            // DISABLING: Wait for any pending job to complete with timeout
+            // Use timeout to avoid hanging UI if worker is stuck
             if (!jobContext.isCompleted())
-                jobContext.waitForCompletion();
+            {
+                const auto timeout = std::chrono::milliseconds(100);
+                jobContext.waitForCompletionWithTimeout(timeout);
+            }
         }
+    }
+
+    float getCpuLoad() const
+    {
+        std::lock_guard<std::mutex> lock(timerMutex);
+        return cpuMeter.getLoad();
+    }
+
+    int getLatencyMs() const
+    {
+        std::lock_guard<std::mutex> lock(timerMutex);
+        if (!mainWindow || sampleRate <= 0.0)
+            return 0;
+
+        auto* hostProc = mainWindow->getHostProcessor();
+        if (!hostProc)
+            return 0;
+
+        auto* innerPlugin = hostProc->getInnerPlugin();
+        if (!innerPlugin)
+            return 0;
+
+        int latencySamples = innerPlugin->getLatencySamples();
+
+        bool mtEnabled = useThreadPool.load(std::memory_order_acquire);
+
+        // In MT mode, add output FIFO samples to latency (samples waiting to be pulled)
+        if (mtEnabled)
+            latencySamples += outputFifo.getNumReady();
+
+        int currentLatencyMs = 0;
+        if (latencySamples > 0)
+            currentLatencyMs = static_cast<int>(std::round(latencySamples / sampleRate * 1000.0));
+
+        // Peak hold for 3 seconds
+        auto now = std::chrono::steady_clock::now();
+        if (currentLatencyMs >= peakLatencyMs)
+        {
+            peakLatencyMs = currentLatencyMs;
+            peakLatencyTime = now;
+        }
+        else
+        {
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - peakLatencyTime).count();
+            if (elapsed > 3000)
+                peakLatencyMs = currentLatencyMs;
+        }
+
+        // Peak hold only in MT mode (FIFO latency fluctuates)
+        if (!mtEnabled)
+            return currentLatencyMs;
+
+        return peakLatencyMs;
     }
 
 private:
@@ -550,9 +662,19 @@ private:
     bool isPrepared = false;
     std::atomic<bool> useThreadPool{false}; // Multi-core processing disabled by default
 
+    // CPU meter for accurate load measurement with variable buffer sizes
+    atk::CpuMeter cpuMeter;
+
+    // Mutex to protect timer callbacks during destruction
+    mutable std::mutex timerMutex;
+
     // Mutex to serialize MT processing when multiple sources call process() concurrently
     // (e.g., PluginHost as filter on Source Mixer with multiple audio sources)
     std::mutex mtProcessMutex;
+
+    // Peak hold for latency display (3 second hold)
+    mutable int peakLatencyMs = 0;
+    mutable std::chrono::steady_clock::time_point peakLatencyTime;
 };
 
 void atk::PluginHost::process(float** buffer, int numChannels, int numSamples, double sampleRate)
@@ -613,6 +735,22 @@ void atk::PluginHost::setMultiCoreEnabled(bool enabled)
         return;
 
     pImpl->setMultiCoreEnabled(enabled);
+}
+
+float atk::PluginHost::getCpuLoad() const
+{
+    if (!pImpl)
+        return 0.0f;
+
+    return pImpl->getCpuLoad();
+}
+
+int atk::PluginHost::getLatencyMs() const
+{
+    if (!pImpl)
+        return 0;
+
+    return pImpl->getLatencyMs();
 }
 
 atk::PluginHost::PluginHost()

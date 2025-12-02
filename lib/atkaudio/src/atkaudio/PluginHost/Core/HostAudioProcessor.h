@@ -3,6 +3,7 @@
 #include <atkaudio/ModuleInfrastructure/AudioServer/AudioServer.h>
 #include <atkaudio/ModuleInfrastructure/AudioServer/ChannelRoutingMatrix.h>
 #include <atkaudio/ModuleInfrastructure/MidiServer/MidiServer.h>
+#include <atkaudio/SharedPluginList.h>
 #include <juce_audio_utils/juce_audio_utils.h>
 
 //==============================================================================
@@ -103,7 +104,10 @@ public:
     // Public members for UI access
     juce::ApplicationProperties appProperties;
     juce::AudioPluginFormatManager pluginFormatManager;
+
+    // Own plugin list instance, loads from/saves to shared file
     juce::KnownPluginList pluginList;
+
     std::function<void()> pluginChanged;
 
     // MIDI and Audio clients
@@ -113,6 +117,10 @@ public:
     // Multi-core processing callbacks (set by PluginHost)
     std::function<bool()> getMultiCoreEnabled;
     std::function<void(bool)> setMultiCoreEnabled;
+
+    // Stats callbacks for CPU/latency display (set by PluginHost)
+    std::function<float()> getCpuLoad;
+    std::function<int()> getLatencyMs;
 
 private:
     class AtkAudioPlayHead : public juce::AudioPlayHead
@@ -143,6 +151,9 @@ private:
     // Device I/O buffers for applying routing matrix
     juce::AudioBuffer<float> deviceInputBuffer;  // One channel per input subscription
     juce::AudioBuffer<float> deviceOutputBuffer; // One channel per output subscription
+
+    // Pre-allocated MIDI buffer for copying input MIDI (avoids allocation in audio path)
+    juce::MidiBuffer inputMidiCopy;
 
     // OBS sidechain enabled state
     std::atomic<bool> sidechainEnabled{false};

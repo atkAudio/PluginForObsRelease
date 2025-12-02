@@ -2,256 +2,18 @@
 
 #include "../../About.h"
 #include "../../DeviceIo/AudioDeviceSelectorComponent.h"
-#include "../../QtParentedWindow.h"
+#include "../../SandboxedPluginScanner.h"
+#include "../../SharedPluginList.h"
 #include "../Core/InternalPlugins.h"
 
 #include <atkaudio/ModuleInfrastructure/MidiServer/MidiServerSettingsComponent.h>
 
-constexpr const char* scanModeKey = "pluginScanMode";
-
 //==============================================================================
-class Superprocess final : private ChildProcessCoordinator
-{
-public:
-    Superprocess()
-    {
-        launchWorkerProcess(File::getSpecialLocation(File::currentExecutableFile), processUID, 0, 0);
-    }
-
-    enum class State
-    {
-        timeout,
-        gotResult,
-        connectionLost,
-    };
-
-    struct Response
-    {
-        State state;
-        std::unique_ptr<XmlElement> xml;
-    };
-
-    Response getResponse()
-    {
-        std::unique_lock<std::mutex> lock{mutex};
-
-        if (!condvar.wait_for(lock, std::chrono::milliseconds{50}, [&] { return gotResult || connectionLost; }))
-            return {State::timeout, nullptr};
-
-        const auto state = connectionLost ? State::connectionLost : State::gotResult;
-        connectionLost = false;
-        gotResult = false;
-
-        return {state, std::move(pluginDescription)};
-    }
-
-    using ChildProcessCoordinator::sendMessageToWorker;
-
-private:
-    void handleMessageFromWorker(const MemoryBlock& mb) override
-    {
-        const std::lock_guard<std::mutex> lock{mutex};
-        pluginDescription = parseXML(mb.toString());
-        gotResult = true;
-        condvar.notify_one();
-    }
-
-    void handleConnectionLost() override
-    {
-        const std::lock_guard<std::mutex> lock{mutex};
-        connectionLost = true;
-        condvar.notify_one();
-    }
-
-    std::mutex mutex;
-    std::condition_variable condvar;
-
-    std::unique_ptr<XmlElement> pluginDescription;
-    bool connectionLost = false;
-    bool gotResult = false;
-
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(Superprocess)
-};
-
-//==============================================================================
-class CustomPluginScanner final
-    : public KnownPluginList::CustomScanner
-    , private ChangeListener
-{
-public:
-    CustomPluginScanner(MainHostWindow& mainHostWindow)
-        : mw(mainHostWindow)
-    {
-        if (auto* file = mw.getAppProperties().getUserSettings())
-            file->addChangeListener(this);
-
-        handleChange();
-    }
-
-    ~CustomPluginScanner() override
-    {
-        if (auto* file = mw.getAppProperties().getUserSettings())
-            file->removeChangeListener(this);
-    }
-
-    bool findPluginTypesFor(
-        AudioPluginFormat& format,
-        OwnedArray<PluginDescription>& result,
-        const String& fileOrIdentifier
-    ) override
-    {
-        if (scanInProcess)
-        {
-            superprocess = nullptr;
-            format.findAllTypesForFile(result, fileOrIdentifier);
-            return true;
-        }
-
-        if (addPluginDescriptions(format.getName(), fileOrIdentifier, result))
-            return true;
-
-        superprocess = nullptr;
-        return false;
-    }
-
-    void scanFinished() override
-    {
-        superprocess = nullptr;
-    }
-
-private:
-    MainHostWindow& mw;
-
-    /*  Scans for a plugin with format 'formatName' and ID 'fileOrIdentifier' using a subprocess,
-        and adds discovered plugin descriptions to 'result'.
-
-        Returns true on success.
-
-        Failure indicates that the subprocess is unrecoverable and should be terminated.
-    */
-    bool addPluginDescriptions(
-        const String& formatName,
-        const String& fileOrIdentifier,
-        OwnedArray<PluginDescription>& result
-    )
-    {
-        if (superprocess == nullptr)
-            superprocess = std::make_unique<Superprocess>();
-
-        MemoryBlock block;
-        MemoryOutputStream stream{block, true};
-        stream.writeString(formatName);
-        stream.writeString(fileOrIdentifier);
-
-        if (!superprocess->sendMessageToWorker(block))
-            return false;
-
-        for (;;)
-        {
-            if (shouldExit())
-                return true;
-
-            const auto response = superprocess->getResponse();
-
-            if (response.state == Superprocess::State::timeout)
-                continue;
-
-            if (response.xml != nullptr)
-            {
-                for (const auto* item : response.xml->getChildIterator())
-                {
-                    auto desc = std::make_unique<PluginDescription>();
-
-                    if (desc->loadFromXml(*item))
-                        result.add(std::move(desc));
-                }
-            }
-
-            return (response.state == Superprocess::State::gotResult);
-        }
-    }
-
-    void handleChange()
-    {
-        if (auto* file = mw.getAppProperties().getUserSettings())
-            scanInProcess = (file->getIntValue(scanModeKey) == 0);
-    }
-
-    void changeListenerCallback(ChangeBroadcaster*) override
-    {
-        handleChange();
-    }
-
-    std::unique_ptr<Superprocess> superprocess;
-
-    std::atomic<bool> scanInProcess{true};
-
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(CustomPluginScanner)
-};
-
-//==============================================================================
-class CustomPluginListComponent final : public PluginListComponent
-{
-public:
-    CustomPluginListComponent(
-        MainHostWindow& mainWindow,
-        AudioPluginFormatManager& manager,
-        KnownPluginList& listToRepresent,
-        const File& pedal,
-        PropertiesFile* props,
-        bool async
-    )
-        : PluginListComponent(manager, listToRepresent, pedal, props, async)
-        , mw(mainWindow)
-    {
-        addAndMakeVisible(validationModeLabel);
-        addAndMakeVisible(validationModeBox);
-
-        validationModeLabel.attachToComponent(&validationModeBox, true);
-        validationModeLabel.setJustificationType(Justification::right);
-        validationModeLabel.setSize(100, 30);
-
-        auto unusedId = 1;
-
-        for (const auto mode : {"In-process", "Out-of-process"})
-            validationModeBox.addItem(mode, unusedId++);
-
-        validationModeBox.setSelectedItemIndex(mw.getAppProperties().getUserSettings()->getIntValue(scanModeKey));
-
-        validationModeBox.onChange = [this]
-        { mw.getAppProperties().getUserSettings()->setValue(scanModeKey, validationModeBox.getSelectedItemIndex()); };
-
-        handleResize();
-    }
-
-    void resized() override
-    {
-        handleResize();
-    }
-
-private:
-    void handleResize()
-    {
-        PluginListComponent::resized();
-
-        const auto& buttonBounds = getOptionsButton().getBounds();
-        validationModeBox.setBounds(buttonBounds.withWidth(130).withRightX(getWidth() - buttonBounds.getX()));
-    }
-
-    MainHostWindow& mw;
-
-    Label validationModeLabel{{}, "Scan mode"};
-    ComboBox validationModeBox;
-
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(CustomPluginListComponent)
-};
-
-//==============================================================================
-class MainHostWindow::PluginListWindow final : public atk::QtParentedDocumentWindow
+class MainHostWindow::PluginListWindow final : public juce::DocumentWindow
 {
 public:
     PluginListWindow(MainHostWindow& mw, AudioPluginFormatManager& pluginFormatManager)
-        : atk::QtParentedDocumentWindow(
+        : juce::DocumentWindow(
               "Available Plugins",
               LookAndFeel::getDefaultLookAndFeel().findColour(ResizableWindow::backgroundColourId),
               DocumentWindow::allButtons
@@ -259,32 +21,37 @@ public:
         , owner(mw)
     {
         setTitleBarButtonsRequired(DocumentWindow::minimiseButton | DocumentWindow::closeButton, false);
-        auto deadMansPedalFile =
-            owner.getAppProperties().getUserSettings()->getFile().getSiblingFile("RecentlyCrashedPluginsList");
 
-        setContentOwned(
-            new CustomPluginListComponent(
-                owner,
-                pluginFormatManager,
-                owner.knownPluginList,
-                deadMansPedalFile,
-                owner.getAppProperties().getUserSettings(),
-                false // sync scan
-            ),
-            true
+        auto* sharedProps = atk::SharedPluginList::getInstance()->getPropertiesFile();
+        auto deadMansPedalFile = sharedProps->getFile().getSiblingFile("RecentlyCrashedPluginsList");
+
+        auto* pluginListComponent = new PluginListComponent(
+            pluginFormatManager,
+            owner.knownPluginList,
+            deadMansPedalFile,
+            sharedProps,
+            false // sync scan
         );
+
+        // Use sandboxed scanner (shows warning once if not available)
+        auto sandboxedScanner = std::make_unique<atk::SandboxedScanner>();
+        if (sandboxedScanner->isScannerAvailable())
+            DBG("PluginListWindow: Using sandboxed plugin scanner");
+        else
+            DBG("PluginListWindow: Sandboxed scanner not available, using in-process scanning");
+        owner.knownPluginList.setCustomScanner(std::move(sandboxedScanner));
+
+        setContentOwned(pluginListComponent, true);
 
         setResizable(true, false);
         setResizeLimits(300, 400, 800, 1500);
         setTopLeftPosition(60, 60);
 
-        // restoreWindowStateFromString(owner.getAppProperties().getUserSettings()->getValue("listWindowPos"));
         setVisible(true);
     }
 
     ~PluginListWindow() override
     {
-        // owner.getAppProperties().getUserSettings()->setValue("listWindowPos", getWindowStateAsString());
         clearContentComponent();
     }
 
@@ -301,7 +68,7 @@ private:
 
 //==============================================================================
 MainHostWindow::MainHostWindow()
-    : atk::QtParentedDocumentWindow(
+    : juce::DocumentWindow(
           "atkAudio PluginHost2",
           LookAndFeel::getDefaultLookAndFeel().findColour(ResizableWindow::backgroundColourId),
           DocumentWindow::allButtons
@@ -332,7 +99,7 @@ MainHostWindow::MainHostWindow()
         const File flatpakPluginPath("/app/extensions/Plugins");
         if (flatpakPluginPath.isDirectory())
         {
-            if (auto* props = getAppProperties().getUserSettings())
+            if (auto* props = atk::SharedPluginList::getInstance()->getPropertiesFile())
             {
                 for (auto* format : formatManager.getFormats())
                 {
@@ -358,7 +125,8 @@ MainHostWindow::MainHostWindow()
     setResizeLimits(500, 400, 10000, 10000);
     centreWithSize(800, 600);
 
-    knownPluginList.setCustomScanner(std::make_unique<CustomPluginScanner>(*this));
+    // Load plugin list from shared file before creating graph
+    atk::SharedPluginList::getInstance()->loadPluginList(knownPluginList);
 
     graphHolder.reset(new GraphDocumentComponent(*this, formatManager, deviceManager, knownPluginList));
 
@@ -373,9 +141,6 @@ MainHostWindow::MainHostWindow()
 
     InternalPluginFormat internalFormat;
     internalTypes = internalFormat.getAllTypes();
-
-    if (auto savedPluginList = getAppProperties().getUserSettings()->getXmlValue("pluginList"))
-        knownPluginList.recreateFromXml(*savedPluginList);
 
     for (auto& t : internalTypes)
         knownPluginList.addType(t);
@@ -397,6 +162,9 @@ MainHostWindow::MainHostWindow()
     setMenuBar(this);
 
     getCommandManager().setFirstCommandTarget(this);
+
+    // Window starts off-desktop - AudioModule::setVisible() will add to desktop and show
+    removeFromDesktop();
 }
 
 MainHostWindow::~MainHostWindow()
@@ -465,13 +233,8 @@ void MainHostWindow::changeListenerCallback(ChangeBroadcaster* changed)
     {
         menuItemsChanged();
 
-        // save the plugin list every time it gets changed, so that if we're scanning
-        // and it crashes, we've still saved the previous ones
-        if (auto savedPluginList = std::unique_ptr<XmlElement>(knownPluginList.createXml()))
-        {
-            getAppProperties().getUserSettings()->setValue("pluginList", savedPluginList.get());
-            getAppProperties().saveIfNeeded();
-        }
+        // Save to shared file
+        atk::SharedPluginList::getInstance()->savePluginList(knownPluginList);
     }
     else if (graphHolder != nullptr && changed == graphHolder->graph.get())
     {

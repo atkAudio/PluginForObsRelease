@@ -1,3 +1,6 @@
+// Include DelayLinePlugin FIRST because juce_dsp SSE headers must come before OBS SIMDE headers
+#include "DelayLinePlugin.h"
+
 #include "InternalPlugins.h"
 
 #include "GainPlugin.h"
@@ -700,7 +703,8 @@ InternalPluginFormat::InternalPluginFormat()
           [] { return std::make_unique<InternalPlugin>(std::make_unique<DeviceIo2Plugin>()); },
           [] { return std::make_unique<InternalPlugin>(std::make_unique<SineWaveSynth>()); },
           [] { return std::make_unique<InternalPlugin>(std::make_unique<ReverbPlugin>()); },
-          [] { return std::make_unique<InternalPlugin>(std::make_unique<GainPlugin>()); }
+          [] { return std::make_unique<InternalPlugin>(std::make_unique<GainPlugin>()); },
+          [] { return std::make_unique<InternalPlugin>(std::make_unique<DelayLinePlugin>()); }
       }
 {
 }

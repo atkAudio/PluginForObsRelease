@@ -1,0 +1,77 @@
+#!/bin/sh
+# Pre-commit hook for clang-format and gersemi
+# Runs formatters on staged files before commit
+# This file should be copied or symlinked to .git/hooks/pre-commit
+
+set -e
+
+ROOT_DIR=$(git rev-parse --show-toplevel)
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+NC='\033[0m'
+
+echo "Running pre-commit formatting checks..."
+
+# --- clang-format check ---
+CPP_FILES=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.(c|cpp|h|hpp|cc|cxx|hxx)$' || true)
+
+if [ -n "$CPP_FILES" ]; then
+    echo "Checking C/C++ files with clang-format..."
+    
+    if command -v clang-format >/dev/null 2>&1; then
+        CLANG_FORMAT="clang-format"
+    elif command -v clang-format-19 >/dev/null 2>&1; then
+        CLANG_FORMAT="clang-format-19"
+    elif command -v clang-format-18 >/dev/null 2>&1; then
+        CLANG_FORMAT="clang-format-18"
+    else
+        echo "${YELLOW}Warning: clang-format not found, skipping C/C++ formatting check${NC}"
+        CLANG_FORMAT=""
+    fi
+    
+    if [ -n "$CLANG_FORMAT" ]; then
+        for file in $CPP_FILES; do
+            if [ -f "$ROOT_DIR/$file" ]; then
+                if ! $CLANG_FORMAT --style=file --dry-run --Werror "$ROOT_DIR/$file" 2>/dev/null; then
+                    echo "${RED}Formatting required: $file${NC}"
+                    $CLANG_FORMAT --style=file -i "$ROOT_DIR/$file"
+                    git add "$ROOT_DIR/$file"
+                    echo "${GREEN}Formatted and re-staged: $file${NC}"
+                fi
+            fi
+        done
+    fi
+fi
+
+# --- gersemi check ---
+CMAKE_FILES=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '(CMakeLists\.txt|\.cmake)$' || true)
+
+if [ -n "$CMAKE_FILES" ]; then
+    echo "Checking CMake files with gersemi..."
+    
+    if command -v gersemi >/dev/null 2>&1; then
+        GERSEMI="gersemi"
+    else
+        echo "${YELLOW}Warning: gersemi not found, skipping CMake formatting check${NC}"
+        echo "${YELLOW}Install with: pip install gersemi${NC}"
+        GERSEMI=""
+    fi
+    
+    if [ -n "$GERSEMI" ]; then
+        for file in $CMAKE_FILES; do
+            if [ -f "$ROOT_DIR/$file" ]; then
+                if ! $GERSEMI --check "$ROOT_DIR/$file" 2>/dev/null; then
+                    echo "${RED}Formatting required: $file${NC}"
+                    $GERSEMI -i "$ROOT_DIR/$file"
+                    git add "$ROOT_DIR/$file"
+                    echo "${GREEN}Formatted and re-staged: $file${NC}"
+                fi
+            fi
+        done
+    fi
+fi
+
+echo "${GREEN}Pre-commit checks completed.${NC}"
+exit 0

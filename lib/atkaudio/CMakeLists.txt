@@ -1,7 +1,4 @@
-file(GLOB_RECURSE 
-    _sources CONFIGURE_DEPENDS 
-    ./src/*.c*
-    )
+file(GLOB_RECURSE _sources CONFIGURE_DEPENDS ./src/*.c*)
 
 target_sources(${PROJECT_NAME} PRIVATE ${_sources})
 
@@ -25,12 +22,16 @@ FetchContent_Declare(
     juce
     EXCLUDE_FROM_ALL
     GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
-    GIT_TAG        230340dbfc580628596243bb63b31aeb4d6b5a6d  # develop 2025-11-27
+    GIT_TAG
+        230340dbfc580628596243bb63b31aeb4d6b5a6d # develop 2025-11-27
+    PATCH_COMMAND
+        ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/apply-juce-patches.cmake"
 )
 FetchContent_MakeAvailable(juce)
 # _juce_initialise_target(${target} ${target})
 
-target_link_libraries(${PROJECT_NAME}
+target_link_libraries(
+    ${PROJECT_NAME}
     PRIVATE
         juce::juce_audio_utils
         juce::juce_dsp
@@ -38,61 +39,65 @@ target_link_libraries(${PROJECT_NAME}
         juce::juce_recommended_lto_flags
         # juce::juce_recommended_warning_flags
         OBS::obs-frontend-api
-       )
-
-target_compile_definitions(
-    ${PROJECT_NAME} 
-    PRIVATE
-    JUCE_STRICT_REFCOUNTEDPOINTER=1
-    JUCE_STANDALONE_APPLICATION=1
-    JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1
-    JUCE_PLUGINHOST_VST3=1
-    JUCE_PLUGINHOST_VST=0
-    JUCE_PLUGINHOST_AU=1
-    JUCE_USE_CURL=1
-    JUCE_WEB_BROWSER=0
-    JUCE_MODAL_LOOPS_PERMITTED=1 # we use QT event loop, so this is needed
-    # Disable DBG() output in CI/GitHub Actions RelWithDebInfo builds (keeps debug symbols but no console spam in CI)
-    $<$<AND:$<CONFIG:RelWithDebInfo>,$<OR:$<BOOL:$ENV{CI}>,$<BOOL:$ENV{GITHUB_ACTIONS}>>>:JUCE_DISABLE_ASSERTIONS>
-    # SIMULATE_UPDATE_CHECK # Uncomment to test update dialog without network
-    SIMULATE_UPDATE_CHECK # Testing update dialog
 )
 
-set_target_properties(${PROJECT_NAME} PROPERTIES
-    JUCE_NEEDS_WEB_BROWSER FALSE
-    JUCE_NEEDS_CURL TRUE
-    JUCE_IS_PLUGIN TRUE
+target_compile_definitions(
+    ${PROJECT_NAME}
+    PRIVATE
+        JUCE_STRICT_REFCOUNTEDPOINTER=1
+        JUCE_STANDALONE_APPLICATION=1
+        JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1
+        JUCE_PLUGINHOST_VST3=1
+        JUCE_PLUGINHOST_VST=0
+        JUCE_PLUGINHOST_AU=1
+        JUCE_USE_CURL=1
+        JUCE_WEB_BROWSER=0
+        JUCE_MODAL_LOOPS_PERMITTED=1 # we use QT event loop, so this is needed
+        # Disable DBG() output in CI/GitHub Actions RelWithDebInfo builds (keeps debug symbols but no console spam in CI)
+        $<$<AND:$<CONFIG:RelWithDebInfo>,$<OR:$<BOOL:$ENV{CI}>,$<BOOL:$ENV{GITHUB_ACTIONS}>>>:JUCE_DISABLE_ASSERTIONS>
+    # SIMULATE_UPDATE_CHECK # Uncomment to test update dialog without network
+)
+
+set_target_properties(
+    ${PROJECT_NAME}
+    PROPERTIES
+        JUCE_NEEDS_WEB_BROWSER
+            FALSE
+        JUCE_NEEDS_CURL
+            TRUE
+        JUCE_IS_PLUGIN
+            TRUE
 )
 
 if(UNIX AND NOT APPLE)
     target_compile_definitions(
-        ${PROJECT_NAME} 
-        PRIVATE 
-        JUCE_PLUGINHOST_LV2=1
-        JUCE_PLUGINHOST_LADSPA=1
+        ${PROJECT_NAME}
+        PRIVATE
+            JUCE_PLUGINHOST_LV2=1
+            JUCE_PLUGINHOST_LADSPA=1
     )
 endif()
 
 if(MSVC)
     target_compile_options(
-        ${PROJECT_NAME} 
-        PRIVATE 
-        /wd4244
-        /wd4267
-        /wd4390
-        /wd5105
-        )
+        ${PROJECT_NAME}
+        PRIVATE
+            /wd4244
+            /wd4267
+            /wd4390
+            /wd5105
+    )
 endif()
 
 if(NOT WIN32)
     target_compile_options(
-        ${PROJECT_NAME} 
-        PRIVATE 
-        -Wno-unused-parameter
-        -Wno-sign-compare
-        -Wno-unused-variable
-        -Wno-newline-eof
-        )
+        ${PROJECT_NAME}
+        PRIVATE
+            -Wno-unused-parameter
+            -Wno-sign-compare
+            -Wno-unused-variable
+            -Wno-newline-eof
+    )
 endif()
 
 # ASIO SDK (Windows only)
@@ -109,7 +114,11 @@ if(WIN32)
             file(GLOB _dirs "${_asio_temp}/*")
             list(GET _dirs 0 _extracted)
             file(RENAME "${_extracted}" "${ASIO_SDK_DIR}")
-            file(REMOVE_RECURSE "${_asio_temp}" "${_asio_zip}")
+            file(
+                REMOVE_RECURSE
+                "${_asio_temp}"
+                "${_asio_zip}"
+            )
             message(STATUS "ASIO SDK installed to ${ASIO_SDK_DIR}")
         endif()
     endif()
@@ -130,3 +139,6 @@ endif()
 target_compile_definitions(${PROJECT_NAME} PRIVATE JUCE_ASIO=1)
 
 file(COPY_FILE ${CMAKE_SOURCE_DIR}/LICENSE ${CMAKE_BINARY_DIR}/INSTALLER-LICENSE)
+
+# Build the sandboxed plugin scanner executable
+add_subdirectory(src/scanner)

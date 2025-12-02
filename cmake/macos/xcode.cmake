@@ -12,20 +12,20 @@ set(CMAKE_XCODE_ATTRIBUTE_MARKETING_VERSION ${PLUGIN_VERSION})
 set(CMAKE_XCODE_ATTRIBUTE_MACOSX_DEPLOYMENT_TARGET ${CMAKE_OSX_DEPLOYMENT_TARGET})
 
 if(NOT CODESIGN_TEAM)
-  # Switch to manual codesigning if no codesigning team is provided
-  set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_STYLE Manual)
-  set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "${CODESIGN_IDENTITY}")
-else()
-  if(CODESIGN_IDENTITY AND NOT CODESIGN_IDENTITY STREQUAL "-")
-    # Switch to manual codesigning if a non-adhoc codesigning identity is provided
+    # Switch to manual codesigning if no codesigning team is provided
     set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_STYLE Manual)
     set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "${CODESIGN_IDENTITY}")
-  else()
-    # Switch to automatic codesigning via valid team ID
-    set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_STYLE Automatic)
-    set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "Apple Development")
-  endif()
-  set(CMAKE_XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "${CODESIGN_TEAM}")
+else()
+    if(CODESIGN_IDENTITY AND NOT CODESIGN_IDENTITY STREQUAL "-")
+        # Switch to manual codesigning if a non-adhoc codesigning identity is provided
+        set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_STYLE Manual)
+        set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "${CODESIGN_IDENTITY}")
+    else()
+        # Switch to automatic codesigning via valid team ID
+        set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_STYLE Automatic)
+        set(CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "Apple Development")
+    endif()
+    set(CMAKE_XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "${CODESIGN_TEAM}")
 endif()
 
 # Only create a single Xcode project file
@@ -147,7 +147,7 @@ set(CMAKE_XCODE_ATTRIBUTE_GCC_WARN_UNUSED_VARIABLE YES)
 set(CMAKE_XCODE_ATTRIBUTE_WARNING_CFLAGS "-Wvla -Wformat-security")
 
 if(CMAKE_COMPILE_WARNING_AS_ERROR)
-  set(CMAKE_XCODE_ATTRIBUTE_GCC_TREAT_WARNINGS_AS_ERRORS YES)
+    set(CMAKE_XCODE_ATTRIBUTE_GCC_TREAT_WARNINGS_AS_ERRORS YES)
 endif()
 
 # Enable color diagnostics

@@ -15,13 +15,14 @@ void ChannelRoutingMatrix::initializeDefaultMapping(int numChannels)
     state->inputMapping.resize(numChannels);
     state->outputMapping.resize(numChannels);
 
+    // Simple diagonal pass-through pattern
     for (int i = 0; i < numChannels; ++i)
     {
         state->inputMapping[i].resize(numChannels, false);
-        state->inputMapping[i][i] = true; // Diagonal pass-through
+        state->inputMapping[i][i] = true;
 
         state->outputMapping[i].resize(numChannels, false);
-        state->outputMapping[i][i] = true; // Diagonal pass-through
+        state->outputMapping[i][i] = true;
     }
 
     mappingState.store(std::move(state), std::memory_order_release);

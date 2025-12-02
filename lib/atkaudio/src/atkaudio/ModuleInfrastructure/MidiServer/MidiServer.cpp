@@ -38,14 +38,16 @@ void MidiClientState::deserialize(const juce::String& data)
 }
 
 // ============================================================================
-// MidiClient - Composition-based MIDI client
+// MidiClient
 // ============================================================================
 
 MidiClient::MidiClient(int queueSize)
-    : clientId(this) // Use 'this' as unique identifier
+    : clientId(this)
+    , incomingQueue(std::make_shared<MidiMessageQueue>(queueSize))
+    , outgoingQueue(std::make_shared<MidiMessageQueue>(queueSize))
 {
     if (auto* server = MidiServer::getInstance())
-        server->registerClient(clientId, MidiClientState(), queueSize);
+        server->registerClient(clientId, MidiClientState(), queueSize, incomingQueue, outgoingQueue);
 }
 
 MidiClient::~MidiClient()
@@ -56,6 +58,8 @@ MidiClient::~MidiClient()
 
 MidiClient::MidiClient(MidiClient&& other) noexcept
     : clientId(other.clientId)
+    , incomingQueue(std::move(other.incomingQueue))
+    , outgoingQueue(std::move(other.outgoingQueue))
 {
     other.clientId = nullptr;
 }
@@ -64,7 +68,6 @@ MidiClient& MidiClient::operator=(MidiClient&& other) noexcept
 {
     if (this != &other)
     {
-        // Unregister old client ID
         if (clientId)
         {
             if (auto* server = MidiServer::getInstanceWithoutCreating())
@@ -72,6 +75,8 @@ MidiClient& MidiClient::operator=(MidiClient&& other) noexcept
         }
 
         clientId = other.clientId;
+        incomingQueue = std::move(other.incomingQueue);
+        outgoingQueue = std::move(other.outgoingQueue);
         other.clientId = nullptr;
     }
     return *this;
@@ -79,20 +84,29 @@ MidiClient& MidiClient::operator=(MidiClient&& other) noexcept
 
 void MidiClient::getPendingMidi(juce::MidiBuffer& outBuffer, int numSamples, double sampleRate)
 {
-    if (auto* server = MidiServer::getInstanceWithoutCreating())
-        server->getPendingMidiForClient(clientId, outBuffer, numSamples, sampleRate);
+    juce::ignoreUnused(sampleRate);
+    if (incomingQueue)
+        incomingQueue->popAll(outBuffer, numSamples);
 }
 
 void MidiClient::sendMidi(const juce::MidiBuffer& messages)
 {
-    if (auto* server = MidiServer::getInstanceWithoutCreating())
-        server->sendMidiFromClient(clientId, messages);
+    if (!outgoingQueue)
+        return;
+
+    for (const auto metadata : messages)
+        if (!outgoingQueue->push(metadata.getMessage(), metadata.samplePosition))
+            break; // Queue full
 }
 
 void MidiClient::injectMidi(const juce::MidiBuffer& messages)
 {
-    if (auto* server = MidiServer::getInstanceWithoutCreating())
-        server->injectMidiToClient(clientId, messages);
+    if (!incomingQueue)
+        return;
+
+    for (const auto metadata : messages)
+        if (!incomingQueue->push(metadata.getMessage(), metadata.samplePosition))
+            break; // Queue full
 }
 
 void MidiClient::setSubscriptions(const MidiClientState& state)
@@ -127,38 +141,28 @@ void MidiServer::initialize()
     if (initialized)
         return;
 
-    DBG("[MIDI_SRV] Initializing...");
+    DBG("[MidiServer] Initializing...");
 
-    // Initialize AudioDeviceManager with MIDI only (no audio devices)
-    juce::String error = deviceManager.initialise(
-        0,       // numInputChannelsNeeded
-        0,       // numOutputChannelsNeeded
-        nullptr, // savedState
-        true,    // selectDefaultDeviceOnFailure
-        {},      // preferredDefaultDeviceName
-        nullptr  // preferredSetupOptions
-    );
+    juce::String error = deviceManager.initialise(0, 0, nullptr, true, {}, nullptr);
 
     if (error.isNotEmpty())
     {
-        DBG("[MIDI_SRV] Failed to initialize AudioDeviceManager: " + error);
+        DBG("[MidiServer] Failed to initialize AudioDeviceManager: " + error);
         return;
     }
 
-    // Enable all MIDI inputs by default (will be filtered per-client)
+    // Enable all MIDI inputs (filtered per-client via subscriptions)
     auto midiInputs = juce::MidiInput::getAvailableDevices();
     for (const auto& device : midiInputs)
     {
         deviceManager.setMidiInputDeviceEnabled(device.identifier, true);
         deviceManager.addMidiInputDeviceCallback(device.identifier, this);
-        DBG("[MIDI_SRV] Enabled MIDI input: " + device.name);
+        DBG("[MidiServer] Enabled MIDI input: " + device.name);
     }
 
-    // Start timer for processing outgoing MIDI (10ms interval)
-    startTimer(10);
-
+    startTimer(10); // Process outgoing MIDI at 10ms intervals
     initialized = true;
-    DBG("[MIDI_SRV] Initialized successfully");
+    DBG("[MidiServer] Initialized successfully");
 }
 
 void MidiServer::shutdown()
@@ -166,26 +170,20 @@ void MidiServer::shutdown()
     if (!initialized)
         return;
 
-    DBG("[MIDI_SRV] Shutting down...");
+    DBG("[MidiServer] Shutting down...");
 
-    // Stop timer first
     stopTimer();
 
     {
         juce::ScopedLock lock(clientsMutex);
 
-        // Close all output devices
         for (juce::HashMap<juce::String, juce::MidiOutput*>::Iterator it(outputDevices); it.next();)
-            if (it.getValue() != nullptr)
-                delete it.getValue();
+            delete it.getValue();
         outputDevices.clear();
-
-        // Clear all clients (this destroys the lock-free queues)
         clients.clear();
     }
 
-    // IMPORTANT: Explicitly disable all MIDI devices BEFORE AudioDeviceManager destructor
-    // This prevents the crash from JUCE trying to start timers during shutdown
+    // Disable MIDI devices before AudioDeviceManager destructor
     auto midiInputs = juce::MidiInput::getAvailableDevices();
     for (const auto& device : midiInputs)
     {
@@ -193,22 +191,30 @@ void MidiServer::shutdown()
         deviceManager.removeMidiInputDeviceCallback(device.identifier, this);
     }
 
-    // Close audio device (even though we're MIDI-only, this cleans up properly)
     deviceManager.closeAudioDevice();
-
     initialized = false;
-
-    DBG("[MIDI_SRV] Shutdown complete");
+    DBG("[MidiServer] Shutdown complete");
 }
 
-void MidiServer::registerClient(void* clientId, const MidiClientState& state, int queueSize)
+void MidiServer::registerClient(
+    void* clientId,
+    const MidiClientState& state,
+    int queueSize,
+    std::shared_ptr<MidiMessageQueue>& outIncomingQueue,
+    std::shared_ptr<MidiMessageQueue>& outOutgoingQueue
+)
 {
+    juce::ignoreUnused(queueSize);
+
     if (!initialized || clientId == nullptr)
         return;
 
     juce::ScopedLock lock(clientsMutex);
 
-    ClientInfo info(state, queueSize);
+    ClientInfo info;
+    info.state = state;
+    info.incomingMidiQueue = outIncomingQueue;
+    info.outgoingMidiQueue = outOutgoingQueue;
     clients.insert_or_assign(clientId, std::move(info));
 
     updateMidiDeviceSubscriptions();
@@ -221,9 +227,7 @@ void MidiServer::unregisterClient(void* clientId)
         return;
 
     juce::ScopedLock lock(clientsMutex);
-
     clients.erase(clientId);
-
     updateMidiDeviceSubscriptions();
     rebuildClientSnapshot();
 }
@@ -254,97 +258,6 @@ MidiClientState MidiServer::getClientState(void* clientId) const
     return MidiClientState();
 }
 
-void MidiServer::getPendingMidiForClient(void* clientId, juce::MidiBuffer& outBuffer, int numSamples, double sampleRate)
-{
-    if (!initialized)
-        return;
-
-    if (clientId == nullptr)
-        return;
-
-    // Lock only for reading the client info pointer
-    // The queue operations themselves are lock-free
-    ClientInfo* info = nullptr;
-
-    {
-        juce::ScopedLock lock(clientsMutex);
-        if (!clients.contains(clientId))
-            return;
-
-        info = &clients.at(clientId);
-
-        // Update client's sample rate if it changed
-        if (info->sampleRate != sampleRate)
-            info->sampleRate = sampleRate;
-    }
-
-    // Lock-free read from the queue - real-time safe!
-    if (!info)
-        return;
-
-    if (!info->incomingMidiQueue)
-        return;
-
-    // Get all messages from queue within the current buffer size
-    // The queue already stores sample positions, so we don't need timestamp conversion
-    info->incomingMidiQueue->popAll(outBuffer, numSamples);
-}
-
-void MidiServer::sendMidiFromClient(void* clientId, const juce::MidiBuffer& messages)
-{
-    if (!initialized || clientId == nullptr)
-        return;
-
-    // Lock-free push to client's outgoing queue
-    // The timer callback will process these messages
-    ClientInfo* info = nullptr;
-    {
-        juce::ScopedLock lock(clientsMutex);
-        if (!clients.contains(clientId))
-            return;
-
-        info = &clients.at(clientId);
-    }
-
-    // Push all messages to the lock-free queue
-    for (const auto metadata : messages)
-    {
-        if (!info->outgoingMidiQueue->push(metadata.getMessage(), metadata.samplePosition))
-        {
-            // Queue full
-            DBG("[MIDI_SRV] WARNING - Outgoing MIDI queue full, dropping message");
-            break;
-        }
-    }
-}
-
-void MidiServer::injectMidiToClient(void* clientId, const juce::MidiBuffer& messages)
-{
-    if (!initialized || clientId == nullptr)
-        return;
-
-    // Lock-free push to client's incoming queue (as if from hardware input)
-    ClientInfo* info = nullptr;
-    {
-        juce::ScopedLock lock(clientsMutex);
-        if (!clients.contains(clientId))
-            return;
-
-        info = &clients.at(clientId);
-    }
-
-    // Push all messages to the lock-free queue
-    for (const auto metadata : messages)
-    {
-        if (!info->incomingMidiQueue->push(metadata.getMessage(), metadata.samplePosition))
-        {
-            // Queue full
-            DBG("[MIDI_SRV] WARNING - Incoming MIDI queue full, dropping injected message");
-            break;
-        }
-    }
-}
-
 juce::StringArray MidiServer::getAvailableMidiInputDevices() const
 {
     juce::StringArray devices;
@@ -368,30 +281,18 @@ void MidiServer::handleIncomingMidiMessage(juce::MidiInput* source, const juce::
 
     juce::String sourceName = source->getName();
 
-    // REAL-TIME SAFE: Load snapshot atomically without blocking
     auto snapshot = activeSnapshot.load(std::memory_order_acquire);
     if (!snapshot)
         return;
 
-    // Find clients subscribed to this input device
     auto it = snapshot->inputSubscriptions.find(sourceName);
     if (it == snapshot->inputSubscriptions.end())
         return;
 
-    // Push to all subscribed clients' queues (lock-free)
+    // Push to all subscribed clients' queues
     for (const auto& clientSnapshot : it->second)
-    {
         if (clientSnapshot.incomingMidiQueue)
-        {
-            // Push with sample position 0 - MIDI from hardware arrives asynchronously
-            // and will be processed at the start of the next audio callback
-            if (!clientSnapshot.incomingMidiQueue->push(message, 0))
-            {
-                // Queue full - this should rarely happen with 65536 slots
-                DBG("[MIDI_SRV] WARNING - Client MIDI queue full, dropping message");
-            }
-        }
-    }
+            clientSnapshot.incomingMidiQueue->push(message, 0);
 }
 
 void MidiServer::timerCallback()
@@ -400,18 +301,13 @@ void MidiServer::timerCallback()
         return;
 
     // Process outgoing MIDI from all clients
-    // This runs on the message thread at 10ms intervals
-
     juce::Array<void*> clientList;
     {
         juce::ScopedLock lock(clientsMutex);
-
-        // Collect client IDs
         for (auto& [clientId, info] : clients)
             clientList.add(clientId);
     }
 
-    // Process each client's outgoing queue
     for (auto* clientId : clientList)
     {
         ClientInfo* info = nullptr;
@@ -429,15 +325,12 @@ void MidiServer::timerCallback()
         if (!info || !info->outgoingMidiQueue)
             continue;
 
-        // Read all pending messages from the lock-free queue
-        // Use INT_MAX to avoid filtering messages by sample position
         juce::MidiBuffer outgoingMessages;
         info->outgoingMidiQueue->popAll(outgoingMessages, INT_MAX);
 
         if (outgoingMessages.isEmpty())
             continue;
 
-        // Send to all subscribed output devices
         for (const auto& deviceName : outputDeviceNames)
         {
             juce::MidiOutput* output = nullptr;
@@ -448,7 +341,6 @@ void MidiServer::timerCallback()
 
                 if (output == nullptr)
                 {
-                    // Try to open the device if not already open
                     auto devices = juce::MidiOutput::getAvailableDevices();
                     for (const auto& device : devices)
                     {
@@ -458,7 +350,7 @@ void MidiServer::timerCallback()
                             if (output != nullptr)
                             {
                                 outputDevices.set(deviceName, output);
-                                DBG("[MIDI_SRV] Opened MIDI output: " + deviceName);
+                                DBG("[MidiServer] Opened MIDI output: " + deviceName);
                             }
                             break;
                         }
@@ -467,11 +359,8 @@ void MidiServer::timerCallback()
             }
 
             if (output != nullptr)
-            {
-                // Send all messages to the hardware output
                 for (const auto metadata : outgoingMessages)
                     output->sendMessageNow(metadata.getMessage());
-            }
         }
     }
 }
@@ -481,69 +370,44 @@ void MidiServer::rebuildClientSnapshot()
     // Must be called while holding clientsMutex
     auto newSnapshot = std::make_shared<DeviceSnapshot>();
 
-    // Build device -> clients mapping for fast lookup in MIDI callback
     for (auto& [clientId, info] : clients)
     {
-        // For each input device this client subscribes to
         for (const auto& deviceName : info.state.subscribedInputDevices)
         {
             ClientSnapshot snapshot;
-            // Share the queue pointers (they're thread-safe SPSC queues)
             snapshot.incomingMidiQueue = info.incomingMidiQueue;
             snapshot.outgoingMidiQueue = info.outgoingMidiQueue;
             snapshot.state = info.state;
-
             newSnapshot->inputSubscriptions[deviceName].push_back(std::move(snapshot));
         }
 
-        // For each output device this client subscribes to
         for (const auto& deviceName : info.state.subscribedOutputDevices)
         {
             ClientSnapshot snapshot;
             snapshot.incomingMidiQueue = info.incomingMidiQueue;
             snapshot.outgoingMidiQueue = info.outgoingMidiQueue;
             snapshot.state = info.state;
-
             newSnapshot->outputSubscriptions[deviceName].push_back(std::move(snapshot));
         }
     }
 
-    // Atomic publish - MIDI callback can now see new snapshot
     activeSnapshot.store(newSnapshot, std::memory_order_release);
-
-    DBG("[MIDI_SRV] Rebuilt client snapshot: "
-        + juce::String(newSnapshot->inputSubscriptions.size())
-        + " input devices, "
-        + juce::String(newSnapshot->outputSubscriptions.size())
-        + " output devices");
 }
 
 void MidiServer::updateMidiDeviceSubscriptions()
 {
-    // Collect all unique device names that at least one client needs
-    juce::StringArray neededInputs;
+    // Close output devices no longer needed
     juce::StringArray neededOutputs;
-
     for (auto& [clientPtr, info] : clients)
-    {
-        for (const auto& device : info.state.subscribedInputDevices)
-            neededInputs.addIfNotAlreadyThere(device);
-
         for (const auto& device : info.state.subscribedOutputDevices)
             neededOutputs.addIfNotAlreadyThere(device);
-    }
 
-    // Close output devices that are no longer needed
     juce::Array<juce::String> devicesToRemove;
     for (juce::HashMap<juce::String, juce::MidiOutput*>::Iterator it(outputDevices); it.next();)
     {
         if (!neededOutputs.contains(it.getKey()))
         {
-            if (it.getValue() != nullptr)
-            {
-                delete it.getValue();
-                DBG("[MIDI_SRV] Closed MIDI output: " + it.getKey());
-            }
+            delete it.getValue();
             devicesToRemove.add(it.getKey());
         }
     }

@@ -1,4 +1,5 @@
 #include "HostAudioProcessor.h"
+#include "../../SharedPluginList.h"
 #include "../UI/HostEditorWindow.h"
 
 using namespace juce;
@@ -75,7 +76,7 @@ HostAudioProcessorImpl::HostAudioProcessorImpl(int numChannels)
         const File flatpakPluginPath("/app/extensions/Plugins");
         if (flatpakPluginPath.isDirectory())
         {
-            if (auto* props = appProperties.getUserSettings())
+            if (auto* props = atk::SharedPluginList::getInstance()->getPropertiesFile())
             {
                 for (auto* format : pluginFormatManager.getFormats())
                 {
@@ -97,14 +98,14 @@ HostAudioProcessorImpl::HostAudioProcessorImpl(int numChannels)
     }
 #endif
 
-    if (auto savedPluginList = appProperties.getUserSettings()->getXmlValue("pluginList"))
-        pluginList.recreateFromXml(*savedPluginList);
-
-    MessageManagerLock lock;
+    // Use shared plugin list (shared with PluginHost2)
+    // Load from shared file, excluding internal plugins (PH2-only)
+    atk::SharedPluginList::getInstance()->loadPluginList(pluginList, true);
     pluginList.addChangeListener(this);
 
     // Initialize default diagonal OBS routing (all OBS channels enabled)
-    // If sidechain is enabled, include diagonal routing for sidechain channels too
+    // If sidechain is enabled, include diagonal routing for sidechain channels
+    // too
     int totalInputChannels = numChannels + (sidechainEnabled.load() ? numChannels : 0);
     routingMatrix.initializeDefaultMapping(std::max(totalInputChannels, numChannels));
 
@@ -113,6 +114,7 @@ HostAudioProcessorImpl::HostAudioProcessorImpl(int numChannels)
 
 HostAudioProcessorImpl::~HostAudioProcessorImpl()
 {
+    pluginList.removeChangeListener(this);
     DBG("[MIDI_SRV] PluginHost destroying, MidiClient will auto-unregister");
 }
 
@@ -158,6 +160,10 @@ void HostAudioProcessorImpl::prepareToPlay(double sr, int bs)
 
     if (deviceOutputBuffer.getNumChannels() < maxSubscriptions || deviceOutputBuffer.getNumSamples() < maxSamples)
         deviceOutputBuffer.setSize(maxSubscriptions, maxSamples, false, false, true);
+
+    // Pre-allocate MIDI buffer to avoid allocation on audio thread
+    // ensureSize reserves internal storage without clearing
+    inputMidiCopy.ensureSize(2048);
 }
 
 void HostAudioProcessorImpl::releaseResources()
@@ -190,7 +196,8 @@ void HostAudioProcessorImpl::processBlock(AudioBuffer<float>& buffer, MidiBuffer
 
     AudioBuffer<float> tempBuffer;
 
-    // Check if plugin has any output channels (input-only plugins shouldn't process)
+    // Check if plugin has any output channels (input-only plugins shouldn't
+    // process)
     int numOutputChannels = 0;
     for (int i = 0; i < inner->getBusCount(false); ++i)
         numOutputChannels += inner->getChannelCountOfBus(false, i);
@@ -205,10 +212,9 @@ void HostAudioProcessorImpl::processBlock(AudioBuffer<float>& buffer, MidiBuffer
     atkPlayHead.positionInfo.setTimeInSamples(pos + buffer.getNumSamples());
     inner->setPlayHead(&atkPlayHead);
 
-    // Get current subscriptions
-    auto clientState = audioClient.getSubscriptions();
-    int numInputSubs = (int)clientState.inputSubscriptions.size();
-    int numOutputSubs = (int)clientState.outputSubscriptions.size();
+    // Get subscription counts (lock-free, no allocation)
+    int numInputSubs = audioClient.getNumInputSubscriptions();
+    int numOutputSubs = audioClient.getNumOutputSubscriptions();
 
     // Ensure internal buffer has enough channels for plugin
     int pluginChannels = buffer.getNumChannels();
@@ -240,8 +246,9 @@ void HostAudioProcessorImpl::processBlock(AudioBuffer<float>& buffer, MidiBuffer
     // Get MIDI from MidiClient
     midiClient.getPendingMidi(midiBuffer, buffer.getNumSamples(), getSampleRate());
 
-    // Save a copy of input MIDI before plugin processes it
-    MidiBuffer inputMidiCopy;
+    // Save a copy of input MIDI before plugin processes it (using pre-allocated
+    // buffer)
+    inputMidiCopy.clear();
     inputMidiCopy.addEvents(midiBuffer, 0, buffer.getNumSamples(), 0);
 
     // Pass the internal buffer to the plugin
@@ -273,13 +280,9 @@ void HostAudioProcessorImpl::processBlock(AudioBuffer<float>& buffer, MidiBuffer
     else
         outputMidiToSend = &inputMidiCopy;
 
-    // Send MIDI to physical outputs if we have output subscriptions
+    // Send MIDI to physical outputs
     if (!outputMidiToSend->isEmpty())
-    {
-        auto clientState = midiClient.getSubscriptions();
-        if (!clientState.subscribedOutputDevices.isEmpty())
-            midiClient.sendMidi(*outputMidiToSend);
-    }
+        midiClient.sendMidi(*outputMidiToSend);
 }
 
 void HostAudioProcessorImpl::processBlock(AudioBuffer<double>&, MidiBuffer&)
@@ -386,7 +389,8 @@ void HostAudioProcessorImpl::getStateInformation(MemoryBlock& destData)
     auto midiState = midiClient.getSubscriptions();
     xml.setAttribute("midiClientState", midiState.serialize());
 
-    // Save channel mappings - save complete 2D matrices including all subscription rows
+    // Save channel mappings - save complete 2D matrices including all
+    // subscription rows
     {
         auto inputMapping = routingMatrix.getInputMapping();
         auto outputMapping = routingMatrix.getOutputMapping();
@@ -478,7 +482,8 @@ void HostAudioProcessorImpl::setStateInformation(const void* data, int sizeInByt
         midiClient.setSubscriptions(midiState);
     }
 
-    // Restore channel mappings - restore complete 2D matrices including all subscription rows
+    // Restore channel mappings - restore complete 2D matrices including all
+    // subscription rows
     {
         // First try new format (complete 2D boolean matrix)
         if (auto* inputMappingElement = xml->getChildByName("InputMapping"))
@@ -495,7 +500,8 @@ void HostAudioProcessorImpl::setStateInformation(const void* data, int sizeInByt
             if (!inputMapping.empty())
                 routingMatrix.setInputMapping(inputMapping);
         }
-        // Fallback to old format (sparse coordinate pairs) for backward compatibility
+        // Fallback to old format (sparse coordinate pairs) for backward
+        // compatibility
         else if (xml->hasAttribute("inputChannelMapping"))
         {
             auto inputMapping = routingMatrix.getInputMapping();
@@ -542,7 +548,8 @@ void HostAudioProcessorImpl::setStateInformation(const void* data, int sizeInByt
             if (!outputMapping.empty())
                 routingMatrix.setOutputMapping(outputMapping);
         }
-        // Fallback to old format (sparse coordinate pairs) for backward compatibility
+        // Fallback to old format (sparse coordinate pairs) for backward
+        // compatibility
         else if (xml->hasAttribute("outputChannelMapping"))
         {
             auto outputMapping = routingMatrix.getOutputMapping();
@@ -727,14 +734,8 @@ juce::AudioPluginInstance* HostAudioProcessorImpl::getInnerPlugin() const
 
 void HostAudioProcessorImpl::changeListenerCallback(ChangeBroadcaster* source)
 {
-    if (source != &pluginList)
-        return;
-
-    if (auto savedPluginList = pluginList.createXml())
-    {
-        appProperties.getUserSettings()->setValue("pluginList", savedPluginList.get());
-        appProperties.saveIfNeeded();
-    }
+    if (source == &pluginList)
+        atk::SharedPluginList::getInstance()->savePluginList(pluginList);
 }
 
 //==============================================================================

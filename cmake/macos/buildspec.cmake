@@ -23,9 +23,9 @@ function(_check_dependencies_macos)
 
   _check_dependencies()
 
-  # Remove quarantine flags from downloaded dependencies (ignore errors on read-only git pack files)
   execute_process(
-    COMMAND bash -c "find '${dependencies_dir}' -not -path '*/.git/*' -exec xattr -d com.apple.quarantine {} \\; 2>/dev/null || true"
+    COMMAND "xattr" -r -d com.apple.quarantine "${dependencies_dir}"
+    ERROR_QUIET
   )
 
   list(APPEND CMAKE_FRAMEWORK_PATH "${dependencies_dir}/Frameworks")

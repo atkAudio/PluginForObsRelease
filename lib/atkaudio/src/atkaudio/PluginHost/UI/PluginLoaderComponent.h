@@ -6,6 +6,7 @@
 
 #include <atkaudio/ModuleInfrastructure/AudioServer/AudioServerSettingsComponent.h>
 #include <atkaudio/ModuleInfrastructure/MidiServer/MidiServerSettingsComponent.h>
+#include <atkaudio/SandboxedPluginScanner.h>
 #include <functional>
 #include <juce_audio_utils/juce_audio_utils.h>
 
@@ -40,6 +41,14 @@ public:
     {
         pluginListComponent.getTableListBox().setMultipleSelectionEnabled(false);
 
+        // Use sandboxed scanner (shows warning once if not available)
+        auto sandboxedScanner = std::make_unique<atk::SandboxedScanner>();
+        if (sandboxedScanner->isScannerAvailable())
+            DBG("PluginLoaderComponent: Using sandboxed plugin scanner");
+        else
+            DBG("PluginLoaderComponent: Sandboxed scanner not available, using in-process scanning");
+        list.setCustomScanner(std::move(sandboxedScanner));
+
         addAndMakeVisible(pluginListComponent);
         addAndMakeVisible(footer);
 
@@ -69,125 +78,99 @@ public:
                     juce::StringArray inputChannelNames;
                     juce::StringArray outputChannelNames;
 
-                    // Get INPUT channel names
-                    int numInputChannels = innerPlugin->getTotalNumInputChannels();
-                    for (int i = 0; i < numInputChannels; ++i)
+                    // Get INPUT channel names from the loaded plugin
+                    int numPluginInputs = innerPlugin->getTotalNumInputChannels();
+                    for (int i = 0; i < numPluginInputs; ++i)
                     {
                         juce::String channelName;
-
-                        // Try to find which bus this channel belongs to
-                        bool found = false;
+                        // Find which bus this channel belongs to
                         for (int bus = 0; bus < innerPlugin->getBusCount(true); ++bus)
                         {
                             auto* busPtr = innerPlugin->getBus(true, bus);
                             if (busPtr)
                             {
-                                int busStartChannel = busPtr->getChannelIndexInProcessBlockBuffer(0);
-                                int busChannelCount = busPtr->getNumberOfChannels();
-
-                                if (i >= busStartChannel && i < busStartChannel + busChannelCount)
+                                int busStart = busPtr->getChannelIndexInProcessBlockBuffer(0);
+                                int busEnd = busStart + busPtr->getNumberOfChannels();
+                                if (i >= busStart && i < busEnd)
                                 {
-                                    int channelInBus = i - busStartChannel;
+                                    int chInBus = i - busStart;
                                     auto layout = busPtr->getCurrentLayout();
-                                    auto channelType = layout.getTypeOfChannel(channelInBus);
-                                    auto channelTypeName = juce::AudioChannelSet::getChannelTypeName(channelType);
-
-                                    // Include bus name if not the main bus
-                                    auto busName = busPtr->getName();
-                                    if (busName.isNotEmpty() && busName != "Input" && busName != "Output")
-                                        channelName = channelTypeName + " " + busName;
+                                    auto channelType = layout.getTypeOfChannel(chInBus);
+                                    auto typeName = juce::AudioChannelSet::getChannelTypeName(channelType);
+                                    // Add bus name for non-main buses
+                                    if (bus == 0)
+                                        channelName = typeName;
                                     else
-                                        channelName = channelTypeName;
-
-                                    found = true;
+                                        channelName = typeName + " " + busPtr->getName();
                                     break;
                                 }
                             }
                         }
-
-                        if (!found || channelName.isEmpty())
+                        if (channelName.isEmpty())
                             channelName = "In " + juce::String(i + 1);
-
                         inputChannelNames.add(channelName);
                     }
 
-                    // Get OUTPUT channel names
-                    int numOutputChannels = innerPlugin->getTotalNumOutputChannels();
-                    for (int i = 0; i < numOutputChannels; ++i)
+                    // Get OUTPUT channel names from the loaded plugin
+                    int numPluginOutputs = innerPlugin->getTotalNumOutputChannels();
+                    for (int i = 0; i < numPluginOutputs; ++i)
                     {
                         juce::String channelName;
-
-                        // Try to find which bus this channel belongs to
-                        bool found = false;
                         for (int bus = 0; bus < innerPlugin->getBusCount(false); ++bus)
                         {
                             auto* busPtr = innerPlugin->getBus(false, bus);
                             if (busPtr)
                             {
-                                int busStartChannel = busPtr->getChannelIndexInProcessBlockBuffer(0);
-                                int busChannelCount = busPtr->getNumberOfChannels();
-
-                                if (i >= busStartChannel && i < busStartChannel + busChannelCount)
+                                int busStart = busPtr->getChannelIndexInProcessBlockBuffer(0);
+                                int busEnd = busStart + busPtr->getNumberOfChannels();
+                                if (i >= busStart && i < busEnd)
                                 {
-                                    int channelInBus = i - busStartChannel;
+                                    int chInBus = i - busStart;
                                     auto layout = busPtr->getCurrentLayout();
-                                    auto channelType = layout.getTypeOfChannel(channelInBus);
-                                    auto channelTypeName = juce::AudioChannelSet::getChannelTypeName(channelType);
-
-                                    // Include bus name if not the main bus
-                                    auto busName = busPtr->getName();
-                                    if (busName.isNotEmpty() && busName != "Input" && busName != "Output")
-                                        channelName = channelTypeName + " " + busName;
+                                    auto channelType = layout.getTypeOfChannel(chInBus);
+                                    auto typeName = juce::AudioChannelSet::getChannelTypeName(channelType);
+                                    if (bus == 0)
+                                        channelName = typeName;
                                     else
-                                        channelName = channelTypeName;
-
-                                    found = true;
+                                        channelName = typeName + " " + busPtr->getName();
                                     break;
                                 }
                             }
                         }
-
-                        if (!found || channelName.isEmpty())
+                        if (channelName.isEmpty())
                             channelName = "Out " + juce::String(i + 1);
-
                         outputChannelNames.add(channelName);
                     }
 
-                    // Set up OBS channel names (from HostAudioProcessor's channels)
+                    // Set up OBS channel names (rows) - from HostAudioProcessor's channels
                     juce::StringArray obsInputChannelNames;
                     juce::StringArray obsOutputChannelNames;
 
                     int numMainChannels = processor->getBus(true, 0)->getNumberOfChannels();
+                    auto mainLayout = processor->getBus(true, 0)->getCurrentLayout();
 
                     // Add main OBS input channels
                     for (int i = 0; i < numMainChannels; ++i)
                     {
-                        auto layout = processor->getBus(true, 0)->getCurrentLayout();
-                        auto channelType = layout.getTypeOfChannel(i);
+                        auto channelType = mainLayout.getTypeOfChannel(i);
                         auto channelTypeName = juce::AudioChannelSet::getChannelTypeName(channelType);
                         obsInputChannelNames.add("OBS " + channelTypeName);
                     }
 
-                    // Add sidechain channels only if sidechain is enabled in OBS
-                    if (processor->isSidechainEnabled())
+                    // Always add sidechain rows - OBS always provides sidechain channels
+                    for (int i = 0; i < numMainChannels; ++i)
                     {
-                        // Use the same channel layout as main channels
-                        auto mainLayout = processor->getBus(true, 0)->getCurrentLayout();
-
-                        for (int i = 0; i < numMainChannels; ++i)
-                        {
-                            auto channelType = mainLayout.getTypeOfChannel(i);
-                            auto channelTypeName = juce::AudioChannelSet::getChannelTypeName(channelType);
-                            obsInputChannelNames.add("OBS Sidechain " + channelTypeName);
-                        }
+                        auto channelType = mainLayout.getTypeOfChannel(i);
+                        auto channelTypeName = juce::AudioChannelSet::getChannelTypeName(channelType);
+                        obsInputChannelNames.add("OBS Sidechain " + channelTypeName);
                     }
 
                     // Output channels - only main bus (no sidechain for outputs)
-                    int numObsOutputChannels = processor->getBus(false, 0)->getNumberOfChannels();
-                    for (int i = 0; i < numObsOutputChannels; ++i)
+                    int numOutputChannels = processor->getBus(false, 0)->getNumberOfChannels();
+                    auto outputLayout = processor->getBus(false, 0)->getCurrentLayout();
+                    for (int i = 0; i < numOutputChannels; ++i)
                     {
-                        auto layout = processor->getBus(false, 0)->getCurrentLayout();
-                        auto channelType = layout.getTypeOfChannel(i);
+                        auto channelType = outputLayout.getTypeOfChannel(i);
                         auto channelTypeName = juce::AudioChannelSet::getChannelTypeName(channelType);
                         obsOutputChannelNames.add("OBS " + channelTypeName);
                     }
@@ -196,13 +179,15 @@ public:
                     audioSettings->setInputFixedTopRows(obsInputChannelNames, true);
                     audioSettings->setOutputFixedTopRows(obsOutputChannelNames, true);
 
-                    // Restore current OBS channel mappings from processor if they exist
+                    // Set client (plugin) channel info BEFORE setting routing matrices
+                    // This ensures the grid has the right column count
+                    audioSettings->setClientChannelInfo(inputChannelNames, outputChannelNames, innerPlugin->getName());
+
+                    // Restore current routing matrix from processor
                     auto currentInputMapping = processor->getInputChannelMapping();
                     auto currentOutputMapping = processor->getOutputChannelMapping();
                     if (!currentInputMapping.empty() && !currentOutputMapping.empty())
-                        audioSettings->setObsChannelMappings(currentInputMapping, currentOutputMapping);
-
-                    audioSettings->setClientChannelInfo(inputChannelNames, outputChannelNames, innerPlugin->getName());
+                        audioSettings->setCompleteRoutingMatrices(currentInputMapping, currentOutputMapping);
                 }
                 else
                 {
@@ -263,14 +248,47 @@ public:
             }
         };
 
-        // Set up Multi toggle callbacks
-        if (processor && processor->getMultiCoreEnabled && processor->setMultiCoreEnabled)
-            footer.setMultiCoreCallbacks(processor->getMultiCoreEnabled, processor->setMultiCoreEnabled);
+        // Set up Multi toggle callbacks (use lambdas to read from processor dynamically)
+        if (processor)
+        {
+            footer.setMultiCoreCallbacks(
+                [this]() -> bool
+                {
+                    if (processor && processor->getMultiCoreEnabled)
+                        return processor->getMultiCoreEnabled();
+                    return false;
+                },
+                [this](bool enabled)
+                {
+                    if (processor && processor->setMultiCoreEnabled)
+                        processor->setMultiCoreEnabled(enabled);
+                }
+            );
+        }
+
+        // Set up CPU/latency stats callbacks (use lambdas to read from processor dynamically)
+        if (processor)
+        {
+            footer.setStatsCallbacks(
+                [this]() -> float
+                {
+                    if (processor && processor->getCpuLoad)
+                        return processor->getCpuLoad();
+                    return 0.0f;
+                },
+                [this]() -> int
+                {
+                    if (processor && processor->getLatencyMs)
+                        return processor->getLatencyMs();
+                    return 0;
+                }
+            );
+        }
     }
 
     void resized() override
     {
-        doLayout(&pluginListComponent, footer, 40, getLocalBounds());
+        doLayout(&pluginListComponent, footer, 54, getLocalBounds());
     }
 
 private:

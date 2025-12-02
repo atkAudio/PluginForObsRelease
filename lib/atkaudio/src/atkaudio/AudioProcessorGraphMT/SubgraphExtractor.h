@@ -177,11 +177,17 @@ public:
      *
      * This method analyzes connections between subgraphs to determine which can run in parallel.
      * Handles both audio AND MIDI connections when determining dependencies.
+     * Uses ASAP scheduling with worker-aware load balancing when numWorkers > 0.
      *
      * @param subgraphs Vector of subgraphs (will be modified in-place)
      * @param connections Vector of all JUCE connections in the graph
+     * @param numWorkers Number of worker threads for load balancing (SIZE_MAX = no load balancing)
      */
-    void buildSubgraphDependencies(std::vector<Subgraph>& subgraphs, const std::vector<Connection>& connections)
+    void buildSubgraphDependencies(
+        std::vector<Subgraph>& subgraphs,
+        const std::vector<Connection>& connections,
+        size_t numWorkers = SIZE_MAX
+    )
     {
         if (subgraphs.empty())
             return;
@@ -211,8 +217,8 @@ public:
             dagSubgraphs.push_back(std::move(dagSg));
         }
 
-        // Use DagPartitioner to build dependencies
-        partitioner.buildSubgraphDependencies(dagSubgraphs, dagNodes);
+        // Use DagPartitioner to build dependencies with worker-aware load balancing
+        partitioner.buildSubgraphDependencies(dagSubgraphs, dagNodes, numWorkers);
 
         // Copy results back to audio subgraphs
         for (size_t i = 0; i < subgraphs.size(); ++i)

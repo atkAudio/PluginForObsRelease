@@ -4,7 +4,6 @@
 #include <atkaudio/ModuleInfrastructure/AudioServer/ChannelRoutingMatrix.h>
 #include <atkaudio/ModuleInfrastructure/Bridge/ModuleBridge.h>
 #include <atkaudio/LookAndFeel.h>
-#include <atkaudio/QtParentedWindow.h>
 
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_dsp/juce_dsp.h>
@@ -331,11 +330,11 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
         // Lazy creation of settings window
         if (settingsWindow == nullptr)
         {
-            class SettingsWindow : public atk::QtParentedDocumentWindow
+            class SettingsWindow : public juce::DocumentWindow
             {
             public:
                 SettingsWindow(atk::AudioClient* client, juce::AudioDeviceManager* devManager, int numCh)
-                    : atk::QtParentedDocumentWindow(
+                    : juce::DocumentWindow(
                           "DeviceIo2 Audio Settings",
                           juce::LookAndFeel::getDefaultLookAndFeel().findColour(
                               juce::ResizableWindow::backgroundColourId

@@ -3,10 +3,10 @@
 using namespace juce;
 
 #include "../../LookAndFeel.h"
-#include "../../QtParentedWindow.h"
+#include "../../SharedPluginList.h"
+
 #include "../Core/PluginGraph.h"
 #include "GraphEditorPanel.h"
-#include "ScannerSubprocess.h"
 
 #include <atkaudio/ModuleInfrastructure/AudioServer/AudioServer.h>
 #include <atkaudio/ModuleInfrastructure/MidiServer/MidiServer.h>
@@ -49,7 +49,7 @@ constexpr const char* processUID = "atkAudioPluginHost2";
 
 //==============================================================================
 class MainHostWindow final
-    : public atk::QtParentedDocumentWindow
+    : public juce::DocumentWindow
     , public MenuBarModel
     , public ApplicationCommandTarget
     , public ChangeListener
@@ -104,13 +104,7 @@ public:
 
     void initialise(const String& commandLine)
     {
-        auto scannerSubprocess = std::make_unique<PluginScannerSubprocess>();
-
-        if (scannerSubprocess->initialiseFromCommandLine(commandLine, processUID))
-        {
-            storedScannerSubprocess = std::move(scannerSubprocess);
-            return;
-        }
+        (void)commandLine;
 
         // initialise our settings file..
 
@@ -197,14 +191,15 @@ private:
     AudioPluginFormatManager formatManager;
 
     std::vector<PluginDescription> internalTypes;
+
+    // Own plugin list instance, loads from/saves to shared file
     KnownPluginList knownPluginList;
+
     KnownPluginList::SortMethod pluginSortMethod = KnownPluginList::sortByManufacturer;
     Array<PluginDescriptionAndPreference> pluginDescriptionsAndPreference;
 
     class PluginListWindow;
     std::unique_ptr<PluginListWindow> pluginListWindow;
-
-    std::unique_ptr<PluginScannerSubprocess> storedScannerSubprocess;
 
     juce::SharedResourcePointer<atk::LookAndFeel> lookAndFeel;
 

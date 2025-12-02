@@ -3,7 +3,7 @@
 // #include "../FifoBuffer.h"
 #include "../FifoBuffer2.h"
 #include "../LookAndFeel.h"
-#include "../QtParentedWindow.h"
+
 #include "SettingsComponent.h"
 
 #include <juce_audio_utils/juce_audio_utils.h>
@@ -110,11 +110,11 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DeviceIoApp)
 };
 
-class AudioAppMainWindow final : public atk::QtParentedDocumentWindow
+class AudioAppMainWindow final : public juce::DocumentWindow
 {
 public:
     AudioAppMainWindow(DeviceIoApp& demo)
-        : atk::QtParentedDocumentWindow(
+        : juce::DocumentWindow(
               "DeviceIo Audio Settings",
               juce::LookAndFeel::getDefaultLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId),
               DocumentWindow::allButtons
@@ -126,6 +126,9 @@ public:
         setResizable(true, false);
 
         centreWithSize(demo.getWidth(), demo.getHeight());
+
+        // Window starts off-desktop - AudioModule::setVisible() will add to desktop and show
+        removeFromDesktop();
     }
 
     ~AudioAppMainWindow() override

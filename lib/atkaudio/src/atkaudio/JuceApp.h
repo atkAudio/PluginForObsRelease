@@ -24,5 +24,4 @@ public:
     void shutdown() override
     {
     }
-
 };

@@ -19,6 +19,7 @@ public:
         apvts = std::make_unique<AudioProcessorValueTreeState>(*this, nullptr, "state", createParameterLayout());
         gainValue = apvts->getRawParameterValue("gain");
         gain2Value = apvts->getRawParameterValue("gain2");
+        invertPhase = apvts->getRawParameterValue("invert");
         midiEnabled = apvts->getRawParameterValue("midi");
         midiChannel = apvts->getRawParameterValue("ch");
         midiCc = apvts->getRawParameterValue("cc");
@@ -92,6 +93,7 @@ public:
         auto gain = gainValue->load(std::memory_order_acquire);
         auto gain2Db = gain2Value->load(std::memory_order_acquire);
         auto gain2Linear = juce::Decibels::decibelsToGain(gain2Db);
+        auto invert = invertPhase->load(std::memory_order_acquire) > 0.5f ? -1.0f : 1.0f;
 
         // Debug: Check if we're receiving any MIDI
         if (!midiBuffer.isEmpty())
@@ -144,7 +146,7 @@ public:
             {
                 auto currentGain = gainValueSmoothed.getNextValue();
                 auto currentGain2 = gain2ValueSmoothed.getNextValue();
-                writePtr[sample] = readPtr[sample] * currentGain * currentGain2;
+                writePtr[sample] = readPtr[sample] * currentGain * currentGain2 * invert;
             }
         }
 
@@ -289,12 +291,15 @@ private:
             std::make_unique<AudioParameterFloat>(ParameterID{"gain2", 1}, "Gainsborough", gain2Range, 0.0f)
         );
 
+        params.push_back(std::make_unique<AudioParameterBool>(ParameterID{"invert", 1}, "Invert Phase", false));
+
         return {params.begin(), params.end()};
     }
 
     std::unique_ptr<juce::AudioProcessorValueTreeState> apvts;
     std::atomic<float>* gainValue = nullptr;
     std::atomic<float>* gain2Value = nullptr;
+    std::atomic<float>* invertPhase = nullptr;
     std::atomic<float>* midiEnabled = nullptr;
     std::atomic<float>* midiChannel = nullptr;
     std::atomic<float>* midiCc = nullptr;
