@@ -1,13 +1,11 @@
 #pragma once
 #include <juce_audio_utils/juce_audio_utils.h>
 
-//==============================================================================
 class GainPlugin final
     : public juce::AudioProcessor
     , public juce::Timer
 {
 public:
-    //==============================================================================
     GainPlugin()
         : AudioProcessor(
               BusesProperties()
@@ -76,7 +74,6 @@ public:
         }
     }
 
-    //==============================================================================
     void prepareToPlay(double sampleRate, int samplesPerBlock) override
     {
         juce::ignoreUnused(sampleRate, samplesPerBlock);
@@ -179,7 +176,6 @@ public:
         }
     }
 
-    //==============================================================================
     juce::AudioProcessorEditor* createEditor() override
     {
         return new juce::GenericAudioProcessorEditor(*this);
@@ -190,7 +186,6 @@ public:
         return true;
     }
 
-    //==============================================================================
     const juce::String getName() const override
     {
         return "Gain Plugin";
@@ -211,7 +206,6 @@ public:
         return 0;
     }
 
-    //==============================================================================
     int getNumPrograms() override
     {
         return 1;
@@ -235,7 +229,6 @@ public:
     {
     }
 
-    //==============================================================================
     void getStateInformation(juce::MemoryBlock& destData) override
     {
         if (auto xml = apvts->copyState().createXml())
@@ -253,7 +246,6 @@ public:
         toUiCc.store(midiCc->load(std::memory_order_acquire), std::memory_order_release);
     }
 
-    //==============================================================================
     bool isBusesLayoutSupported(const BusesLayout& layouts) const override
     {
         const auto& mainInLayout = layouts.getChannelSet(true, 0);
@@ -263,7 +255,6 @@ public:
     }
 
 private:
-    //==============================================================================
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
     {
         using namespace juce;
@@ -319,6 +310,5 @@ private:
     std::atomic<bool> learnCaptured = false;
     std::atomic<bool> gainUpdated = false;
 
-    //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(GainPlugin)
 };

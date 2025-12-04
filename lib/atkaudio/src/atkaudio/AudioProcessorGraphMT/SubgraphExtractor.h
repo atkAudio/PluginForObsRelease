@@ -9,13 +9,7 @@ namespace atk
 {
 
 /**
- * @brief Extracts subgraphs from a JUCE AudioProcessorGraphMT for parallel processing.
- *
- * This class bridges between JUCE's audio graph types and the general-purpose
- * DagPartitioner. It handles audio-specific concerns like:
- * - Converting JUCE Node/Connection types to generic DAG nodes/links
- * - Identifying audio and MIDI I/O nodes
- * - Preserving connection information in subgraphs
+ * Extracts subgraphs from AudioProcessorGraphMT for parallel processing.
  */
 class SubgraphExtractor
 {
@@ -24,49 +18,24 @@ public:
     using Node = AudioProcessorGraphMT::Node;
     using Connection = AudioProcessorGraphMT::Connection;
 
-    /**
-     * @brief Represents a subgraph of audio processors.
-     *
-     * Contains JUCE-specific information about nodes and connections
-     * in addition to the partitioning information from DagPartitioner.
-     */
     struct Subgraph
     {
-        std::vector<NodeID> nodeIDs;         // Audio processor nodes in this subgraph
-        std::vector<NodeID> inputNodeIDs;    // Input I/O nodes feeding this subgraph
-        std::vector<NodeID> outputNodeIDs;   // Output I/O nodes this subgraph feeds to
-        std::vector<Connection> connections; // JUCE connections within this subgraph
-        std::vector<size_t> dependsOn;       // Indices of subgraphs this one depends on
-        std::vector<size_t> dependents;      // Indices of subgraphs that depend on this one
-        int topologicalLevel = 0;            // Level in dependency hierarchy
+        std::vector<NodeID> nodeIDs;
+        std::vector<NodeID> inputNodeIDs;
+        std::vector<NodeID> outputNodeIDs;
+        std::vector<Connection> connections;
+        std::vector<size_t> dependsOn;
+        std::vector<size_t> dependents;
+        int topologicalLevel = 0;
     };
 
     SubgraphExtractor() = default;
 
-    /**
-     * @brief Set parallelization threshold for DagPartitioner.
-     * @param threshold Minimum number of nodes to enable parallel processing (0 = always parallel, default = 20)
-     */
     void setParallelThreshold(size_t threshold)
     {
         partitioner.setParallelThreshold(threshold);
     }
 
-    /**
-     * @brief Extract subgraphs from an AudioProcessorGraphMT for parallel processing.
-     *
-     * This method:
-     * 1. Identifies all audio/MIDI I/O nodes
-     * 2. Converts the audio graph to generic DAG representation
-     * 3. Uses DagPartitioner to extract parallelizable subgraphs
-     * 4. Converts results back to audio-specific subgraph representation
-     *
-     * Both audio AND MIDI connections create dependencies - a node must wait for all inputs.
-     * I/O nodes (audio and MIDI) are excluded from subgraphs as they're handled externally.
-     *
-     * @param graph The AudioProcessorGraphMT to extract subgraphs from
-     * @return Vector of extracted subgraphs with audio-specific information
-     */
     std::vector<Subgraph> extractUniversalParallelization(atk::AudioProcessorGraphMT& graph)
     {
         subgraphs.clear();
@@ -172,17 +141,6 @@ public:
         return subgraphs;
     }
 
-    /**
-     * @brief Build dependency relationships between subgraphs and assign topological levels.
-     *
-     * This method analyzes connections between subgraphs to determine which can run in parallel.
-     * Handles both audio AND MIDI connections when determining dependencies.
-     * Uses ASAP scheduling with worker-aware load balancing when numWorkers > 0.
-     *
-     * @param subgraphs Vector of subgraphs (will be modified in-place)
-     * @param connections Vector of all JUCE connections in the graph
-     * @param numWorkers Number of worker threads for load balancing (SIZE_MAX = no load balancing)
-     */
     void buildSubgraphDependencies(
         std::vector<Subgraph>& subgraphs,
         const std::vector<Connection>& connections,

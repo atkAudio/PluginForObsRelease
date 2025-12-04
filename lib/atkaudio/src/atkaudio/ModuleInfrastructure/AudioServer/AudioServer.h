@@ -14,7 +14,6 @@ namespace atk
 class AudioServer;
 class AudioClient;
 
-/// Standalone device enumerator - discovers audio devices without AudioServer dependency
 class AudioDeviceEnumerator
 {
 public:
@@ -40,7 +39,6 @@ private:
     static std::unordered_map<juce::String, juce::Array<int>> bufferSizesCache;
 };
 
-/// Per-channel subscription: identifies a specific channel on a specific device
 struct ChannelSubscription
 {
     juce::String deviceName;
@@ -93,7 +91,6 @@ struct ChannelSubscription
     }
 };
 
-/// Maps a device channel to a client channel index
 struct ChannelMapping
 {
     ChannelSubscription deviceChannel;
@@ -117,7 +114,6 @@ struct ChannelMapping
     }
 };
 
-/// Client's subscribed device channels
 struct AudioClientState
 {
     std::vector<ChannelSubscription> inputSubscriptions;
@@ -137,10 +133,6 @@ struct AudioClientState
     void deserialize(const juce::String& data);
 };
 
-/**
- * Audio client handle for device I/O via subscriptions.
- * Lock-free audio path using client-side buffer snapshots.
- */
 class AudioClient
 {
 public:
@@ -152,16 +144,9 @@ public:
     AudioClient(AudioClient&&) noexcept;
     AudioClient& operator=(AudioClient&&) noexcept;
 
-    /// Pull audio from subscribed inputs (LOCK-FREE, one channel per subscription)
     void pullSubscribedInputs(juce::AudioBuffer<float>& deviceBuffer, int numSamples, double sampleRate);
-
-    /// Push audio to subscribed outputs (LOCK-FREE, one channel per subscription)
     void pushSubscribedOutputs(const juce::AudioBuffer<float>& deviceBuffer, int numSamples, double sampleRate);
-
-    /// Update subscriptions (NON-REALTIME - triggers buffer snapshot rebuild)
     void setSubscriptions(const AudioClientState& state);
-
-    /// Get current subscriptions (LOCK-FREE)
     AudioClientState getSubscriptions() const;
 
     void* getClientId() const
@@ -185,20 +170,19 @@ private:
         int deviceChannelIndex = 0;
     };
 
-    /// Pre-grouped buffer operations for lock-free audio path (no runtime allocations)
     struct BufferGroup
     {
         SyncBuffer* buffer = nullptr;
-        int maxDeviceChannel = 0;                    ///< Highest device channel index needed
-        std::vector<std::pair<int, int>> channelMap; ///< [(subscriptionIdx, deviceChannelIdx), ...]
+        int maxDeviceChannel = 0;
+        std::vector<std::pair<int, int>> channelMap;
     };
 
     struct BufferSnapshot
     {
         std::vector<ChannelBufferRef> inputBuffers;
         std::vector<ChannelBufferRef> outputBuffers;
-        std::vector<BufferGroup> inputGroups;  ///< Pre-grouped for realtime read
-        std::vector<BufferGroup> outputGroups; ///< Pre-grouped for realtime write
+        std::vector<BufferGroup> inputGroups;
+        std::vector<BufferGroup> outputGroups;
         AudioClientState state;
     };
 
@@ -212,10 +196,6 @@ private:
     void ensureTempBufferCapacity(int numChannels, int numSamples);
 };
 
-/**
- * Per-device audio handler with full-duplex I/O.
- * Supports both subscription-based routing and direct callbacks.
- */
 class AudioDeviceHandler
     : public juce::AudioIODeviceCallback
     , public juce::ChangeListener
@@ -246,7 +226,6 @@ public:
     void removeClientSubscription(void* clientId, bool isInput);
     bool hasActiveSubscriptions() const;
 
-    /// Register direct callback (runs in device thread, output summed with subscriptions)
     bool registerDirectCallback(juce::AudioIODeviceCallback* callback);
     void unregisterDirectCallback(juce::AudioIODeviceCallback* callback);
     bool hasDirectCallback() const;
@@ -316,38 +295,43 @@ private:
     std::atomic<bool> isRunning{false};
 };
 
-/**
- * Global audio server singleton - manages device handlers and client subscriptions.
- * Lock-free audio path via client-side buffer snapshots.
- */
-class AudioServer : public juce::DeletedAtShutdown
+class AudioServer
+    : public juce::DeletedAtShutdown
+    , private juce::ChangeListener
 {
 public:
     JUCE_DECLARE_SINGLETON(AudioServer, false)
     ~AudioServer() override;
 
+    // Listener interface for device list changes
+    class Listener
+    {
+    public:
+        virtual ~Listener() = default;
+        virtual void audioServerDeviceListChanged() = 0;
+    };
+
+    void addListener(Listener* listener);
+    void removeListener(Listener* listener);
+
     void initialize();
     void shutdown();
 
-    // Client registration (internal API)
     void registerClient(void* clientId, const AudioClientState& state, int bufferSize = 8192);
     void unregisterClient(void* clientId);
     void updateClientSubscriptions(void* clientId, const AudioClientState& state);
     AudioClientState getClientState(void* clientId) const;
 
-    // Device enumeration
     juce::StringArray getAvailableInputDevices() const;
     juce::StringArray getAvailableOutputDevices() const;
     std::map<juce::String, juce::StringArray> getInputDevicesByType() const;
     std::map<juce::String, juce::StringArray> getOutputDevicesByType() const;
 
-    // Device info (cached)
     int getDeviceNumChannels(const juce::String& deviceName, bool isInput) const;
     juce::StringArray getDeviceChannelNames(const juce::String& deviceName, bool isInput) const;
     juce::Array<double> getAvailableSampleRates(const juce::String& deviceName) const;
     juce::Array<int> getAvailableBufferSizes(const juce::String& deviceName) const;
 
-    // Device control
     bool setDeviceSampleRate(const juce::String& deviceName, double newSampleRate);
     bool setDeviceBufferSize(const juce::String& deviceName, int newBufferSize);
     double getCurrentSampleRate(const juce::String& deviceName) const;
@@ -355,7 +339,6 @@ public:
     bool
     getCurrentDeviceSetup(const juce::String& deviceName, juce::AudioDeviceManager::AudioDeviceSetup& outSetup) const;
 
-    // Cache management
     void cacheDeviceInfo(
         const juce::String& deviceName,
         const juce::StringArray& inputChannelNames,
@@ -365,7 +348,6 @@ public:
     );
     void invalidateDeviceCache(const juce::String& deviceName);
 
-    // Direct callback (for PluginHost2 - output summed with subscriptions)
     bool registerDirectCallback(
         const juce::String& deviceName,
         juce::AudioIODeviceCallback* callback,
@@ -379,9 +361,12 @@ public:
 private:
     AudioServer();
 
+    void changeListenerCallback(juce::ChangeBroadcaster* source) override;
+    void setupDeviceEnumeratorListeners();
+
     void processDeviceCleanup();
     void scheduleDeviceClose(const juce::String& deviceKey);
-    void cancelPendingDeviceClose(const juce::String& deviceKey);
+    bool cancelPendingDeviceClose(const juce::String& deviceKey);
     static juce::String makeDeviceKey(const juce::String& deviceType, const juce::String& deviceName);
     static juce::String makeDeviceKey(const ChannelSubscription& sub);
     juce::String findDeviceKeyByName(const juce::String& deviceName) const;
@@ -453,7 +438,9 @@ private:
     mutable std::unordered_map<juce::String, juce::Array<int>> deviceBufferSizesCache;
 
     mutable std::mutex deviceTypeCacheMutex;
-    mutable std::unordered_map<juce::String, juce::String> deviceNameToTypeCache; ///< deviceName -> deviceType
+    mutable std::unordered_map<juce::String, juce::String> deviceNameToTypeCache;
+
+    juce::ListenerList<Listener> listeners;
 
     std::atomic<bool> initialized{false};
 };

@@ -7,10 +7,6 @@
 namespace atk
 {
 
-/**
- * Settings component for managing MIDI device subscriptions
- * Provides UI for toggling inputs/outputs, MIDI keyboard, and message monitoring
- */
 class MidiServerSettingsComponent
     : public juce::Component
     , private juce::MidiInputCallback
@@ -18,24 +14,14 @@ class MidiServerSettingsComponent
     , private juce::Timer
 {
 public:
-    /**
-     * Create settings component for a specific MIDI client
-     * @param client The client whose subscriptions to manage
-     */
     explicit MidiServerSettingsComponent(MidiClient* client);
     ~MidiServerSettingsComponent() override;
 
     void paint(juce::Graphics& g) override;
     void resized() override;
 
-    /**
-     * Get the current subscription state from the UI
-     */
     MidiClientState getSubscriptionState() const;
 
-    /**
-     * Set the subscription state in the UI
-     */
     void setSubscriptionState(const MidiClientState& state);
 
 private:
@@ -43,20 +29,16 @@ private:
     void updateSubscriptions();
     void sendMidiPanic();
 
-    // MidiInputCallback
     void handleIncomingMidiMessage(juce::MidiInput* source, const juce::MidiMessage& message) override;
 
-    // MidiKeyboardState::Listener - immediate callbacks for virtual keyboard
     void handleNoteOn(juce::MidiKeyboardState* source, int midiChannel, int midiNoteNumber, float velocity) override;
     void handleNoteOff(juce::MidiKeyboardState* source, int midiChannel, int midiNoteNumber, float velocity) override;
 
-    // Timer for monitoring display updates
     void timerCallback() override;
 
     MidiClient* client;
     MidiServer* server;
 
-    // UI Components
     juce::Label inputsLabel;
     std::unique_ptr<juce::Viewport> inputsViewport;
     std::unique_ptr<juce::Component> inputsContainer;
@@ -75,7 +57,6 @@ private:
     juce::Label monitorLabel;
     std::unique_ptr<juce::TextEditor> monitorTextEditor;
 
-    // Message monitoring
     juce::CriticalSection monitorMutex;
     juce::StringArray pendingMonitorMessages;
     int maxMonitorLines = 100;

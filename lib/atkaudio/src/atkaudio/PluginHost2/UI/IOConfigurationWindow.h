@@ -8,14 +8,12 @@ using atk::AudioProcessorGraphMT;
 class MainHostWindow;
 class GraphDocumentComponent;
 
-//==============================================================================
 class IOConfigurationWindow final : public AudioProcessorEditor
 {
 public:
     IOConfigurationWindow(AudioProcessor&);
     ~IOConfigurationWindow() override;
 
-    //==============================================================================
     void paint(Graphics& g) override;
     void resized() override;
 

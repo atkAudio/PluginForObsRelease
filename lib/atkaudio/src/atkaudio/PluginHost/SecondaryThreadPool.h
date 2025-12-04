@@ -53,10 +53,7 @@ public:
             return;
 
         if (numThreads <= 0)
-        {
-            // Reserve 2 cores: 1 for main audio thread, 1 for system/GUI
             numThreads = (std::max)(1, getNumPhysicalCpus() - 2);
-        }
 
         jobs.resize(maxJobs);
         head.store(0);
@@ -105,7 +102,6 @@ private:
             , ready(false)
             , thread(&Worker::run, this)
         {
-            // Try to set realtime priority, ignore failure (falls back to normal)
             trySetRealtimePriority(thread);
         }
 
@@ -135,7 +131,6 @@ private:
         {
             while (!shouldExit.load(std::memory_order_acquire))
             {
-                // Process all available jobs
                 for (;;)
                 {
                     int t = pool.tail.load(std::memory_order_acquire);
@@ -146,7 +141,6 @@ private:
                         pool.jobs[t % pool.jobs.size()].run();
                 }
 
-                // Wait for work signal
                 {
                     std::unique_lock<std::mutex> lock(wakeMutex);
                     wakeCV.wait(lock, [this] { return ready || shouldExit.load(std::memory_order_acquire); });

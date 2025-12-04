@@ -5,17 +5,11 @@
 using namespace juce;
 using juce::NullCheckedInvocation;
 
-//==============================================================================
-// AtkAudioPlayHead implementation
-//==============================================================================
 juce::Optional<juce::AudioPlayHead::PositionInfo> HostAudioProcessorImpl::AtkAudioPlayHead::getPosition() const
 {
     return positionInfo;
 }
 
-//==============================================================================
-// HostAudioProcessorImpl implementation
-//==============================================================================
 AudioChannelSet HostAudioProcessorImpl::getChannelSetForCount(int numChannels)
 {
     if (numChannels <= 0 || numChannels == 2)
@@ -71,7 +65,6 @@ HostAudioProcessorImpl::HostAudioProcessorImpl(int numChannels)
     juce::addDefaultFormatsToManager(pluginFormatManager);
 
 #if JUCE_LINUX
-    // Add Flatpak extension plugin path if it exists
     {
         const File flatpakPluginPath("/app/extensions/Plugins");
         if (flatpakPluginPath.isDirectory())
@@ -98,16 +91,10 @@ HostAudioProcessorImpl::HostAudioProcessorImpl(int numChannels)
     }
 #endif
 
-    // Use shared plugin list (shared with PluginHost2)
-    // Load from shared file, excluding internal plugins (PH2-only)
     atk::SharedPluginList::getInstance()->loadPluginList(pluginList, true);
     pluginList.addChangeListener(this);
 
-    // Initialize default diagonal OBS routing (all OBS channels enabled)
-    // If sidechain is enabled, include diagonal routing for sidechain channels
-    // too
-    int totalInputChannels = numChannels + (sidechainEnabled.load() ? numChannels : 0);
-    routingMatrix.initializeDefaultMapping(std::max(totalInputChannels, numChannels));
+    routingMatrix.initializeDefaultMapping(numChannels * 2);
 
     DBG("[MIDI_SRV] PluginHost created with MidiClient");
 }
@@ -144,25 +131,19 @@ void HostAudioProcessorImpl::prepareToPlay(double sr, int bs)
         inner->prepareToPlay(sr, bs);
     }
 
-    // Pre-allocate buffers to avoid allocation on audio thread
-    // Use generous sizes to handle most scenarios without reallocation
-    const int maxChannels = 32;      // Support up to 32 channels
-    const int maxSamples = bs * 2;   // Double buffer size for safety
-    const int maxSubscriptions = 16; // Support up to 16 device subscriptions
+    const int maxChannels = 32;
+    const int maxSamples = bs * 2;
+    const int maxSubscriptions = 16;
 
-    // Pre-allocate internal processing buffer
     if (internalBuffer.getNumChannels() < maxChannels || internalBuffer.getNumSamples() < maxSamples)
         internalBuffer.setSize(maxChannels, maxSamples, false, false, true);
 
-    // Pre-allocate device I/O buffers
     if (deviceInputBuffer.getNumChannels() < maxSubscriptions || deviceInputBuffer.getNumSamples() < maxSamples)
         deviceInputBuffer.setSize(maxSubscriptions, maxSamples, false, false, true);
 
     if (deviceOutputBuffer.getNumChannels() < maxSubscriptions || deviceOutputBuffer.getNumSamples() < maxSamples)
         deviceOutputBuffer.setSize(maxSubscriptions, maxSamples, false, false, true);
 
-    // Pre-allocate MIDI buffer to avoid allocation on audio thread
-    // ensureSize reserves internal storage without clearing
     inputMidiCopy.ensureSize(2048);
 }
 
@@ -174,7 +155,6 @@ void HostAudioProcessorImpl::releaseResources()
 
     if (inner != nullptr)
     {
-        // Safety check: Don't call into JUCE plugin code if MessageManager is gone
         if (juce::MessageManager::getInstanceWithoutCreating() != nullptr)
             inner->releaseResources();
     }
@@ -196,8 +176,6 @@ void HostAudioProcessorImpl::processBlock(AudioBuffer<float>& buffer, MidiBuffer
 
     AudioBuffer<float> tempBuffer;
 
-    // Check if plugin has any output channels (input-only plugins shouldn't
-    // process)
     int numOutputChannels = 0;
     for (int i = 0; i < inner->getBusCount(false); ++i)
         numOutputChannels += inner->getChannelCountOfBus(false, i);
@@ -212,16 +190,13 @@ void HostAudioProcessorImpl::processBlock(AudioBuffer<float>& buffer, MidiBuffer
     atkPlayHead.positionInfo.setTimeInSamples(pos + buffer.getNumSamples());
     inner->setPlayHead(&atkPlayHead);
 
-    // Get subscription counts (lock-free, no allocation)
     int numInputSubs = audioClient.getNumInputSubscriptions();
     int numOutputSubs = audioClient.getNumOutputSubscriptions();
 
-    // Ensure internal buffer has enough channels for plugin
     int pluginChannels = buffer.getNumChannels();
     if (internalBuffer.getNumChannels() < pluginChannels || internalBuffer.getNumSamples() < buffer.getNumSamples())
         internalBuffer.setSize(pluginChannels, buffer.getNumSamples(), false, false, true);
 
-    // Ensure device buffers have enough channels
     if (deviceInputBuffer.getNumChannels() < numInputSubs || deviceInputBuffer.getNumSamples() < buffer.getNumSamples())
         deviceInputBuffer.setSize(std::max(numInputSubs, 1), buffer.getNumSamples(), false, false, true);
 
@@ -229,29 +204,22 @@ void HostAudioProcessorImpl::processBlock(AudioBuffer<float>& buffer, MidiBuffer
         || deviceOutputBuffer.getNumSamples() < buffer.getNumSamples())
         deviceOutputBuffer.setSize(std::max(numOutputSubs, 1), buffer.getNumSamples(), false, false, true);
 
-    // Pull all subscribed device inputs (one channel per subscription)
     audioClient.pullSubscribedInputs(deviceInputBuffer, buffer.getNumSamples(), getSampleRate());
 
-    // Apply INPUT routing matrix using ChannelRoutingMatrix
-    // Routes (OBS channels + device inputs) → internal buffer (plugin input)
     routingMatrix.applyInputRouting(
-        buffer.getArrayOfWritePointers(), // OBS buffer (source)
-        deviceInputBuffer,                // Device inputs (source)
-        internalBuffer,                   // Internal buffer (target for plugin)
-        buffer.getNumChannels(),          // Number of OBS channels
-        buffer.getNumSamples(),           // Number of samples
-        numInputSubs                      // Number of device input subscriptions
+        buffer.getArrayOfWritePointers(),
+        deviceInputBuffer,
+        internalBuffer,
+        buffer.getNumChannels(),
+        buffer.getNumSamples(),
+        numInputSubs
     );
 
-    // Get MIDI from MidiClient
     midiClient.getPendingMidi(midiBuffer, buffer.getNumSamples(), getSampleRate());
 
-    // Save a copy of input MIDI before plugin processes it (using pre-allocated
-    // buffer)
     inputMidiCopy.clear();
     inputMidiCopy.addEvents(midiBuffer, 0, buffer.getNumSamples(), 0);
 
-    // Pass the internal buffer to the plugin
     tempBuffer.setDataToReferTo(
         internalBuffer.getArrayOfWritePointers(),
         internalBuffer.getNumChannels(),
@@ -259,28 +227,23 @@ void HostAudioProcessorImpl::processBlock(AudioBuffer<float>& buffer, MidiBuffer
     );
     inner->processBlock(tempBuffer, midiBuffer);
 
-    // Apply OUTPUT routing matrix using ChannelRoutingMatrix
-    // Routes internal buffer (plugin output) → (OBS channels + device outputs)
     routingMatrix.applyOutputRouting(
-        internalBuffer,                   // Internal buffer (source from plugin)
-        buffer.getArrayOfWritePointers(), // OBS buffer (target)
-        deviceOutputBuffer,               // Device outputs (target)
-        buffer.getNumChannels(),          // Number of OBS channels
-        buffer.getNumSamples(),           // Number of samples
-        numOutputSubs                     // Number of device output subscriptions
+        internalBuffer,
+        buffer.getArrayOfWritePointers(),
+        deviceOutputBuffer,
+        buffer.getNumChannels(),
+        buffer.getNumSamples(),
+        numOutputSubs
     );
 
-    // Push all device outputs (one channel per subscription)
     audioClient.pushSubscribedOutputs(deviceOutputBuffer, buffer.getNumSamples(), getSampleRate());
 
-    // Determine which MIDI to send to outputs
     MidiBuffer* outputMidiToSend = nullptr;
     if (inner->isMidiEffect())
         outputMidiToSend = &midiBuffer;
     else
         outputMidiToSend = &inputMidiCopy;
 
-    // Send MIDI to physical outputs
     if (!outputMidiToSend->isEmpty())
         midiClient.sendMidi(*outputMidiToSend);
 }
@@ -363,39 +326,24 @@ std::vector<std::vector<bool>> HostAudioProcessorImpl::getOutputChannelMapping()
     return routingMatrix.getOutputMapping();
 }
 
-bool HostAudioProcessorImpl::isSidechainEnabled() const
-{
-    return sidechainEnabled.load();
-}
-
-void HostAudioProcessorImpl::setSidechainEnabled(bool enabled)
-{
-    sidechainEnabled.store(enabled);
-}
-
 void HostAudioProcessorImpl::getStateInformation(MemoryBlock& destData)
 {
     const ScopedLock sl(innerMutex);
 
     XmlElement xml("state");
 
-    // Save Audio subscriptions
     auto audioState = audioClient.getSubscriptions();
     auto audioStateStr = audioState.serialize();
     DBG("HostAudioProcessor: Saving audio state: " << audioStateStr);
     xml.setAttribute("audioClientState", audioStateStr);
 
-    // Save MIDI subscriptions
     auto midiState = midiClient.getSubscriptions();
     xml.setAttribute("midiClientState", midiState.serialize());
 
-    // Save channel mappings - save complete 2D matrices including all
-    // subscription rows
     {
         auto inputMapping = routingMatrix.getInputMapping();
         auto outputMapping = routingMatrix.getOutputMapping();
 
-        // Save input mapping as complete 2D boolean matrix
         if (!inputMapping.empty())
         {
             auto inputMappingElement = std::make_unique<XmlElement>("InputMapping");
@@ -412,7 +360,6 @@ void HostAudioProcessorImpl::getStateInformation(MemoryBlock& destData)
             xml.addChildElement(inputMappingElement.release());
         }
 
-        // Save output mapping as complete 2D boolean matrix
         if (!outputMapping.empty())
         {
             auto outputMappingElement = std::make_unique<XmlElement>("OutputMapping");
@@ -436,7 +383,6 @@ void HostAudioProcessorImpl::getStateInformation(MemoryBlock& destData)
 
         auto pd = inner->getPluginDescription();
 
-        // Ensure we always save the .vst3 bundle path, not the internal .so path
         if (pd.pluginFormatName == "VST3" && pd.fileOrIdentifier.contains("/Contents/"))
             pd.fileOrIdentifier = pd.fileOrIdentifier.upToLastOccurrenceOf(".vst3", true, false);
 
@@ -464,7 +410,6 @@ void HostAudioProcessorImpl::setStateInformation(const void* data, int sizeInByt
 
     auto xml = XmlDocument::parse(String(CharPointer_UTF8(static_cast<const char*>(data)), (size_t)sizeInBytes));
 
-    // Restore Audio subscriptions immediately
     if (xml->hasAttribute("audioClientState"))
     {
         auto audioStateStr = xml->getStringAttribute("audioClientState");
@@ -474,7 +419,6 @@ void HostAudioProcessorImpl::setStateInformation(const void* data, int sizeInByt
         audioClient.setSubscriptions(audioState);
     }
 
-    // Restore MIDI subscriptions immediately
     if (xml->hasAttribute("midiClientState"))
     {
         atk::MidiClientState midiState;
@@ -482,10 +426,7 @@ void HostAudioProcessorImpl::setStateInformation(const void* data, int sizeInByt
         midiClient.setSubscriptions(midiState);
     }
 
-    // Restore channel mappings - restore complete 2D matrices including all
-    // subscription rows
     {
-        // First try new format (complete 2D boolean matrix)
         if (auto* inputMappingElement = xml->getChildByName("InputMapping"))
         {
             std::vector<std::vector<bool>> inputMapping;
@@ -500,19 +441,15 @@ void HostAudioProcessorImpl::setStateInformation(const void* data, int sizeInByt
             if (!inputMapping.empty())
                 routingMatrix.setInputMapping(inputMapping);
         }
-        // Fallback to old format (sparse coordinate pairs) for backward
-        // compatibility
         else if (xml->hasAttribute("inputChannelMapping"))
         {
             auto inputMapping = routingMatrix.getInputMapping();
             auto inputMappingStr = xml->getStringAttribute("inputChannelMapping");
             auto tokens = StringArray::fromTokens(inputMappingStr, ";", "");
 
-            // Clear existing mappings
             for (auto& row : inputMapping)
                 std::fill(row.begin(), row.end(), false);
 
-            // Restore mappings
             for (const auto& token : tokens)
             {
                 auto parts = StringArray::fromTokens(token, ",", "");
@@ -533,7 +470,6 @@ void HostAudioProcessorImpl::setStateInformation(const void* data, int sizeInByt
             routingMatrix.setInputMapping(inputMapping);
         }
 
-        // First try new format (complete 2D boolean matrix)
         if (auto* outputMappingElement = xml->getChildByName("OutputMapping"))
         {
             std::vector<std::vector<bool>> outputMapping;
@@ -548,19 +484,15 @@ void HostAudioProcessorImpl::setStateInformation(const void* data, int sizeInByt
             if (!outputMapping.empty())
                 routingMatrix.setOutputMapping(outputMapping);
         }
-        // Fallback to old format (sparse coordinate pairs) for backward
-        // compatibility
         else if (xml->hasAttribute("outputChannelMapping"))
         {
             auto outputMapping = routingMatrix.getOutputMapping();
             auto outputMappingStr = xml->getStringAttribute("outputChannelMapping");
             auto tokens = StringArray::fromTokens(outputMappingStr, ";", "");
 
-            // Clear existing mappings
             for (auto& row : outputMapping)
                 std::fill(row.begin(), row.end(), false);
 
-            // Restore mappings
             for (const auto& token : tokens)
             {
                 auto parts = StringArray::fromTokens(token, ",", "");
@@ -587,7 +519,6 @@ void HostAudioProcessorImpl::setStateInformation(const void* data, int sizeInByt
         PluginDescription pd;
         pd.loadFromXml(*pluginNode);
 
-        // Fix VST3 path on Linux
         if (pd.pluginFormatName == "VST3" && pd.fileOrIdentifier.contains("/Contents/"))
             pd.fileOrIdentifier = pd.fileOrIdentifier.upToLastOccurrenceOf(".vst3", true, false);
 
@@ -738,9 +669,6 @@ void HostAudioProcessorImpl::changeListenerCallback(ChangeBroadcaster* source)
         atk::SharedPluginList::getInstance()->savePluginList(pluginList);
 }
 
-//==============================================================================
-// HostAudioProcessor implementation
-//==============================================================================
 bool HostAudioProcessor::hasEditor() const
 {
     return true;

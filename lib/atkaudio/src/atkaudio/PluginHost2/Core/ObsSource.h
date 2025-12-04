@@ -719,7 +719,6 @@ public:
     }
 
 private:
-    //==============================================================================
     class MidiInputSelectorComponentListBox final
         : public ListBox
         , private ListBoxModel

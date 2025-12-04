@@ -1,6 +1,7 @@
 #include "API/PluginHost2.h"
 
 #include "UI/MainHostWindow.h"
+#include <atkaudio/atkAudioModule.h>
 #include <atkaudio/ModuleInfrastructure/Bridge/ModuleBridge.h>
 
 struct atk::PluginHost2::Impl : public juce::AsyncUpdater
@@ -34,25 +35,27 @@ struct atk::PluginHost2::Impl : public juce::AsyncUpdater
 
     ~Impl()
     {
-        // Cancel any pending async updates
         cancelPendingUpdate();
 
-        // CRITICAL: Clean up ModuleDeviceManager FIRST before window destruction
-        // It holds a reference to mainHostWindow's AudioDeviceManager
-        if (moduleDeviceManager)
-        {
-            moduleDeviceManager->cleanup();
-            moduleDeviceManager.reset();
-        }
+        auto* windowPtr = mainHostWindow.release();
+        auto* deviceManagerPtr = moduleDeviceManager.release();
 
-        // Clean up everything on the message thread since OBS destroys filters on background threads
-        auto* window = this->mainHostWindow.release();
-        auto lambda = [window]
-        {
-            // Delete the window
-            delete window;
-        };
-        juce::MessageManager::callAsync(lambda);
+        atkAudioModule::destroyOnMessageThread(
+            [windowPtr, deviceManagerPtr]()
+            {
+                // Close audio device first to stop callbacks before destroying MidiClient
+                if (windowPtr != nullptr)
+                    windowPtr->getDeviceManager().closeAudioDevice();
+
+                if (deviceManagerPtr != nullptr)
+                {
+                    deviceManagerPtr->cleanup();
+                    delete deviceManagerPtr;
+                }
+
+                delete windowPtr;
+            }
+        );
     }
 
     void handleAsyncUpdate() override

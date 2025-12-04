@@ -5,10 +5,6 @@ namespace atk
 
 JUCE_IMPLEMENT_SINGLETON(MidiServer)
 
-// ============================================================================
-// MidiClientState
-// ============================================================================
-
 juce::String MidiClientState::serialize() const
 {
     juce::XmlElement xml("MidiClientState");
@@ -37,17 +33,17 @@ void MidiClientState::deserialize(const juce::String& data)
     }
 }
 
-// ============================================================================
-// MidiClient
-// ============================================================================
-
 MidiClient::MidiClient(int queueSize)
     : clientId(this)
     , incomingQueue(std::make_shared<MidiMessageQueue>(queueSize))
     , outgoingQueue(std::make_shared<MidiMessageQueue>(queueSize))
 {
     if (auto* server = MidiServer::getInstance())
-        server->registerClient(clientId, MidiClientState(), queueSize, incomingQueue, outgoingQueue);
+    {
+        auto incoming = incomingQueue.load(std::memory_order_acquire);
+        auto outgoing = outgoingQueue.load(std::memory_order_acquire);
+        server->registerClient(clientId, MidiClientState(), queueSize, incoming, outgoing);
+    }
 }
 
 MidiClient::~MidiClient()
@@ -58,9 +54,9 @@ MidiClient::~MidiClient()
 
 MidiClient::MidiClient(MidiClient&& other) noexcept
     : clientId(other.clientId)
-    , incomingQueue(std::move(other.incomingQueue))
-    , outgoingQueue(std::move(other.outgoingQueue))
 {
+    incomingQueue.store(other.incomingQueue.exchange(nullptr, std::memory_order_acq_rel), std::memory_order_release);
+    outgoingQueue.store(other.outgoingQueue.exchange(nullptr, std::memory_order_acq_rel), std::memory_order_release);
     other.clientId = nullptr;
 }
 
@@ -75,8 +71,14 @@ MidiClient& MidiClient::operator=(MidiClient&& other) noexcept
         }
 
         clientId = other.clientId;
-        incomingQueue = std::move(other.incomingQueue);
-        outgoingQueue = std::move(other.outgoingQueue);
+        incomingQueue.store(
+            other.incomingQueue.exchange(nullptr, std::memory_order_acq_rel),
+            std::memory_order_release
+        );
+        outgoingQueue.store(
+            other.outgoingQueue.exchange(nullptr, std::memory_order_acq_rel),
+            std::memory_order_release
+        );
         other.clientId = nullptr;
     }
     return *this;
@@ -85,28 +87,30 @@ MidiClient& MidiClient::operator=(MidiClient&& other) noexcept
 void MidiClient::getPendingMidi(juce::MidiBuffer& outBuffer, int numSamples, double sampleRate)
 {
     juce::ignoreUnused(sampleRate);
-    if (incomingQueue)
-        incomingQueue->popAll(outBuffer, numSamples);
+    if (auto queue = incomingQueue.load(std::memory_order_acquire))
+        queue->popAll(outBuffer, numSamples);
 }
 
 void MidiClient::sendMidi(const juce::MidiBuffer& messages)
 {
-    if (!outgoingQueue)
+    auto queue = outgoingQueue.load(std::memory_order_acquire);
+    if (!queue)
         return;
 
     for (const auto metadata : messages)
-        if (!outgoingQueue->push(metadata.getMessage(), metadata.samplePosition))
+        if (!queue->push(metadata.getMessage(), metadata.samplePosition))
             break; // Queue full
 }
 
 void MidiClient::injectMidi(const juce::MidiBuffer& messages)
 {
-    if (!incomingQueue)
+    auto queue = incomingQueue.load(std::memory_order_acquire);
+    if (!queue)
         return;
 
     for (const auto metadata : messages)
-        if (!incomingQueue->push(metadata.getMessage(), metadata.samplePosition))
-            break; // Queue full
+        if (!queue->push(metadata.getMessage(), metadata.samplePosition))
+            break;
 }
 
 void MidiClient::setSubscriptions(const MidiClientState& state)
@@ -121,10 +125,6 @@ MidiClientState MidiClient::getSubscriptions() const
         return server->getClientState(clientId);
     return MidiClientState();
 }
-
-// ============================================================================
-// MidiServer
-// ============================================================================
 
 MidiServer::MidiServer()
 {
@@ -151,7 +151,6 @@ void MidiServer::initialize()
         return;
     }
 
-    // Enable all MIDI inputs (filtered per-client via subscriptions)
     auto midiInputs = juce::MidiInput::getAvailableDevices();
     for (const auto& device : midiInputs)
     {
@@ -160,7 +159,7 @@ void MidiServer::initialize()
         DBG("[MidiServer] Enabled MIDI input: " + device.name);
     }
 
-    startTimer(10); // Process outgoing MIDI at 10ms intervals
+    startTimer(10);
     initialized = true;
     DBG("[MidiServer] Initialized successfully");
 }
@@ -183,7 +182,6 @@ void MidiServer::shutdown()
         clients.clear();
     }
 
-    // Disable MIDI devices before AudioDeviceManager destructor
     auto midiInputs = juce::MidiInput::getAvailableDevices();
     for (const auto& device : midiInputs)
     {
@@ -289,7 +287,6 @@ void MidiServer::handleIncomingMidiMessage(juce::MidiInput* source, const juce::
     if (it == snapshot->inputSubscriptions.end())
         return;
 
-    // Push to all subscribed clients' queues
     for (const auto& clientSnapshot : it->second)
         if (clientSnapshot.incomingMidiQueue)
             clientSnapshot.incomingMidiQueue->push(message, 0);
@@ -300,7 +297,6 @@ void MidiServer::timerCallback()
     if (!initialized)
         return;
 
-    // Process outgoing MIDI from all clients
     juce::Array<void*> clientList;
     {
         juce::ScopedLock lock(clientsMutex);
@@ -367,7 +363,6 @@ void MidiServer::timerCallback()
 
 void MidiServer::rebuildClientSnapshot()
 {
-    // Must be called while holding clientsMutex
     auto newSnapshot = std::make_shared<DeviceSnapshot>();
 
     for (auto& [clientId, info] : clients)
@@ -396,7 +391,6 @@ void MidiServer::rebuildClientSnapshot()
 
 void MidiServer::updateMidiDeviceSubscriptions()
 {
-    // Close output devices no longer needed
     juce::StringArray neededOutputs;
     for (auto& [clientPtr, info] : clients)
         for (const auto& device : info.state.subscribedOutputDevices)

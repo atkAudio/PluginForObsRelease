@@ -8,20 +8,13 @@ using namespace juce;
 #include "ObsSource.h"
 #include "PluginGraph.h"
 
-//==============================================================================
-/**
-    Manages the internal plugin types.
-*/
 class InternalPluginFormat final : public AudioPluginFormat
 {
 public:
-    //==============================================================================
     InternalPluginFormat();
 
-    //==============================================================================
     const std::vector<PluginDescription>& getAllTypes() const;
 
-    //==============================================================================
     static String getIdentifier()
     {
         return "Internal";
@@ -96,7 +89,6 @@ private:
         const std::vector<PluginDescription> descriptions;
     };
 
-    //==============================================================================
     void createPluginInstance(
         const PluginDescription&,
         double initialSampleRate,

@@ -1,18 +1,3 @@
-/**
- * Out-of-process Plugin Scanner
- *
- * Scans a single plugin and outputs XML to stdout.
- * If the plugin crashes during scanning, only this process dies.
- *
- * Usage: atkaudio-pluginforobs_scanner <plugin-identifier>
- *
- * Input: Plugin identifier from AudioPluginFormat::searchPathsForPlugins()
- *   - VST3: File path (e.g., /Library/Audio/Plug-Ins/VST3/Plugin.vst3)
- *   - AU: Identifier string (e.g., AudioUnit:Effects/aufx,dcmp,appl)
- *
- * Output: XML with plugin descriptions
- */
-
 #include <iostream>
 #include <juce_audio_processors/juce_audio_processors.h>
 

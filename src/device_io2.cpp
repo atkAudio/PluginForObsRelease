@@ -183,7 +183,6 @@ static struct obs_audio_data* deviceio2_filter(void* data, struct obs_audio_data
     adio->deviceIo2.process(adata, channels, frames, adio->sampleRate);
 
     auto inputGain = adio->inputGain.load(std::memory_order_acquire);
-    inputGain *= 1 / outputGain; // "remove" output gain from input gain
     for (int i = 0; i < channels; i++)
         for (size_t j = 0; j < frames; j++)
             adata[i][j] *= inputGain;

@@ -1,7 +1,6 @@
 #pragma once
 
 #include "../Core/PluginGraph.h"
-#include "../../CpuMeter.h"
 // Not using parallel graph implementation
 // #include "../../AudioProcessorGraphMT/AudioProcessorGraphMT_Impl.h"
 
@@ -10,17 +9,12 @@ using namespace juce;
 
 class MainHostWindow;
 
-//==============================================================================
-/**
-    A panel that displays and edits a PluginGraph.
-*/
 class GraphEditorPanel final
     : public Component
     , public ChangeListener
     , private Timer
 {
 public:
-    //==============================================================================
     GraphEditorPanel(PluginGraph& graph);
     ~GraphEditorPanel() override;
 
@@ -35,13 +29,10 @@ public:
 
     void changeListenerCallback(ChangeBroadcaster*) override;
 
-    //==============================================================================
     void updateComponents();
 
-    //==============================================================================
     void showPopupMenu(Point<int> position);
 
-    //==============================================================================
     void beginConnectorDrag(
         AudioProcessorGraphMT::NodeAndChannel source,
         AudioProcessorGraphMT::NodeAndChannel dest,
@@ -50,7 +41,6 @@ public:
     void dragConnector(const MouseEvent&);
     void endDraggingConnector(const MouseEvent&);
 
-    //==============================================================================
     PluginGraph& graph;
 
 private:
@@ -67,7 +57,6 @@ private:
     ConnectorComponent* getComponentForConnection(const AudioProcessorGraphMT::Connection&) const;
     PinComponent* findPinAt(Point<float>) const;
 
-    //==============================================================================
     Point<int> originalTouchPos;
 
     void timerCallback() override;
@@ -75,12 +64,6 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(GraphEditorPanel)
 };
 
-//==============================================================================
-/**
-    A panel that embeds a GraphEditorPanel with a midi keyboard at the bottom.
-
-    It also manages the graph itself, and plays it.
-*/
 class GraphDocumentComponent final
     : public Component
     , public DragAndDropTarget
@@ -127,36 +110,26 @@ public:
         setCpuLoad();
     }
 
-    //==============================================================================
     void createNewPlugin(const PluginDescriptionAndPreference&, Point<int> position);
     bool closeAnyOpenPluginWindows();
 
-    //==============================================================================
     std::unique_ptr<PluginGraph> graph;
 
     void resized() override;
     void releaseGraph();
 
-    //==============================================================================
     bool isInterestedInDragSource(const SourceDetails&) override;
     void itemDropped(const SourceDetails&) override;
 
-    //==============================================================================
     std::unique_ptr<GraphEditorPanel> graphPanel;
     std::unique_ptr<MidiKeyboardComponent> keyboardComp;
 
-    //==============================================================================
     void showSidePanel(bool isSettingsPanel);
     void hideLastSidePanel();
 
     BurgerMenuComponent burgerMenu;
 
 private:
-    //==============================================================================
-    /**
-     * Custom audio callback that drives the plugin graph with full MIDI routing support.
-     * Replaces AudioProcessorPlayer for complete control over MIDI I/O via MidiServer.
-     */
     class GraphAudioCallback : public juce::AudioIODeviceCallback
     {
     public:
@@ -190,19 +163,38 @@ private:
         int blockSize = 512;
         bool isPrepared = false;
         juce::AudioIODevice* currentDevice = nullptr;
-        atk::CpuMeter cpuMeter;
+        juce::AudioProcessLoadMeasurer loadMeasurer;
+
+        // Peak hold for CPU load display (3 second hold)
+        mutable float peakCpuLoad = 0.0f;
+        mutable double peakCpuTime = 0.0;
 
     public:
         float getCpuLoad() const
         {
-            return cpuMeter.getLoad();
+            float currentLoad = static_cast<float>(loadMeasurer.getLoadAsProportion());
+
+            // Peak hold for 3 seconds
+            auto now = juce::Time::getMillisecondCounterHiRes();
+            if (currentLoad >= peakCpuLoad)
+            {
+                peakCpuLoad = currentLoad;
+                peakCpuTime = now;
+            }
+            else if (now - peakCpuTime > 3000.0)
+            {
+                peakCpuLoad = currentLoad;
+                peakCpuTime = now;
+            }
+
+            return peakCpuLoad;
         }
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(GraphAudioCallback)
     };
 
     Label cpuLoadLabel;
-    //==============================================================================
+
     AudioDeviceManager& deviceManager;
     KnownPluginList& pluginList;
 
@@ -218,7 +210,6 @@ private:
     class TitleBarComponent;
     std::unique_ptr<TitleBarComponent> titleBarComponent;
 
-    //==============================================================================
     struct PluginListBoxModel;
     std::unique_ptr<PluginListBoxModel> pluginListBoxModel;
 
@@ -228,7 +219,6 @@ private:
     SidePanel pluginListSidePanel{"Plugins", 250, false};
     SidePanel* lastOpenedSidePanel = nullptr;
 
-    //==============================================================================
     void changeListenerCallback(ChangeBroadcaster*) override;
 
     // MidiKeyboardStateListener interface - inject virtual keyboard MIDI into MidiServer
@@ -239,6 +229,5 @@ private:
     void checkAvailableWidth();
     void updateMidiOutput();
 
-    //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(GraphDocumentComponent)
 };

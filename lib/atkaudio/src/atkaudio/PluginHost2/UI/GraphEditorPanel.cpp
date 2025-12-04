@@ -3,10 +3,6 @@
 #include "../Core/InternalPlugins.h"
 #include "MainHostWindow.h"
 
-//==============================================================================
-// GraphAudioCallback implementation - custom audio callback for MidiServer integration
-//==============================================================================
-
 GraphDocumentComponent::GraphAudioCallback::GraphAudioCallback(GraphDocumentComponent& owner_)
     : owner(owner_)
 {
@@ -47,6 +43,9 @@ void GraphDocumentComponent::GraphAudioCallback::audioDeviceAboutToStart(juce::A
 
         graph.prepareToPlay(sampleRate, blockSize);
         isPrepared = true;
+
+        // Reset load measurer with new sample rate and buffer size
+        loadMeasurer.reset(sampleRate, blockSize);
     }
 }
 
@@ -85,7 +84,7 @@ void GraphDocumentComponent::GraphAudioCallback::audioDeviceIOCallbackWithContex
         return;
     }
 
-    cpuMeter.start();
+    juce::AudioProcessLoadMeasurer::ScopedTimer timer(loadMeasurer, numSamples);
 
     auto* graph = owner.graph.get();
     auto& audioGraph = graph->graph;
@@ -118,8 +117,6 @@ void GraphDocumentComponent::GraphAudioCallback::audioDeviceIOCallbackWithContex
     // 5. Send MIDI output to external MIDI device if configured
     if (owner.midiOutput != nullptr)
         owner.midiOutput->sendBlockOfMessagesNow(midiMessages);
-
-    cpuMeter.stop(numSamples, sampleRate);
 }
 
 void GraphDocumentComponent::GraphAudioCallback::audioDeviceIOCallback(
@@ -142,7 +139,6 @@ void GraphDocumentComponent::GraphAudioCallback::audioDeviceIOCallback(
     );
 }
 
-//==============================================================================
 struct GraphEditorPanel::PinComponent final
     : public Component
     , public SettableTooltipClient
@@ -259,7 +255,6 @@ struct GraphEditorPanel::PinComponent final
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PinComponent)
 };
 
-//==============================================================================
 struct GraphEditorPanel::PluginComponent final
     : public Component
     , public Timer
@@ -698,7 +693,6 @@ struct GraphEditorPanel::PluginComponent final
     const String formatSuffix = getFormatSuffix(getProcessor());
 };
 
-//==============================================================================
 struct GraphEditorPanel::ConnectorComponent final
     : public Component
     , public SettableTooltipClient
@@ -898,7 +892,6 @@ struct GraphEditorPanel::ConnectorComponent final
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ConnectorComponent)
 };
 
-//==============================================================================
 GraphEditorPanel::GraphEditorPanel(PluginGraph& g)
     : graph(g)
 {
@@ -1135,7 +1128,6 @@ void GraphEditorPanel::timerCallback()
 {
 }
 
-//==============================================================================
 struct GraphDocumentComponent::TooltipBar final
     : public Component
     , private Timer
@@ -1173,7 +1165,6 @@ struct GraphDocumentComponent::TooltipBar final
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(TooltipBar)
 };
 
-//==============================================================================
 class GraphDocumentComponent::TitleBarComponent final
     : public Component
     , private Button::Listener
@@ -1286,7 +1277,6 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(TitleBarComponent)
 };
 
-//==============================================================================
 struct GraphDocumentComponent::PluginListBoxModel final
     : public ListBoxModel
     , public ChangeListener
@@ -1358,7 +1348,6 @@ struct GraphDocumentComponent::PluginListBoxModel final
     JUCE_DECLARE_NON_COPYABLE(PluginListBoxModel)
 };
 
-//==============================================================================
 GraphDocumentComponent::GraphDocumentComponent(
     MainHostWindow& mainWindow,
     AudioPluginFormatManager& fm,

@@ -9,10 +9,6 @@ using namespace juce;
 // Using AudioProcessorGraphMT from atk namespace
 using atk::AudioProcessorGraphMT;
 
-//==============================================================================
-/** A type that encapsulates a PluginDescription and some preferences regarding
-    how plugins of that description should be instantiated.
-*/
 struct PluginDescriptionAndPreference
 {
     enum class UseARA
@@ -42,21 +38,15 @@ struct PluginDescriptionAndPreference
     UseARA useARA = UseARA::no;
 };
 
-//==============================================================================
-/**
-    A collection of plugins and some connections between them.
-*/
 class PluginGraph final
     : public FileBasedDocument
     , public AudioProcessorListener
     , private ChangeListener
 {
 public:
-    //==============================================================================
     PluginGraph(MainHostWindow&, AudioPluginFormatManager&, KnownPluginList&);
     ~PluginGraph() override;
 
-    //==============================================================================
     using NodeID = AudioProcessorGraphMT::NodeID;
 
     void addPlugin(const PluginDescriptionAndPreference&, Point<double>);
@@ -66,13 +56,11 @@ public:
     void setNodePosition(NodeID, Point<double>);
     Point<double> getNodePosition(NodeID) const;
 
-    //==============================================================================
     void clear();
 
     PluginWindow* getOrCreateWindowFor(AudioProcessorGraphMT::Node*, PluginWindow::Type);
     bool closeAnyOpenPluginWindows();
 
-    //==============================================================================
     void audioProcessorParameterChanged(AudioProcessor*, int, float) override
     {
     }
@@ -82,7 +70,6 @@ public:
         changed();
     }
 
-    //==============================================================================
     std::unique_ptr<XmlElement> createXml() const;
     void restoreFromXml(const XmlElement&);
 
@@ -96,7 +83,6 @@ public:
         return "*.filtergraph";
     }
 
-    //==============================================================================
     void newDocument();
     String getDocumentTitle() override;
     Result loadDocument(const File& file) override;
@@ -106,12 +92,8 @@ public:
 
     static File getDefaultGraphDocumentOnMobile();
 
-    //==============================================================================
     AudioProcessorGraphMT graph;
 
-    //==============================================================================
-    // Static counter for PluginHost2 instances
-    // Used by PluginHost to avoid thread pool conflicts
     static std::atomic<int> activeInstanceCount;
 
     static bool hasActiveInstances()
@@ -119,21 +101,15 @@ public:
         return activeInstanceCount.load() > 0;
     }
 
-    //==============================================================================
-    // MIDI routing through MidiServer
-    // Called from audio callback to handle MIDI I/O
     void processMidiInput(juce::MidiBuffer& midiMessages, int numSamples, double sampleRate);
     void processMidiOutput(const juce::MidiBuffer& midiMessages);
 
-    //==============================================================================
-    // Access to MainHostWindow for device manager and other services
     MainHostWindow& getMainHostWindow()
     {
         return mainHostWindow;
     }
 
 private:
-    //==============================================================================
     MainHostWindow& mainHostWindow;
     AudioPluginFormatManager& formatManager;
     KnownPluginList& knownPlugins;

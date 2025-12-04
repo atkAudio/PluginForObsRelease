@@ -2,10 +2,6 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
-/**
- * Shared footer component for PluginHost UI.
- * Contains Audio/MIDI buttons and a customizable action button.
- */
 class PluginHostFooter final
     : public juce::Component
     , private juce::Timer
@@ -26,11 +22,10 @@ public:
         multiToggle.setTooltip("Multi-threading (extra buffer latency)");
         multiToggle.setClickingTogglesState(true);
 
-        // Stats label for CPU/latency display below MT button
         statsLabel.setFont(juce::FontOptions(10.0f));
         statsLabel.setJustificationType(juce::Justification::centredLeft);
         statsLabel.setColour(juce::Label::textColourId, juce::Colours::grey);
-        statsLabel.setBorderSize(juce::BorderSize<int>(0, 4, 0, 0)); // Left padding to align with checkbox
+        statsLabel.setBorderSize(juce::BorderSize<int>(0, 4, 0, 0));
         addAndMakeVisible(statsLabel);
 
         if (showLinkButton)
@@ -51,11 +46,9 @@ public:
     {
         getMultiCoreEnabled = getEnabledCallback;
 
-        // Set initial toggle state
         if (getEnabledCallback)
             multiToggle.setToggleState(getEnabledCallback(), juce::dontSendNotification);
 
-        // Set click handler
         if (setEnabledCallback)
             multiToggle.onClick = [this, setEnabledCallback] { setEnabledCallback(multiToggle.getToggleState()); };
     }
@@ -68,7 +61,6 @@ public:
 
     void timerCallback() override
     {
-        // Sync MT toggle state from model
         if (getMultiCoreEnabled)
         {
             bool currentState = getMultiCoreEnabled();
@@ -91,7 +83,6 @@ public:
         const int statsHeight = 14;
         auto statsArea = bounds.removeFromBottom(statsHeight);
 
-        // Position stats label below where MT button will be
         statsLabel.setBounds(statsArea.removeFromLeft(60));
 
         juce::Grid grid;

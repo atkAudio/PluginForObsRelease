@@ -114,9 +114,6 @@ static void pluginhost_update(void* data, obs_data_t* s)
     bool valid_sidechain = *sidechain_name && strcmp(sidechain_name, "none") != 0;
     obs_weak_source_t* old_weak_sidechain = NULL;
 
-    // Update sidechain enabled state in the plugin host
-    ph->pluginHost.setSidechainEnabled(valid_sidechain);
-
     ph->sidechain_update_mutex.lock();
 
     if (!valid_sidechain)

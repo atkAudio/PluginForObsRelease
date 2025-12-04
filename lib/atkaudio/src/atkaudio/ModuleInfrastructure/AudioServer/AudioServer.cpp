@@ -484,7 +484,6 @@ bool AudioDeviceHandler::openDevice(const juce::AudioDeviceManager::AudioDeviceS
 
     if (wasAlreadyOpen)
     {
-        DBG("AudioDeviceHandler: Device '" + deviceName + "' already open, ensuring callback is registered");
         // Ensure callback is registered (safe to call multiple times)
         deviceManager->addAudioCallback(this);
         return true;
@@ -493,18 +492,10 @@ bool AudioDeviceHandler::openDevice(const juce::AudioDeviceManager::AudioDeviceS
     // Add callback BEFORE opening device (important!)
     deviceManager->addAudioCallback(this);
 
-    DBG("AudioDeviceHandler: Opening device '"
-        + deviceName
-        + "' in FULL-DUPLEX mode"
-        + " sampleRate="
-        + juce::String(preferredSetup.sampleRate)
-        + " bufferSize="
-        + juce::String(preferredSetup.bufferSize));
-
-    // Step 1: Initialize device manager to make device types available
+    // Initialize device manager to make device types available
     deviceManager->initialiseWithDefaultDevices(0, 0);
 
-    // Step 2: Find the device type
+    // Find the device type
     juce::AudioIODeviceType* deviceType = nullptr;
 
     for (auto* type : deviceManager->getAvailableDeviceTypes())
@@ -512,7 +503,6 @@ bool AudioDeviceHandler::openDevice(const juce::AudioDeviceManager::AudioDeviceS
         auto inputDevices = type->getDeviceNames(true);
         auto outputDevices = type->getDeviceNames(false);
 
-        // Check if this device type has our device
         if (inputDevices.contains(deviceName) || outputDevices.contains(deviceName))
         {
             deviceType = type;
@@ -527,18 +517,15 @@ bool AudioDeviceHandler::openDevice(const juce::AudioDeviceManager::AudioDeviceS
         return false;
     }
 
-    DBG("AudioDeviceHandler: Found device type: " + deviceType->getTypeName());
-
-    // Step 3: Set the current device type in the manager
+    // Set the current device type in the manager
     deviceManager->setCurrentAudioDeviceType(deviceType->getTypeName(), true);
 
-    // Step 4: Create setup
+    // Create setup
     juce::AudioDeviceManager::AudioDeviceSetup setup;
     setup.sampleRate = preferredSetup.sampleRate;
     setup.bufferSize = preferredSetup.bufferSize;
 
-    // IMPORTANT: Device names may differ between input and output lists
-    // Only set the device name where it actually appears
+    // Device names may differ between input and output lists
     auto inputDevices = deviceType->getDeviceNames(true);
     auto outputDevices = deviceType->getDeviceNames(false);
     bool deviceIsInput = inputDevices.contains(deviceName);
@@ -547,14 +534,7 @@ bool AudioDeviceHandler::openDevice(const juce::AudioDeviceManager::AudioDeviceS
     setup.inputDeviceName = deviceIsInput ? deviceName : juce::String();
     setup.outputDeviceName = deviceIsOutput ? deviceName : juce::String();
 
-    DBG("AudioDeviceHandler: Device '"
-        + deviceName
-        + "' is "
-        + (deviceIsInput ? "INPUT " : "")
-        + (deviceIsOutput ? "OUTPUT" : ""));
-
-    // IMPORTANT: Must explicitly enable channels for the device to start playing
-    // JUCE won't start the device if no channels are enabled
+    // Must explicitly enable channels for the device to start playing
     setup.useDefaultInputChannels = false;
     setup.useDefaultOutputChannels = false;
 
@@ -565,42 +545,18 @@ bool AudioDeviceHandler::openDevice(const juce::AudioDeviceManager::AudioDeviceS
     if (setup.inputChannels.isZero() && setup.outputChannels.isZero())
     {
         // No specific channels - enable all available
-        DBG("AudioDeviceHandler: No channels specified, enabling all");
         setup.inputChannels.setRange(0, 256, true);
         setup.outputChannels.setRange(0, 256, true); // JUCE will limit to actual count
     }
-    else
-    {
-        DBG("AudioDeviceHandler: Using channel configuration from preferredSetup");
-        DBG("  Input channels: " + setup.inputChannels.toString(2));
-        DBG("  Output channels: " + setup.outputChannels.toString(2));
-    }
 
-    DBG("AudioDeviceHandler: Requested sampleRate="
-        + juce::String(setup.sampleRate)
-        + " (0=device default), bufferSize="
-        + juce::String(setup.bufferSize)
-        + " (0=device default)");
-
-    // Step 5: Apply the setup
+    // Apply the setup
     juce::String error = deviceManager->setAudioDeviceSetup(setup, true);
 
     if (error.isEmpty())
     {
         auto* device = deviceManager->getCurrentAudioDevice();
-        DBG("AudioDeviceHandler: Device opened successfully!");
-        DBG("  Requested: '" + deviceName + "'");
-        DBG("  Actual: '" + (device ? device->getName() : "NONE") + "'");
-        DBG("  Type: " + (device ? device->getTypeName() : "NONE"));
-        DBG("  Input channels: " + juce::String(device ? device->getActiveInputChannels().countNumberOfSetBits() : 0));
-        DBG("  Output channels: "
-            + juce::String(device ? device->getActiveOutputChannels().countNumberOfSetBits() : 0));
-        DBG("  Buffer size: " + juce::String(device ? device->getCurrentBufferSizeSamples() : 0));
-        DBG("  Sample rate: " + juce::String(device ? device->getCurrentSampleRate() : 0.0, 1));
-        DBG("  Is playing: " + juce::String(device ? (device->isPlaying() ? "YES" : "NO") : "UNKNOWN"));
 
         // Populate cache with actual device channel info
-        // This avoids needing to create temp devices later for channel queries
         if (device)
         {
             if (auto* server = atk::AudioServer::getInstanceWithoutCreating())
@@ -620,10 +576,7 @@ bool AudioDeviceHandler::openDevice(const juce::AudioDeviceManager::AudioDeviceS
 
         // Check if device actually started
         if (device && !device->isPlaying())
-        {
-            DBG("AudioDeviceHandler: WARNING - Device opened but not playing! Attempting to restart...");
             deviceManager->restartLastAudioDevice();
-        }
 
         return true;
     }
@@ -1221,6 +1174,30 @@ juce::AudioDeviceManager* AudioServer::ensureDeviceEnumerator() const
     return deviceEnumerator.get();
 }
 
+void AudioServer::setupDeviceEnumeratorListeners()
+{
+    if (!deviceEnumerator)
+        return;
+
+    deviceEnumerator->addChangeListener(const_cast<AudioServer*>(this));
+}
+
+void AudioServer::changeListenerCallback(juce::ChangeBroadcaster* source)
+{
+    if (source == deviceEnumerator.get())
+        listeners.call([](Listener& l) { l.audioServerDeviceListChanged(); });
+}
+
+void AudioServer::addListener(Listener* listener)
+{
+    listeners.add(listener);
+}
+
+void AudioServer::removeListener(Listener* listener)
+{
+    listeners.remove(listener);
+}
+
 void AudioServer::initialize()
 {
     if (initialized.load(std::memory_order_acquire))
@@ -1228,9 +1205,8 @@ void AudioServer::initialize()
 
     DBG("AudioServer: Initializing...");
 
-    // Note: Device enumerator will be created on-demand when UI queries devices
-    // This avoids unnecessary device scanning at startup
-    // No timer needed - deferred cleanup happens during subscription updates
+    ensureDeviceEnumerator();
+    setupDeviceEnumeratorListeners();
 
     initialized.store(true, std::memory_order_release);
 
@@ -1360,7 +1336,7 @@ void AudioServer::processDeviceCleanup()
     }
 }
 
-void AudioServer::cancelPendingDeviceClose(const juce::String& deviceKey)
+bool AudioServer::cancelPendingDeviceClose(const juce::String& deviceKey)
 {
     // Must be called with devicesMutex held
     auto it = std::find_if(
@@ -1373,7 +1349,9 @@ void AudioServer::cancelPendingDeviceClose(const juce::String& deviceKey)
     {
         DBG("AudioServer: Cancelled pending close for device '" + deviceKey + "'");
         pendingDeviceCloses.erase(it);
+        return true;
     }
+    return false;
 }
 
 void AudioServer::scheduleDeviceClose(const juce::String& deviceKey)
@@ -2291,8 +2269,14 @@ bool AudioServer::registerDirectCallback(
         return false;
     }
 
-    // Cancel any pending close for this device (it's being reused)
-    cancelPendingDeviceClose(deviceKey);
+    // Check if there was a pending close - this indicates device went away and came back
+    // In that case, we need to force a full reopen to get a fresh connection
+    bool hadPendingClose = cancelPendingDeviceClose(deviceKey);
+    if (hadPendingClose)
+    {
+        DBG("[Hotplug] Device had pending close - forcing full reopen for '" + deviceName + "'");
+        handler->closeDevice();
+    }
 
     // Try to register the direct callback
     if (!handler->registerDirectCallback(callback))
@@ -2303,7 +2287,27 @@ bool AudioServer::registerDirectCallback(
     bool needsReopen = false;
     if (handler->isDeviceOpen())
     {
-        if (auto* device = handler->deviceManager->getCurrentAudioDevice())
+        auto* device = handler->deviceManager->getCurrentAudioDevice();
+        if (device == nullptr)
+        {
+            // Handler thinks it's open but device is gone (e.g., after hotplug)
+            DBG("[Hotplug] Device handler open but no device - forcing reopen");
+            needsReopen = true;
+        }
+        else if (!device->isOpen())
+        {
+            // Device exists but isn't actually open
+            DBG("[Hotplug] Device exists but not open - forcing reopen");
+            needsReopen = true;
+        }
+        else if (hadPendingClose && !device->isPlaying())
+        {
+            // Only check isPlaying after actual hotplug (hadPendingClose)
+            // During normal config changes, not playing is expected
+            DBG("[Hotplug] Device exists but not playing after hotplug - forcing reopen");
+            needsReopen = true;
+        }
+        else
         {
             double currentRate = device->getCurrentSampleRate();
             int currentBuffer = device->getCurrentBufferSizeSamples();

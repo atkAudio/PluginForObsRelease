@@ -9,7 +9,6 @@
 #include <config.h>
 #include <juce_audio_plugin_client/juce_audio_plugin_client.h>
 
-//==============================================================================
 class InternalPlugin final : public AudioPluginInstance
 {
 public:
@@ -37,7 +36,6 @@ public:
             inner->editorBeingDeleted(editor);
     }
 
-    //==============================================================================
     const String getName() const override
     {
         return inner->getName();
@@ -231,7 +229,6 @@ public:
         return true;
     }
 
-    //==============================================================================
     void fillInPluginDescription(PluginDescription& description) const override
     {
         description = getPluginDescription(*inner);
@@ -283,11 +280,9 @@ private:
 
     std::unique_ptr<AudioProcessor> inner;
 
-    //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(InternalPlugin)
 };
 
-//==============================================================================
 class SineWaveSynth final : public AudioProcessor
 {
 public:
@@ -309,7 +304,6 @@ public:
         return "Sine Wave Synth";
     }
 
-    //==============================================================================
     void prepareToPlay(double newSampleRate, int) override
     {
         synth.setCurrentPlaybackSampleRate(newSampleRate);
@@ -319,7 +313,6 @@ public:
     {
     }
 
-    //==============================================================================
     void processBlock(AudioBuffer<float>& buffer, MidiBuffer& midiMessages) override
     {
         const int numSamples = buffer.getNumSamples();
@@ -393,7 +386,6 @@ public:
     }
 
 private:
-    //==============================================================================
     struct SineWaveSound final : public SynthesiserSound
     {
         SineWaveSound() = default;
@@ -515,14 +507,11 @@ private:
         double currentAngle = 0, angleDelta = 0, level = 0, tailOff = 0;
     };
 
-    //==============================================================================
     Synthesiser synth;
 
-    //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SineWaveSynth)
 };
 
-//==============================================================================
 class ReverbPlugin final : public AudioProcessor
 {
 public:
@@ -633,8 +622,6 @@ public:
 private:
     Reverb reverb;
 };
-
-//==============================================================================
 
 InternalPluginFormat::InternalPluginFactory::InternalPluginFactory(
     const std::initializer_list<Constructor>& constructorsIn

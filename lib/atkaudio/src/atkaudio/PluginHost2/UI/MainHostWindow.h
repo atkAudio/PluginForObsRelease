@@ -11,7 +11,6 @@ using namespace juce;
 #include <atkaudio/ModuleInfrastructure/AudioServer/AudioServer.h>
 #include <atkaudio/ModuleInfrastructure/MidiServer/MidiServer.h>
 
-//==============================================================================
 namespace CommandIDs
 {
 #if !(JUCE_IOS || JUCE_ANDROID)
@@ -28,9 +27,6 @@ static const int allWindowsForward = 0x30400;
 static const int autoScalePluginWindows = 0x30600;
 } // namespace CommandIDs
 
-//==============================================================================
-
-//==============================================================================
 enum class AutoScale
 {
     scaled,
@@ -47,7 +43,6 @@ constexpr bool autoScaleOptionAvailable = false;
 
 constexpr const char* processUID = "atkAudioPluginHost2";
 
-//==============================================================================
 class MainHostWindow final
     : public juce::DocumentWindow
     , public MenuBarModel
@@ -56,11 +51,9 @@ class MainHostWindow final
     , public FileDragAndDropTarget
 {
 public:
-    //==============================================================================
     MainHostWindow();
     ~MainHostWindow() override;
 
-    //==============================================================================
     void closeButtonPressed() override;
     void changeListenerCallback(ChangeBroadcaster*) override;
 
@@ -164,7 +157,6 @@ public:
     }
 
 private:
-    //==============================================================================
     bool isAutoScalePluginWindowsEnabled();
 
     void updateAutoScaleMenuItem(ApplicationCommandInfo& info);
@@ -172,7 +164,6 @@ private:
     void showAudioSettings();
     void showMidiSettings();
 
-    //==============================================================================
     static inline juce::InterProcessLock interprocessLock{"atkAudioPluginHost2Lock"};
 
     juce::DialogWindow* audioSettingsDialogWindow = nullptr;
@@ -187,6 +178,7 @@ private:
 
     // OLD: Keep for backward compatibility with VirtualAudioIODevice
     AudioDeviceManager deviceManager;
+    juce::String lastDeviceName; // Track device changes
 
     AudioPluginFormatManager formatManager;
 

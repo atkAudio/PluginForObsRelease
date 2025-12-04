@@ -9,9 +9,6 @@
 #include <functional>
 #include <juce_audio_processors/juce_audio_processors.h>
 
-/**
- * UI component that wraps a loaded plugin's editor with additional controls.
- */
 class PluginEditorComponent final : public juce::Component
 {
 public:

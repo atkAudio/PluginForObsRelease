@@ -174,33 +174,8 @@ private:
 
 //==============================================================================
 /**
-    Global audio thread pool singleton - REALTIME SAFE AUDIO PATH.
-
-    This thread pool is designed for realtime audio processing with the following features:
-    - Singleton instance shared across all audio graph processors
-    - Persistent worker threads to avoid creation/destruction overhead
-    - Lock-free job queue for realtime-safe job distribution (atomic fetch_add)
-    - Barrier synchronization using mutex + condition_variable
-    - High-priority threads with platform-specific realtime scheduling
-
-    Thread safety:
-    - getInstance()/deleteInstance(): Call only during program load/unload (single-threaded)
-    - initialize()/shutdown(): Thread-safe via mutex
-    - prepareJobs(): Call only from main audio thread (before kickWorkers)
-    - addJob(): Call only from main audio thread (between prepareJobs and kickWorkers)
-    - kickWorkers(): Call only from main audio thread
-    - tryStealAndExecuteJob(): Safe to call from any thread
-
-    Job queue safety:
-    - Queue is reset via prepareJobs() before each batch
-    - Maximum 1024 jobs per batch (queue size)
-    - Jobs are processed before next prepareJobs() call
-
-    Usage pattern:
-       prepareJobs(barrier);          // Main thread: setup barrier, reset queue
-       addJob(...);                   // Main thread: add jobs (max 1024)
-       kickWorkers();                 // Main thread: wake workers
-       barrier->arrive_and_wait();    // Wait for completion
+    Global audio thread pool singleton for realtime parallel processing.
+    Lock-free job queue, barrier synchronization, high-priority worker threads.
 */
 class AudioThreadPool
 {

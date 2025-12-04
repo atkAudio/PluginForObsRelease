@@ -5,9 +5,6 @@
 
 using namespace juce;
 
-//==============================================================================
-// HostAudioProcessorEditor implementation
-//==============================================================================
 HostAudioProcessorEditor::HostAudioProcessorEditor(HostAudioProcessorImpl& owner)
     : AudioProcessorEditor(owner)
     , hostProcessor(owner)
@@ -123,9 +120,6 @@ void HostAudioProcessorEditor::clearPlugin()
     hostProcessor.clearPlugin();
 }
 
-//==============================================================================
-// HostEditorWindow implementation
-//==============================================================================
 class HostEditorWindow::MainContentComponent
     : public Component
     , private Value::Listener
@@ -140,7 +134,6 @@ public:
                                                      : new GenericAudioProcessorEditor(*owner.getAudioProcessor())
           )
     {
-        // Ensure the component is opaque to prevent transparency/z-order issues
         setOpaque(true);
 
         inputMutedValue.referTo(owner.pluginHolder->getMuteInputValue());
@@ -222,7 +215,6 @@ private:
 
     void buttonClicked(Button* button) override
     {
-        // Unused - no buttons in MainContentComponent
         (void)button;
     }
 
@@ -357,7 +349,6 @@ HostEditorWindow::HostEditorWindow(
         if (auto* editor = processor->getActiveEditor())
             setResizable(editor->isResizable(), false);
 
-    // Window starts off-desktop - AudioModule::setVisible() will add to desktop and show
     removeFromDesktop();
 }
 
@@ -379,7 +370,6 @@ HostEditorWindow::~HostEditorWindow()
 
 void HostEditorWindow::visibilityChanged()
 {
-    // Empty - content is created once in constructor
 }
 
 AudioProcessor* HostEditorWindow::getAudioProcessor() const noexcept

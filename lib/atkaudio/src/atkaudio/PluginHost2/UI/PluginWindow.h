@@ -28,9 +28,6 @@ inline String getFormatSuffix(const AudioProcessor* plugin)
 
 class PluginGraph;
 
-/**
-    A window that shows a log of parameter change messages sent by the plugin.
-*/
 class PluginDebugWindow final
     : public AudioProcessorEditor
     , public AudioProcessorParameter::Listener
@@ -131,10 +128,6 @@ private:
     AudioProcessor& audioProc;
 };
 
-//==============================================================================
-/**
-    A desktop window containing a plugin's GUI.
-*/
 class PluginWindow final : public juce::DocumentWindow
 {
 public:
@@ -362,7 +355,6 @@ private:
         }
     }
 
-    //==============================================================================
     struct ProgramAudioProcessorEditor final : public AudioProcessorEditor
     {
         explicit ProgramAudioProcessorEditor(AudioProcessor& p)

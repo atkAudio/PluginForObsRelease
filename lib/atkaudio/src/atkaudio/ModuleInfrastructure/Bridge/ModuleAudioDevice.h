@@ -12,23 +12,6 @@ namespace atk
 // Forward declaration - actual value retrieved from OBS at runtime
 int getOBSAudioFrameSize();
 
-/**
- * Coordinator to ensure only one device is active at a time within a module instance.
- *
- * Purpose: Prevents a single module from having multiple devices active simultaneously
- * (e.g., can't have both "OBS Audio" AND "ASIO Device" processing in the same module).
- *
- * Scope: Per-module instance only. Multiple modules can coexist, each with their own
- * coordinator. Each module can independently register its active device's callback
- * with AudioServer.
- *
- * Example:
- * - PluginHost2 instance: Has coordinator A, uses "OBS Audio" device
- * - PluginHost3 instance: Has coordinator B, uses "ASIO Device"
- * Both can process audio simultaneously via their respective AudioServer callbacks.
- *
- * Devices are passed a shared_ptr to the coordinator they should use.
- */
 class ModuleDeviceCoordinator
 {
 public:
@@ -41,7 +24,6 @@ public:
     ModuleDeviceCoordinator(ModuleDeviceCoordinator&&) = delete;
     ModuleDeviceCoordinator& operator=(ModuleDeviceCoordinator&&) = delete;
 
-    // Try to become the active device
     bool tryActivate(juce::AudioIODevice* device)
     {
         const juce::ScopedLock sl(lock);
@@ -53,7 +35,6 @@ public:
         return false;
     }
 
-    // Deactivate this device
     void deactivate(juce::AudioIODevice* device)
     {
         const juce::ScopedLock sl(lock);
@@ -61,7 +42,6 @@ public:
             activeDevice = nullptr;
     }
 
-    // Check if this device is active
     bool isActive(juce::AudioIODevice* device)
     {
         const juce::ScopedLock sl(lock);
@@ -73,24 +53,9 @@ private:
     juce::AudioIODevice* activeDevice = nullptr;
 };
 
-/**
- * Base OBS Audio Device for Module implementations
- *
- * Modeled after JUCE's CoreAudio implementation, this device acts as a bridge
- * between OBS audio and JUCE's AudioDeviceManager.
- *
- * Key characteristics:
- * - Advertises current OBS channel count (retrieved via OBS API)
- * - Reports current OBS sample rate
- * - Buffer size reported as OBS standard (AUDIO_OUTPUT_FRAMES = 1024)
- * - Device must be reopened if OBS configuration changes
- *
- * This is a reusable base class that can be specialized for different module types.
- */
 class ModuleOBSAudioDevice : public juce::AudioIODevice
 {
 private:
-    // Device coordinator for this module instance
     std::shared_ptr<ModuleDeviceCoordinator> coordinator;
 
 public:
@@ -102,7 +67,6 @@ public:
 
     ~ModuleOBSAudioDevice() override;
 
-    // AudioIODevice interface - Channel names
     juce::StringArray getOutputChannelNames() override
     {
         juce::StringArray names;
@@ -119,7 +83,6 @@ public:
         return names;
     }
 
-    // AudioIODevice interface - Sample rates and buffer sizes
     juce::Array<double> getAvailableSampleRates() override
     {
         juce::Array<double> rates;
@@ -139,7 +102,6 @@ public:
         return getOBSAudioFrameSize();
     }
 
-    // AudioIODevice interface - Open/Close
     juce::String open(
         const juce::BigInteger& inputChannels,
         const juce::BigInteger& outputChannels,
@@ -151,7 +113,6 @@ public:
 
         const juce::ScopedLock sl(lock);
 
-        // Store requested channels, but limit to actual device channel count
         activeInputChannels.clear();
         activeOutputChannels.clear();
 
@@ -185,7 +146,6 @@ public:
         return isOpen_;
     }
 
-    // AudioIODevice interface - Start/Stop
     void start(juce::AudioIODeviceCallback* newCallback) override
     {
         if (!isOpen_ || newCallback == nullptr)
@@ -230,7 +190,6 @@ public:
         return isPlaying_;
     }
 
-    // AudioIODevice interface - Status
     juce::String getLastError() override
     {
         return lastError;
@@ -271,12 +230,6 @@ public:
         return 0;
     }
 
-    /**
-     * Process external audio from OBS
-     * This method should be called by the module's process() function
-     *
-     * Override this in derived classes to customize the audio processing pipeline
-     */
     virtual void processExternalAudio(
         const float* const* inputChannelData,
         int numInputChannels,

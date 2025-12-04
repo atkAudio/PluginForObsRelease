@@ -737,18 +737,12 @@ public:
             int samplesConsumed;
             if (srcCh < numChannels)
             {
-                // First pass: write directly to destination
                 samplesConsumed =
                     interpolators[srcCh]
                         ->process(finalRatio, tempBuffer[srcCh].data(), dest[destCh], numSamples, writerSamples, 0);
-
-                if (channelGain != 1.0f)
-                    for (int j = 0; j < numSamples; ++j)
-                        dest[destCh][j] *= channelGain;
             }
             else
             {
-                // Subsequent passes: add to destination
                 samplesConsumed = interpolators[srcCh]->processAdding(
                     finalRatio,
                     tempBuffer[srcCh].data(),

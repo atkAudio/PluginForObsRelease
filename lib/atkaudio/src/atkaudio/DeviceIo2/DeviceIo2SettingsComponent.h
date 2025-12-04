@@ -7,11 +7,6 @@
 
 using namespace juce;
 
-//==============================================================================
-/**
- * Simple routing matrix UI component for DeviceIo2.
- * Shows a grid of checkboxes representing the routing matrix.
- */
 class RoutingMatrixComponent : public Component
 {
 public:
@@ -148,7 +143,6 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(RoutingMatrixComponent)
 };
 
-//==============================================================================
 class DeviceIo2SettingsComponent : public Component
 {
 public:
@@ -168,7 +162,7 @@ public:
               false,
               true
           )
-        , inputRoutingMatrix("Input Routing Matrix", 8, 8) // Show 8x8 matrix for simplicity
+        , inputRoutingMatrix("Input Routing Matrix", 8, 8)
         , outputRoutingMatrix("Output Routing Matrix", 8, 8)
     {
         setOpaque(true);
@@ -220,7 +214,6 @@ public:
 
     void setToRecommendedSize()
     {
-        // Larger size to accommodate routing matrices
         setSize(700, 600);
     }
 
@@ -245,12 +238,10 @@ public:
     }
 
 private:
-    //==============================================================================
     atk::AudioDeviceSelectorComponent deviceSelector;
     RoutingMatrixComponent inputRoutingMatrix;
     RoutingMatrixComponent outputRoutingMatrix;
     bool isResizing = false;
 
-    //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DeviceIo2SettingsComponent)
 };

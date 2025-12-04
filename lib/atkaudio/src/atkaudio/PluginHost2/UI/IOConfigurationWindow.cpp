@@ -4,7 +4,6 @@
 #include "MainHostWindow.h"
 #include "../Core/InternalPlugins.h"
 
-//==============================================================================
 struct NumberedBoxes final
     : public TableListBox
     , private TableListBoxModel
@@ -27,7 +26,6 @@ struct NumberedBoxes final
         minusButtonColumnId = 129
     };
 
-    //==============================================================================
     NumberedBoxes(Listener& listenerToUse, bool canCurrentlyAddColumn, bool canCurrentlyRemoveColumn)
         : TableListBox("NumberedBoxes", this)
         , listener(listenerToUse)
@@ -73,11 +71,9 @@ struct NumberedBoxes final
     }
 
 private:
-    //==============================================================================
     Listener& listener;
     bool canAddColumn, canRemoveColumn;
 
-    //==============================================================================
     int getNumRows() override
     {
         return 1;
@@ -125,7 +121,6 @@ private:
         return textButton;
     }
 
-    //==============================================================================
     String getButtonName(int columnId)
     {
         if (columnId == plusButtonColumnId)
@@ -160,7 +155,6 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NumberedBoxes)
 };
 
-//==============================================================================
 class IOConfigurationWindow::InputOutputConfig final
     : public Component
     , private Button::Listener
@@ -291,7 +285,6 @@ private:
         }
     }
 
-    //==============================================================================
     void applyBusLayout(const AudioChannelSet& set)
     {
         if (auto* p = owner.getAudioProcessor())
@@ -349,7 +342,6 @@ private:
         }
     }
 
-    //==============================================================================
     void addColumn() override
     {
         if (auto* p = owner.getAudioProcessor())
@@ -410,7 +402,6 @@ private:
         }
     }
 
-    //==============================================================================
     IOConfigurationWindow& owner;
     Label ioTitle, name;
     Label nameLabel{"nameLabel", "Bus Name:"};

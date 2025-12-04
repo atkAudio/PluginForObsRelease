@@ -4,10 +4,6 @@
 namespace atk
 {
 
-//==============================================================================
-// DeviceChannelTreeItem Implementation
-//==============================================================================
-
 AudioServerSettingsComponent::DeviceChannelTreeItem::DeviceChannelTreeItem(
     const juce::String& name,
     ItemType type,
@@ -112,10 +108,6 @@ void AudioServerSettingsComponent::DeviceChannelTreeItem::setSubscribed(bool sho
     subscribed = shouldBeSubscribed;
 }
 
-//==============================================================================
-// ChannelMappingMatrix Implementation
-//==============================================================================
-
 AudioServerSettingsComponent::ChannelMappingMatrix::ChannelMappingMatrix()
 {
     addAndMakeVisible(table);
@@ -145,7 +137,6 @@ void AudioServerSettingsComponent::ChannelMappingMatrix::paintRowBackground(
     bool rowIsSelected
 )
 {
-    // Use JUCE default row background (no custom coloring)
 }
 
 void AudioServerSettingsComponent::ChannelMappingMatrix::paintCell(
@@ -538,10 +529,6 @@ void AudioServerSettingsComponent::ChannelMappingMatrix::setMappings(
 
     repaint();
 }
-
-//==============================================================================
-// AudioServerSettingsComponent Implementation
-//==============================================================================
 
 AudioServerSettingsComponent::AudioServerSettingsComponent(AudioClient* audioClient, int clientChannels)
     : client(audioClient)
@@ -1132,18 +1119,18 @@ void AudioServerSettingsComponent::buttonClicked(juce::Button* button)
     {
         // Restore visual state from current active configuration (no Apply)
 
-        // Restore OBS channel mappings from processor if callback is set
-        if (getCurrentObsMappings)
-        {
-            auto [inputMapping, outputMapping] = getCurrentObsMappings();
-            setObsChannelMappings(inputMapping, outputMapping);
-        }
-
-        // Restore device subscriptions from client
+        // Restore device subscriptions from client first (updates tree view)
         if (client)
         {
             auto state = client->getSubscriptions();
             setSubscriptionState(state);
+        }
+
+        // Restore complete routing matrices (OBS + device subscription rows) from processor
+        if (getCurrentObsMappings)
+        {
+            auto [inputMapping, outputMapping] = getCurrentObsMappings();
+            setCompleteRoutingMatrices(inputMapping, outputMapping);
         }
     }
     else if (button == &cancelButton)

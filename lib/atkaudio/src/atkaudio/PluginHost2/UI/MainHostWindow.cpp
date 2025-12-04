@@ -1,14 +1,12 @@
 #include "MainHostWindow.h"
 
 #include "../../About.h"
-#include "../../DeviceIo/AudioDeviceSelectorComponent.h"
 #include "../../SandboxedPluginScanner.h"
 #include "../../SharedPluginList.h"
 #include "../Core/InternalPlugins.h"
 
 #include <atkaudio/ModuleInfrastructure/MidiServer/MidiServerSettingsComponent.h>
 
-//==============================================================================
 class MainHostWindow::PluginListWindow final : public juce::DocumentWindow
 {
 public:
@@ -66,7 +64,6 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginListWindow)
 };
 
-//==============================================================================
 MainHostWindow::MainHostWindow()
     : juce::DocumentWindow(
           "atkAudio PluginHost2",
@@ -151,6 +148,11 @@ MainHostWindow::MainHostWindow()
     );
 
     knownPluginList.addChangeListener(this);
+    deviceManager.addChangeListener(this);
+
+    // Track current device name
+    if (auto* device = deviceManager.getCurrentAudioDevice())
+        lastDeviceName = device->getName();
 
     if (auto* g = graphHolder->graph.get())
         g->addChangeListener(this);
@@ -184,6 +186,7 @@ MainHostWindow::~MainHostWindow()
 
     pluginListWindow = nullptr;
     knownPluginList.removeChangeListener(this);
+    deviceManager.removeChangeListener(this);
 
     if (auto* g = graphHolder->graph.get())
         g->removeChangeListener(this);
@@ -232,9 +235,25 @@ void MainHostWindow::changeListenerCallback(ChangeBroadcaster* changed)
     if (changed == &knownPluginList)
     {
         menuItemsChanged();
-
-        // Save to shared file
         atk::SharedPluginList::getInstance()->savePluginList(knownPluginList);
+    }
+    else if (changed == &deviceManager)
+    {
+        auto* device = deviceManager.getCurrentAudioDevice();
+        juce::String currentDeviceName = device ? device->getName() : juce::String();
+
+        if (currentDeviceName != lastDeviceName)
+        {
+            lastDeviceName = currentDeviceName;
+
+            if (device != nullptr)
+            {
+                auto setup = deviceManager.getAudioDeviceSetup();
+                setup.useDefaultInputChannels = true;
+                setup.useDefaultOutputChannels = true;
+                deviceManager.setAudioDeviceSetup(setup, true);
+            }
+        }
     }
     else if (graphHolder != nullptr && changed == graphHolder->graph.get())
     {
@@ -504,7 +523,6 @@ std::optional<PluginDescriptionAndPreference> MainHostWindow::getChosenType(cons
     return {};
 }
 
-//==============================================================================
 ApplicationCommandTarget* MainHostWindow::getNextCommandTarget()
 {
     return findFirstTargetParentComponent();

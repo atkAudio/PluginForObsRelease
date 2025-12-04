@@ -15,9 +15,7 @@ namespace atk
 {
 
 /**
- * @brief Simplified DAG partitioner using node-centric model with vector-based storage.
- *
- * Optimized for performance using only vectors to avoid allocations.
+ * DAG partitioner for extracting parallelizable subgraphs.
  *
  * Rules:
  * 1) Node exists only once in the graph
@@ -27,27 +25,19 @@ namespace atk
  * 5) Every node with NO output connections is an endpoint
  * 6) If no other node outputs to this node, it's an input
  * 7) If node outputs to >1 nodes, it's a split point (subgraph endpoint)
- *    => Subgraph ends when: numOutputs != 1
  * 8) If node receives input from >1 nodes, it's a join point (new subgraph starts)
- *    => New subgraph starts when: numInputs != 1
  *
- * In other words: A subgraph is a linear chain where every node has exactly 1 input and 1 output,
- * except at the boundaries.
- *
- * Template parameter NodeIDType should be copyable and comparable.
+ * A subgraph is a linear chain where each node has exactly 1 input and 1 output (except boundaries).
  */
 template <typename NodeIDType>
 class DagPartitioner
 {
 public:
-    /**
-     * @brief Simple node - tracks what it connects to using vectors.
-     */
     struct Node
     {
         NodeIDType id;
-        std::vector<NodeIDType> outputsTo;  // Nodes this one outputs to
-        std::vector<NodeIDType> inputsFrom; // Nodes that output to this one
+        std::vector<NodeIDType> outputsTo;
+        std::vector<NodeIDType> inputsFrom;
 
         explicit Node(NodeIDType nodeId = NodeIDType())
             : id(nodeId)
@@ -61,15 +51,12 @@ public:
         }
     };
 
-    /**
-     * @brief Partitioned subgraph result.
-     */
     struct Subgraph
     {
-        std::vector<NodeIDType> nodeIDs; // Nodes in this subgraph
-        std::vector<size_t> dependsOn;   // Subgraph indices this depends on
-        std::vector<size_t> dependents;  // Subgraph indices that depend on this
-        int topologicalLevel = 0;        // Topological level for scheduling
+        std::vector<NodeIDType> nodeIDs;
+        std::vector<size_t> dependsOn;
+        std::vector<size_t> dependents;
+        int topologicalLevel = 0;
 
         void clear()
         {
@@ -80,9 +67,6 @@ public:
         }
     };
 
-    /**
-     * @brief Simple thread pool for parallel endpoint tracing.
-     */
     class ThreadPool
     {
     public:
@@ -179,31 +163,11 @@ public:
     {
     }
 
-    /**
-     * @brief Set parallelization threshold.
-     * @param threshold Minimum number of nodes to enable parallel processing (0 = always parallel)
-     */
     void setParallelThreshold(size_t threshold)
     {
         parallelThreshold = threshold;
     }
 
-    /**
-     * @brief Extract subgraphs from a node graph.
-     *
-     * Uses rules to determine boundaries automatically:
-     * - Rule 5: Node with 0 outputs = output boundary (endpoint)
-     * - Rule 6: Node with 0 inputs = input boundary
-     * - Rule 7: Node with >1 outputs = split point (subgraph endpoint)
-     * - Rule 8: Node with >1 inputs = join point (new subgraph starts)
-     *
-     * Traces from endpoints backwards, creating subgraphs as linear chains.
-     * Each endpoint is traced in parallel as a separate task.
-     *
-     * @param nodes Map of node ID to Node (with connectivity)
-     * @param excludeNodeIDs Optional vector of node IDs to exclude from subgraphs (e.g., I/O nodes)
-     * @return Vector of extracted subgraphs
-     */
     std::vector<Subgraph>
     extractSubgraphs(const std::map<NodeIDType, Node>& nodes, const std::vector<NodeIDType>& excludeNodeIDs = {})
     {
@@ -278,19 +242,6 @@ public:
         return subgraphs;
     }
 
-    /**
-     * @brief Build subgraph dependencies and assign topological levels using ASAP scheduling
-     * with worker-aware load balancing.
-     *
-     * Uses As-Soon-As-Possible (ASAP) scheduling with load balancing:
-     * - Each subgraph is assigned to the earliest possible level (after all dependencies)
-     * - If a level exceeds numWorkers capacity, excess subgraphs with slack are pushed to later levels
-     * - A subgraph has "slack" if its earliest dependent is more than 1 level away
-     *
-     * @param subgraphs Vector of subgraphs (modified in-place)
-     * @param nodes Original node graph
-     * @param numWorkers Number of worker threads (0 or negative = no load balancing)
-     */
     void buildSubgraphDependencies(
         std::vector<Subgraph>& subgraphs,
         const std::map<NodeIDType, Node>& nodes,

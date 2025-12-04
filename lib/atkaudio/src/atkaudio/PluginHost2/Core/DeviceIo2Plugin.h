@@ -3,20 +3,9 @@
 #include <atkaudio/DeviceIo2/DeviceIo2.h>
 #include <juce_audio_utils/juce_audio_utils.h>
 
-//==============================================================================
-/**
- * DeviceIo2Plugin - An internal plugin wrapper for DeviceIo2
- *
- * This wraps the DeviceIo2 audio module as a JUCE AudioProcessor so it can be
- * embedded in the PluginHost2 graph as an internal effect/processor.
- *
- * It acts as a bridge between the graph's processing and the DeviceIo2's
- * device I/O and routing capabilities.
- */
 class DeviceIo2Plugin final : public juce::AudioProcessor
 {
 public:
-    //==============================================================================
     DeviceIo2Plugin()
         : AudioProcessor(
               BusesProperties()
@@ -34,7 +23,6 @@ public:
         deviceIo2.reset();
     }
 
-    //==============================================================================
     const juce::String getName() const override
     {
         return "DeviceIo2";
@@ -55,7 +43,6 @@ public:
         return 0.0;
     }
 
-    //==============================================================================
     int getNumPrograms() override
     {
         return 1;
@@ -79,7 +66,6 @@ public:
     {
     }
 
-    //==============================================================================
     void prepareToPlay(double sampleRate, int samplesPerBlock) override
     {
         juce::ignoreUnused(sampleRate, samplesPerBlock);
@@ -111,7 +97,6 @@ public:
         deviceIo2->process(channelPointers.data(), numChannels, numSamples, getSampleRate());
     }
 
-    //==============================================================================
     juce::AudioProcessorEditor* createEditor() override
     {
         // DeviceIo2 provides a method to create an embeddable settings component
@@ -158,7 +143,6 @@ public:
         return true;
     }
 
-    //==============================================================================
     void getStateInformation(juce::MemoryBlock& destData) override
     {
         if (!deviceIo2)
@@ -181,7 +165,6 @@ public:
     }
 
 private:
-    //==============================================================================
     std::unique_ptr<atk::DeviceIo2> deviceIo2;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DeviceIo2Plugin)

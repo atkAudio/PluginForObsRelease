@@ -11,10 +11,6 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_gui_basics/juce_gui_basics.h>
 
-/**
- * Main editor for the HostAudioProcessor.
- * Shows either the plugin loader or the loaded plugin's editor.
- */
 class HostAudioProcessorEditor final : public juce::AudioProcessorEditor
 {
 public:
@@ -62,11 +58,6 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HostAudioProcessorEditor)
 };
 
-//==============================================================================
-/**
- * Main window for the standalone plugin host.
- * Contains the plugin editor and manages window state.
- */
 class HostEditorWindow
     : public juce::DocumentWindow
     , private juce::Button::Listener

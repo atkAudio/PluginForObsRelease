@@ -17,7 +17,7 @@ MidiServerSettingsComponent::MidiServerSettingsComponent(MidiClient* client)
     inputsViewport = std::make_unique<juce::Viewport>();
     inputsContainer = std::make_unique<juce::Component>();
     inputsViewport->setViewedComponent(inputsContainer.get(), false);
-    inputsViewport->setScrollBarsShown(true, false); // Show vertical scrollbar, hide horizontal
+    inputsViewport->setScrollBarsShown(true, false);
     addAndMakeVisible(inputsViewport.get());
 
     // Output devices section
@@ -28,7 +28,7 @@ MidiServerSettingsComponent::MidiServerSettingsComponent(MidiClient* client)
     outputsViewport = std::make_unique<juce::Viewport>();
     outputsContainer = std::make_unique<juce::Component>();
     outputsViewport->setViewedComponent(outputsContainer.get(), false);
-    outputsViewport->setScrollBarsShown(true, false); // Show vertical scrollbar, hide horizontal
+    outputsViewport->setScrollBarsShown(true, false);
     addAndMakeVisible(outputsViewport.get());
 
     // MIDI Keyboard
@@ -41,7 +41,6 @@ MidiServerSettingsComponent::MidiServerSettingsComponent(MidiClient* client)
         std::make_unique<juce::MidiKeyboardComponent>(*keyboardState, juce::MidiKeyboardComponent::horizontalKeyboard);
     addAndMakeVisible(keyboardComponent.get());
 
-    // Use listener for immediate note callbacks (avoids polling delay that causes hanging notes)
     keyboardState->addListener(this);
 
     // MIDI Panic button
@@ -197,11 +196,9 @@ void MidiServerSettingsComponent::updateDeviceLists()
     if (server == nullptr)
         return;
 
-    // Clear existing toggles
     inputToggles.clear();
     outputToggles.clear();
 
-    // Create input device toggles
     auto inputDevices = server->getAvailableMidiInputDevices();
     int y = 0;
     for (const auto& device : inputDevices)
@@ -212,10 +209,8 @@ void MidiServerSettingsComponent::updateDeviceLists()
         inputsContainer->addAndMakeVisible(toggle);
         y += 26;
     }
-    // Set container size to fit all toggles (enables scrolling when content exceeds viewport)
     inputsContainer->setSize(320, y > 0 ? y : 50);
 
-    // Create output device toggles
     auto outputDevices = server->getAvailableMidiOutputDevices();
     y = 0;
     for (const auto& device : outputDevices)
@@ -226,7 +221,6 @@ void MidiServerSettingsComponent::updateDeviceLists()
         outputsContainer->addAndMakeVisible(toggle);
         y += 26;
     }
-    // Set container size to fit all toggles (enables scrolling when content exceeds viewport)
     outputsContainer->setSize(320, y > 0 ? y : 50);
 }
 
@@ -260,14 +254,9 @@ void MidiServerSettingsComponent::handleIncomingMidiMessage(juce::MidiInput* sou
     {
         auto state = client->getSubscriptions();
         if (!state.subscribedInputDevices.contains(source->getName()))
-            return; // Not subscribed to this device
+            return;
     }
 
-    // Note: Don't call keyboardState->processNextMidiEvent() here - that would trigger
-    // handleNoteOn/handleNoteOff listeners which would double-inject and double-log the MIDI.
-    // Hardware MIDI goes through MidiServer -> client queue -> plugin, not through the virtual keyboard.
-
-    // Format message for monitor
     juce::String messageText;
     messageText << source->getName() << ": ";
 
@@ -299,10 +288,6 @@ void MidiServerSettingsComponent::handleIncomingMidiMessage(juce::MidiInput* sou
 
 void MidiServerSettingsComponent::timerCallback()
 {
-    // Timer is now only used for updating the monitor display
-    // Virtual keyboard events are handled immediately via handleNoteOn/handleNoteOff listeners
-
-    // Update monitor display
     juce::ScopedLock lock(monitorMutex);
 
     if (pendingMonitorMessages.isEmpty())
@@ -337,7 +322,6 @@ void MidiServerSettingsComponent::handleNoteOn(
     if (!client)
         return;
 
-    // Immediately inject note-on into the MIDI client
     auto message = juce::MidiMessage::noteOn(midiChannel, midiNoteNumber, velocity);
     juce::MidiBuffer buffer;
     buffer.addEvent(message, 0);
@@ -367,13 +351,11 @@ void MidiServerSettingsComponent::handleNoteOff(
     if (!client)
         return;
 
-    // Immediately inject note-off into the MIDI client
     auto message = juce::MidiMessage::noteOff(midiChannel, midiNoteNumber, velocity);
     juce::MidiBuffer buffer;
     buffer.addEvent(message, 0);
     client->injectMidi(buffer);
 
-    // Add to monitor display
     juce::String messageText;
     messageText << "Virtual Keyboard: Note Off: " << juce::MidiMessage::getMidiNoteName(midiNoteNumber, true, true, 4);
 
@@ -390,23 +372,15 @@ void MidiServerSettingsComponent::sendMidiPanic()
 
     juce::MidiBuffer panicMessages;
 
-    // Send All Notes Off (CC 123) and All Controllers Off (CC 121) on all 16 channels
     for (int channel = 1; channel <= 16; ++channel)
     {
-        // All Sound Off (CC 120)
         panicMessages.addEvent(juce::MidiMessage::controllerEvent(channel, 120, 0), 0);
-
-        // All Controllers Off (CC 121)
         panicMessages.addEvent(juce::MidiMessage::controllerEvent(channel, 121, 0), 0);
-
-        // All Notes Off (CC 123)
         panicMessages.addEvent(juce::MidiMessage::controllerEvent(channel, 123, 0), 0);
     }
 
-    // Inject panic messages directly to the client (lock-free)
     client->injectMidi(panicMessages);
 
-    // Also clear the virtual keyboard state
     if (keyboardState)
         keyboardState->allNotesOff(1);
 

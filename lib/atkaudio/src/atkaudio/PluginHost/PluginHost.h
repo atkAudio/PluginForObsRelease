@@ -18,29 +18,17 @@ public:
     void getState(std::string& s) override;
     void setState(std::string& s) override;
 
-    // Get the channel count of the loaded inner plugin
     int getInnerPluginChannelCount() const;
 
-    // Check if sidechain input is enabled
-    bool isSidechainEnabled() const;
-
-    // Enable/disable sidechain input
-    void setSidechainEnabled(bool enabled);
-
-    // Check if multi-core processing is enabled
     bool isMultiCoreEnabled() const;
 
-    // Enable/disable multi-core processing (threadpool vs synchronous)
     void setMultiCoreEnabled(bool enabled);
 
-    // Get current CPU load (0.0 to 1.0+) with peak hold
     float getCpuLoad() const;
 
-    // Get plugin latency in milliseconds
     int getLatencyMs() const;
 
 protected:
-    // AudioModule interface - only need to provide the window component
     juce::Component* getWindowComponent() override;
 
 private:

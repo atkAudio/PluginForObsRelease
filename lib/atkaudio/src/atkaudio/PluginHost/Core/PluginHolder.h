@@ -3,10 +3,6 @@
 #include "HostAudioProcessor.h"
 #include <juce_audio_utils/juce_audio_utils.h>
 
-/**
- * Manages the plugin instance lifecycle for the standalone host.
- * This class handles creation, deletion, and state management of the hosted audio processor.
- */
 class PluginHolder
     : private juce::Timer
     , private juce::Value::Listener
@@ -28,28 +24,22 @@ public:
 
     ~PluginHolder() override;
 
-    // Plugin lifecycle
     virtual void createPlugin();
     virtual void deletePlugin();
 
-    // Channel configuration
     int getNumInputChannels() const;
     int getNumOutputChannels() const;
 
-    // Get the inner processor (HostAudioProcessorImpl) for direct access
     HostAudioProcessorImpl* getHostProcessor() const;
 
-    // State management
     void savePluginState();
     void reloadPluginState();
     void askUserToSaveState(const juce::String& fileSuffix = juce::String());
     void askUserToLoadState(const juce::String& fileSuffix = juce::String());
 
-    // Audio playback control
     void startPlaying();
     void stopPlaying();
 
-    // Mute control
     juce::Value& getMuteInputValue();
     bool getProcessorHasPotentialFeedbackLoop() const;
 
@@ -73,10 +63,8 @@ private:
     void setLastFile(const juce::FileChooser& fc);
     static juce::String getFilePatterns(const juce::String& fileSuffix);
 
-    // Value::Listener
     void valueChanged(juce::Value& value) override;
 
-    // Timer
     void timerCallback() override;
 
     std::unique_ptr<juce::AudioDeviceManager::AudioDeviceSetup> options;

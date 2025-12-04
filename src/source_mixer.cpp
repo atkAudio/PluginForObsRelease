@@ -31,6 +31,8 @@
 #define TEXT_LAYOUT_MONO MT_("Mono")
 #define TEXT_LAYOUT_STEREO MT_("Stereo")
 #define S_LAYOUT "layout"
+#define S_SAFETY_BUFFER "safety_buffer"
+#define TEXT_SAFETY_BUFFER MT_("Safety Buffer")
 
 struct source_data
 {
@@ -68,6 +70,7 @@ struct audiosourcemixer_data
     std::mutex captureCallbackMutex;
 
     std::atomic_int speaker_layout = 0;
+    std::atomic_bool safety_buffer = true;
 
     std::vector<std::vector<float>> tempBuffer;
 };
@@ -216,8 +219,10 @@ static void asmd_capture(void* param, obs_source_t* sourceIn, const struct audio
     source->syncBuffer.write(source->writePtrs.data(), numChannels, frames, sampleRate);
 
     // Check all sources: find minimum ready samples, return early if any active source has no data
+    constexpr int safetyBufferSamples = 4;
     int minReadySamples = frames;
     int activeSourceCount = 0;
+    bool safetyBufferEnabled = asmd->safety_buffer.load(std::memory_order_acquire);
     for (auto& src : *asmd->sources)
     {
         std::scoped_lock lock(asmd->sidechain_update_mutex);
@@ -251,7 +256,9 @@ static void asmd_capture(void* param, obs_source_t* sourceIn, const struct audio
     }
 
     // If no active sources remain, don't output
-    if (activeSourceCount == 0 || minReadySamples <= 0)
+    // Safety buffer: require minimum samples before mixing
+    int requiredSamples = safetyBufferEnabled ? safetyBufferSamples : 1;
+    if (activeSourceCount == 0 || minReadySamples < requiredSamples)
         return;
 
     // Prepare output buffer
@@ -382,6 +389,8 @@ static obs_properties_t* properties(void* data)
     obs_property_list_add_int(layout, TEXT_LAYOUT_MONO, 1);
     obs_property_list_add_int(layout, TEXT_LAYOUT_STEREO, 2);
 
+    obs_properties_add_bool(props, S_SAFETY_BUFFER, TEXT_SAFETY_BUFFER);
+
     obs_source_t* parent = nullptr;
     if (asmd)
         parent = obs_filter_get_parent(asmd->source);
@@ -452,8 +461,10 @@ static void update(void* data, obs_data_t* s)
     // size_t num_channels = audio_output_get_channels(obs_get_audio());
 
     auto layout = obs_data_get_int(s, S_LAYOUT);
+    auto safetyBuffer = obs_data_get_bool(s, S_SAFETY_BUFFER);
 
     asmd->speaker_layout.store((int)layout);
+    asmd->safety_buffer.store(safetyBuffer, std::memory_order_release);
 
     // First pass: count how many sources are configured in the saved settings
     size_t configuredCount = 0;
@@ -612,6 +623,7 @@ static void* asmd_create(obs_data_t* settings, obs_source_t* source)
 static void compressor_defaults(obs_data_t* s)
 {
     obs_data_set_default_string(s, S_SIDECHAIN_SOURCE, "none");
+    obs_data_set_default_bool(s, S_SAFETY_BUFFER, true);
 
     // Set defaults for all slots (support up to 100 slots)
     for (int i = 1; i <= 100; ++i)

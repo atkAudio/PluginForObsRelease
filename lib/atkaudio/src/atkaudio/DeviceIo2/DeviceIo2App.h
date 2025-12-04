@@ -9,11 +9,9 @@
 
 using namespace juce;
 
-//==============================================================================
 class DeviceIo2App final : public AudioAppComponent
 {
 public:
-    //==============================================================================
     DeviceIo2App(AudioDeviceManager& deviceManager, int numInputChannels, int numOutputChannels, double obsSampleRate)
         : AudioAppComponent(deviceManager)
         , deviceManager(deviceManager)
@@ -27,8 +25,7 @@ public:
         deviceManager.initialise(0, 0, nullptr, false);
 
         setSize(settingsComponent.getWidth(), settingsComponent.getHeight());
-
-        (void)obsSampleRate; // OBS sample rate is not used in this demo, but can be set if needed
+        (void)obsSampleRate;
     }
 
     ~DeviceIo2App() override
@@ -36,7 +33,6 @@ public:
         shutdownAudio();
     }
 
-    //==============================================================================
     void prepareToPlay(int samplesPerBlockExpected, double newSampleRate) override
     {
         inputChannels = deviceManager.getCurrentAudioDevice()->getActiveInputChannels().countNumberOfSetBits();
@@ -47,10 +43,8 @@ public:
         deviceOutputBuffer.clearPrepared();
     }
 
-    // processBlock - called by audio device
     void getNextAudioBlock(const AudioSourceChannelInfo& bufferToFill) override
     {
-        // Read from device input into deviceInputBuffer
         if (inputChannels > 0)
             deviceInputBuffer.write(
                 bufferToFill.buffer->getArrayOfReadPointers(),
@@ -59,7 +53,6 @@ public:
                 sampleRate
             );
 
-        // Write to device output from deviceOutputBuffer
         if (outputChannels > 0)
             deviceOutputBuffer.read(
                 bufferToFill.buffer->getArrayOfWritePointers(),
@@ -73,7 +66,6 @@ public:
     {
     }
 
-    //==============================================================================
     void paint(Graphics& g) override
     {
         (void)g;
@@ -81,9 +73,6 @@ public:
 
     void resized() override
     {
-        // This is called when the component is resized.
-        // If you add any child components, this is where you should
-        // update their positions.
     }
 
     auto& getDeviceInputBuffer()
@@ -121,16 +110,12 @@ public:
         setTitleBarButtonsRequired(DocumentWindow::minimiseButton | DocumentWindow::closeButton, false);
         setContentOwned(&demo, true);
         setResizable(true, false);
-
         centreWithSize(demo.getWidth(), demo.getHeight());
-
-        // Window starts off-desktop - AudioModule::setVisible() will add to desktop and show
         removeFromDesktop();
     }
 
     ~AudioAppMainWindow() override
     {
-        // Note: setVisible(false) is handled by atk::destroy() force-hide before this destructor runs
     }
 
     void closeButtonPressed() override

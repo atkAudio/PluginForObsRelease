@@ -20,11 +20,6 @@ public:
             applyDefaultColors();
     }
 
-    /**
-     * Apply custom colors to the look and feel
-     * @param background Background color
-     * @param text Text/foreground color
-     */
     void setColors(juce::Colour background, juce::Colour text)
     {
         // Save colors globally for future instances
@@ -54,9 +49,6 @@ public:
                 comp->sendLookAndFeelChange();
     }
 
-    /**
-     * Static method to apply colors to the current instance
-     */
     static void applyColorsToInstance(juce::Colour background, juce::Colour text)
     {
         if (instance != nullptr)

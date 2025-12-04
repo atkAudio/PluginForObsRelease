@@ -22,8 +22,7 @@ FetchContent_Declare(
     juce
     EXCLUDE_FROM_ALL
     GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
-    GIT_TAG
-        230340dbfc580628596243bb63b31aeb4d6b5a6d # develop 2025-11-27
+    GIT_TAG 8.0.11
     PATCH_COMMAND
         ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/apply-juce-patches.cmake"
 )
@@ -100,41 +99,13 @@ if(NOT WIN32)
     )
 endif()
 
-# ASIO SDK (Windows only)
-if(WIN32)
-    set(ASIO_SDK_DIR "${CMAKE_SOURCE_DIR}/_deps/asiosdk")
-    if(NOT EXISTS "${ASIO_SDK_DIR}")
-        set(_asio_zip "${CMAKE_SOURCE_DIR}/_deps/asiosdk.zip")
-        set(_asio_temp "${CMAKE_SOURCE_DIR}/_deps/asiosdk_temp")
-        message(STATUS "Downloading ASIO SDK...")
-        file(DOWNLOAD "https://www.steinberg.net/asiosdk" "${_asio_zip}" STATUS _status SHOW_PROGRESS)
-        list(GET _status 0 _code)
-        if(_code EQUAL 0)
-            file(ARCHIVE_EXTRACT INPUT "${_asio_zip}" DESTINATION "${_asio_temp}")
-            file(GLOB _dirs "${_asio_temp}/*")
-            list(GET _dirs 0 _extracted)
-            file(RENAME "${_extracted}" "${ASIO_SDK_DIR}")
-            file(
-                REMOVE_RECURSE
-                "${_asio_temp}"
-                "${_asio_zip}"
-            )
-            message(STATUS "ASIO SDK installed to ${ASIO_SDK_DIR}")
-        endif()
-    endif()
-    target_include_directories(${PROJECT_NAME} PRIVATE "${ASIO_SDK_DIR}/common")
-endif()
-
 if(WIN32)
     file(TO_CMAKE_PATH "${CMAKE_INSTALL_PREFIX}" _sanitized_prefix)
     string(REGEX REPLACE "/$" "" _sanitized_prefix "${_sanitized_prefix}")
     set(CMAKE_INSTALL_PREFIX "${_sanitized_prefix}" CACHE PATH "Sanitized install prefix" FORCE)
 endif()
 
-if(BUILD_WITH_ASIO)
-    message(STATUS "Building with ASIO")
-    target_compile_definitions(${PROJECT_NAME} PRIVATE JUCE_ASIO=1)
-endif()
+target_compile_definitions(${PROJECT_NAME} PRIVATE JUCE_ASIO=1)
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE JUCE_ASIO=1)
 

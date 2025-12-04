@@ -32,12 +32,8 @@ namespace atk
 {
 
 /**
- * Adaptive Exponential Backoff Spin Lock
- *
- * Three modes:
- * - Fixed1024: Legacy fixed 1024 pause cycles
- * - BenchmarkedAdaptive: Benchmarked exponential backoff based on buffer size/sample rate
- * - Fixed8192Backoff (default): Fixed exponential backoff 8→16384, then yield forever
+ * Adaptive Exponential Backoff Spin Lock for realtime audio.
+ * Modes: Fixed1024, BenchmarkedAdaptive, Fixed8192Backoff (default).
  */
 class AdaptiveSpinLock
 {

@@ -1,6 +1,5 @@
 #include "DelayLinePlugin.h"
 
-//==============================================================================
 DelayLinePlugin::DelayLinePlugin()
     : AudioProcessor(
           BusesProperties()
@@ -123,7 +122,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout DelayLinePlugin::createParam
     return {params.begin(), params.end()};
 }
 
-//==============================================================================
 DelayLineEditor::DelayLineEditor(DelayLinePlugin& p)
     : AudioProcessorEditor(p)
     , processor(p)

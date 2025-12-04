@@ -13,7 +13,6 @@ static std::unique_ptr<ScopedDPIAwarenessDisabler> makeDPIAwarenessDisablerForPl
     return nullptr;
 }
 
-//==============================================================================
 PluginGraph::PluginGraph(MainHostWindow& mw, AudioPluginFormatManager& fm, KnownPluginList& kpl)
     : FileBasedDocument(getFilenameSuffix(), getFilenameWildcard(), "Load a graph", "Save a graph")
     , formatManager(fm)
@@ -39,7 +38,6 @@ PluginGraph::NodeID PluginGraph::getNextUID() noexcept
     return PluginGraph::NodeID(++(lastUID.uid));
 }
 
-//==============================================================================
 void PluginGraph::changeListenerCallback(ChangeBroadcaster*)
 {
     changed();
@@ -126,7 +124,6 @@ Point<double> PluginGraph::getNodePosition(NodeID nodeID) const
     return {};
 }
 
-//==============================================================================
 void PluginGraph::clear()
 {
     closeAnyOpenPluginWindows();
@@ -188,7 +185,6 @@ bool PluginGraph::closeAnyOpenPluginWindows()
     return !wasEmpty;
 }
 
-//==============================================================================
 String PluginGraph::getDocumentTitle()
 {
     if (!getFile().exists())
@@ -300,7 +296,6 @@ void PluginGraph::setLastDocumentOpened(const File& file)
     mainHostWindow.getAppProperties().getUserSettings()->setValue("recentFilterGraphFiles", recentFiles.toString());
 }
 
-//==============================================================================
 static void readBusLayoutFromXml(
     AudioProcessor::BusesLayout& busesLayout,
     AudioProcessor& plugin,
@@ -344,7 +339,6 @@ static void readBusLayoutFromXml(
     }
 }
 
-//==============================================================================
 static XmlElement* createBusLayoutXml(const AudioProcessor::BusesLayout& layout, const bool isInput)
 {
     auto& buses = isInput ? layout.inputBuses : layout.outputBuses;
@@ -603,10 +597,6 @@ File PluginGraph::getDefaultGraphDocumentOnMobile()
     auto persistantStorageLocation = File::getSpecialLocation(File::userApplicationDataDirectory);
     return persistantStorageLocation.getChildFile("state.filtergraph");
 }
-
-//==============================================================================
-// MIDI routing through MidiServer
-//==============================================================================
 
 void PluginGraph::processMidiInput(juce::MidiBuffer& midiMessages, int numSamples, double sampleRate)
 {

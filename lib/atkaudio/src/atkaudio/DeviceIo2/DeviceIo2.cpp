@@ -10,39 +10,28 @@
 
 struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
 {
-    // AudioClient for device I/O routing
     atk::AudioClient audioClient;
-
-    // Channel routing matrix
     atk::ChannelRoutingMatrix routingMatrix;
 
-    // Device manager for audio device configuration (like PluginHost2)
     juce::AudioDeviceManager deviceManager;
     std::unique_ptr<atk::ModuleDeviceManager> moduleDeviceManager;
 
-    // Buffers for device I/O
     juce::AudioBuffer<float> deviceInputBuffer;
     juce::AudioBuffer<float> deviceOutputBuffer;
     juce::AudioBuffer<float> internalBuffer;
 
-    // Settings window
     std::unique_ptr<juce::DocumentWindow> settingsWindow;
 
-    // Current OBS channel count
-    int currentNumChannels = 2; // Default to stereo
-
-    // Prepared state for realtime-safe processing
+    int currentNumChannels = 2;
     int preparedNumChannels = 0;
     int preparedNumSamples = 0;
     double preparedSampleRate = 0.0;
 
-    // Output Delay
     std::atomic<float> outputDelayMs{0.0f};
     std::vector<juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear>> outputDelayLines;
     std::vector<juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>> outputDelaySmooth;
     bool delayPrepared = false;
 
-    // Pending async updates (access only from message thread)
     enum class UpdateType
     {
         None,
@@ -58,38 +47,23 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
 
     Impl()
     {
-        // AudioClient automatically registers with AudioServer
-
-        // Create ModuleDeviceManager for audio device configuration (like PluginHost2)
         moduleDeviceManager = std::make_unique<atk::ModuleDeviceManager>(
             std::make_unique<atk::ModuleAudioIODeviceType>("DeviceIo2 Audio"),
             deviceManager
         );
-
-        // Initialize device management - don't open OBS device, just make it available
         moduleDeviceManager->initialize();
-
-        // Initialize default diagonal OBS routing (will be resized when process() is called)
-        // Start with stereo as default, will auto-resize to match incoming OBS channel count
         routingMatrix.initializeDefaultMapping(2);
     }
 
     ~Impl()
     {
-        // Cancel any pending async updates
         cancelPendingUpdate();
-
-        // Clean up settings window asynchronously on the message thread
         auto* settingsWin = this->settingsWindow.release();
-        auto lambda = [settingsWin] { delete settingsWin; };
-        juce::MessageManager::callAsync(lambda);
-
-        // AtomicSharedPtr cleans up automatically
+        juce::MessageManager::callAsync([settingsWin] { delete settingsWin; });
     }
 
     void handleAsyncUpdate() override
     {
-        // Called on message thread to handle async updates safely
         auto updateType = pendingUpdateType.exchange(UpdateType::None);
 
         switch (updateType)
@@ -124,15 +98,11 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
 
     void updateChannelInfoOnMessageThread(int numChannels)
     {
-        // Update stored channel count
         currentNumChannels = numChannels;
 
-        // Allocate internal buffer for the current configuration
         if (internalBuffer.getNumChannels() < numChannels || internalBuffer.getNumSamples() < preparedNumSamples)
             internalBuffer.setSize(numChannels, preparedNumSamples, false, false, true);
 
-        // Check if routing matrix needs resizing
-        // The matrix size should be: numOBSChannels + numDeviceSubscriptions
         auto currentSubs = audioClient.getSubscriptions();
         int numInputSubs = (int)currentSubs.inputSubscriptions.size();
         int numOutputSubs = (int)currentSubs.outputSubscriptions.size();
@@ -142,15 +112,12 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
         auto currentInput = getInputChannelMapping();
         auto currentOutput = getOutputChannelMapping();
 
-        // Only resize if the matrix doesn't match expected size
-        // resizeMappings is designed for OBS channel changes, not for adding/removing device subscriptions
         bool needsResize = ((int)currentInput.size() != expectedInputRows && expectedInputRows == numChannels)
                         || ((int)currentOutput.size() != expectedOutputRows && expectedOutputRows == numChannels);
 
         if (needsResize)
             routingMatrix.resizeMappings(numChannels);
 
-        // If settings window is already created, update it
         if (settingsWindow != nullptr)
         {
             // Find the AudioServerSettingsComponent inside the window
@@ -162,8 +129,6 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
                     channelNames.add(juce::String(i + 1));
 
                 audioComponent->setClientChannelInfo(channelNames, channelNames, "DeviceIo2");
-
-                // Update OBS mappings in UI
                 audioComponent->setObsChannelMappings(getInputChannelMapping(), getOutputChannelMapping());
             }
         }
@@ -184,7 +149,6 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
         outputDelayLines.clear();
         outputDelaySmooth.clear();
 
-        // Max delay: 10000ms = 10 seconds
         const float maxDelaySeconds = 10.0f;
         const int maxDelaySamples = static_cast<int>(maxDelaySeconds * sampleRate);
 
@@ -196,7 +160,7 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
             outputDelayLines.push_back(std::move(delayLine));
 
             juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smooth;
-            smooth.reset(sampleRate, 0.05); // 50ms smoothing time
+            smooth.reset(sampleRate, 0.05);
             outputDelaySmooth.push_back(smooth);
         }
 
@@ -205,20 +169,16 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
 
     void applyOutputDelay(juce::AudioBuffer<float>& buffer, int numChannels, int numSamples, double sampleRate)
     {
-        // Prepare delay lines if not ready or parameters changed
         if (!delayPrepared || outputDelayLines.size() != numChannels)
             prepareOutputDelay(numChannels, numSamples, sampleRate);
 
-        // Get current delay setting
         float delayMs = outputDelayMs.load(std::memory_order_acquire);
         float delaySamples = (delayMs / 1000.0f) * static_cast<float>(sampleRate);
 
-        // Apply delay to each channel
         for (int ch = 0; ch < numChannels; ++ch)
         {
             if (ch < outputDelayLines.size())
             {
-                // Set target delay value
                 outputDelaySmooth[ch].setTargetValue(delaySamples);
 
                 auto* channelData = buffer.getWritePointer(ch);
@@ -234,45 +194,32 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
 
     void process(float** buffer, int numChannels, int numSamples, double sampleRate)
     {
-        // Check if we need reconfiguration (realtime-safe checks only)
-        // Note: numSamples can vary between calls, only reallocate if we need MORE space
         bool needsReconfiguration =
             preparedNumChannels != numChannels || preparedNumSamples < numSamples || preparedSampleRate != sampleRate;
 
         if (needsReconfiguration)
         {
             preparedNumChannels = numChannels;
-            preparedNumSamples = juce::jmax(preparedNumSamples, numSamples); // Allocate for the largest size seen
+            preparedNumSamples = juce::jmax(preparedNumSamples, numSamples);
             preparedSampleRate = sampleRate;
 
-            // Schedule async channel info update (can't block OBS audio thread)
             pendingNumChannels.store(numChannels);
             pendingUpdateType.store(UpdateType::ChannelInfo);
             triggerAsyncUpdate();
-
-            // Skip this buffer while preparing
             return;
         }
 
-        // Ensure internal buffer is large enough (realtime-safe if already allocated)
         if (internalBuffer.getNumChannels() < numChannels || internalBuffer.getNumSamples() < numSamples)
-        {
-            // Buffer not yet allocated, skip this frame
             return;
-        }
 
-        // Clear internal buffer - routing matrix will populate it based on mappings
         internalBuffer.clear();
 
-        // Get current subscriptions from AudioClient
         auto clientState = audioClient.getSubscriptions();
         int numInputSubs = (int)clientState.inputSubscriptions.size();
         int numOutputSubs = (int)clientState.outputSubscriptions.size();
 
-        // Ensure device buffers have enough channels (realtime-safe if already allocated)
         if (deviceInputBuffer.getNumChannels() < numInputSubs || deviceInputBuffer.getNumSamples() < numSamples)
         {
-            // Need to allocate, schedule async and skip this frame
             pendingInputSubs.store(numInputSubs);
             pendingNumSamples.store(numSamples);
             pendingUpdateType.store(UpdateType::InputBufferResize);
@@ -282,7 +229,6 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
 
         if (deviceOutputBuffer.getNumChannels() < numOutputSubs || deviceOutputBuffer.getNumSamples() < numSamples)
         {
-            // Need to allocate, schedule async and skip this frame
             pendingOutputSubs.store(numOutputSubs);
             pendingNumSamples.store(numSamples);
             pendingUpdateType.store(UpdateType::OutputBufferResize);
@@ -290,44 +236,22 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
             return;
         }
 
-        // Pull subscribed device inputs (AudioServer handles the routing based on subscriptions)
         audioClient.pullSubscribedInputs(deviceInputBuffer, numSamples, sampleRate);
 
-        // Apply INPUT routing matrix using ChannelRoutingMatrix
-        // Routes OBS inputs and device inputs to internal buffer based on matrix configuration
-        routingMatrix.applyInputRouting(
-            buffer,            // OBS buffer
-            deviceInputBuffer, // Device inputs
-            internalBuffer,    // Target buffer
-            numChannels,       // Number of OBS channels
-            numSamples,        // Number of samples
-            numInputSubs       // Number of device input subscriptions
-        );
+        routingMatrix
+            .applyInputRouting(buffer, deviceInputBuffer, internalBuffer, numChannels, numSamples, numInputSubs);
 
-        // Apply OUTPUT routing matrix using ChannelRoutingMatrix
-        routingMatrix.applyOutputRouting(
-            internalBuffer,     // Source buffer
-            buffer,             // OBS buffer
-            deviceOutputBuffer, // Device outputs
-            numChannels,        // Number of OBS channels
-            numSamples,         // Number of samples
-            numOutputSubs       // Number of device output subscriptions
-        );
+        routingMatrix
+            .applyOutputRouting(internalBuffer, buffer, deviceOutputBuffer, numChannels, numSamples, numOutputSubs);
 
-        // Apply output delay before sending to hardware
         if (numOutputSubs > 0)
             applyOutputDelay(deviceOutputBuffer, numOutputSubs, numSamples, sampleRate);
 
-        // Push to subscribed device outputs
         audioClient.pushSubscribedOutputs(deviceOutputBuffer, numSamples, sampleRate);
-
-        // Output routing matrix has already populated the OBS buffer based on routing configuration
-        // No additional processing needed - the matrix controls what goes to OBS output
     }
 
     juce::Component* getWindowComponent()
     {
-        // Lazy creation of settings window
         if (settingsWindow == nullptr)
         {
             class SettingsWindow : public juce::DocumentWindow
@@ -348,16 +272,13 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
 
                     auto* audioComponent = new atk::AudioServerSettingsComponent(client);
 
-                    // Set DeviceIo2's deviceManager for Device... button
                     audioComponent->setDeviceManager(devManager);
 
-                    // Set up channel names based on current OBS channel count
                     juce::StringArray channelNames;
                     for (int i = 0; i < numChannels; ++i)
                         channelNames.add(juce::String(i + 1));
 
-                    // Set up fixed top rows for OBS channels BEFORE setClientChannelInfo
-                    audioComponent->setInputFixedTopRows(channelNames, true); // true = apply default diagonal
+                    audioComponent->setInputFixedTopRows(channelNames, true);
                     audioComponent->setOutputFixedTopRows(channelNames, true);
 
                     audioComponent->setClientChannelInfo(channelNames, channelNames, "DeviceIo2");
@@ -378,7 +299,6 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
             };
 
             settingsWindow = std::make_unique<SettingsWindow>(&audioClient, &deviceManager, currentNumChannels);
-            // Initialize with current channel count
             if (auto* audioComponent =
                     dynamic_cast<atk::AudioServerSettingsComponent*>(settingsWindow->getContentComponent()))
             {
@@ -386,14 +306,10 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
                 for (int i = 0; i < currentNumChannels; ++i)
                     channelNames.add(juce::String(i + 1));
 
-                // Set up fixed top rows for OBS channels BEFORE setting mappings
-                // This configures the matrix to have OBS channel rows that can be mapped
-                audioComponent->setInputFixedTopRows(channelNames, true); // true = apply default diagonal
+                audioComponent->setInputFixedTopRows(channelNames, true);
                 audioComponent->setOutputFixedTopRows(channelNames, true);
-
                 audioComponent->setClientChannelInfo(channelNames, channelNames, "DeviceIo2");
 
-                // Set callback to apply OBS channel mapping when user clicks Apply
                 audioComponent->onObsMappingChanged = [this](
                                                           const std::vector<std::vector<bool>>& inputMapping,
                                                           const std::vector<std::vector<bool>>& outputMapping
@@ -403,14 +319,10 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
                     setOutputChannelMapping(outputMapping);
                 };
 
-                // Set callback to get current OBS mappings for Restore button
                 audioComponent->getCurrentObsMappings =
                     [this]() -> std::pair<std::vector<std::vector<bool>>, std::vector<std::vector<bool>>>
                 { return {getInputChannelMapping(), getOutputChannelMapping()}; };
 
-                // Restore complete routing matrix (OBS + device subscription rows)
-                // This must happen AFTER setInputFixedTopRows/setOutputFixedTopRows
-                // Use setCompleteRoutingMatrices instead of setObsChannelMappings to restore ALL rows
                 audioComponent->setCompleteRoutingMatrices(getInputChannelMapping(), getOutputChannelMapping());
             }
         }
@@ -420,25 +332,17 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
 
     juce::Component* createEmbeddableSettingsComponent()
     {
-        // Create a new AudioServerSettingsComponent that can be embedded
         auto* audioComponent = new atk::AudioServerSettingsComponent(&audioClient);
-
-        // Set DeviceIo2's deviceManager for Device... button (shows AudioServer devices like PluginHost2)
         audioComponent->setDeviceManager(&deviceManager);
 
-        // Set up channel names based on current OBS channel count
         juce::StringArray channelNames;
         for (int i = 0; i < currentNumChannels; ++i)
             channelNames.add(juce::String(i + 1));
 
-        // Set up fixed top rows for OBS channels BEFORE setting mappings
-        // This configures the matrix to have OBS channel rows that can be mapped
-        audioComponent->setInputFixedTopRows(channelNames, true); // true = apply default diagonal
+        audioComponent->setInputFixedTopRows(channelNames, true);
         audioComponent->setOutputFixedTopRows(channelNames, true);
-
         audioComponent->setClientChannelInfo(channelNames, channelNames, "DeviceIo2");
 
-        // Set callback to apply OBS channel mapping when user clicks Apply
         audioComponent->onObsMappingChanged = [this](
                                                   const std::vector<std::vector<bool>>& inputMapping,
                                                   const std::vector<std::vector<bool>>& outputMapping
@@ -448,13 +352,10 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
             setOutputChannelMapping(outputMapping);
         };
 
-        // Set callback to get current OBS mappings for Restore button
         audioComponent->getCurrentObsMappings =
             [this]() -> std::pair<std::vector<std::vector<bool>>, std::vector<std::vector<bool>>>
         { return {getInputChannelMapping(), getOutputChannelMapping()}; };
 
-        // Restore complete routing matrix (OBS + device subscription rows)
-        // Subscription rows are now initialized immediately in AudioServerSettingsComponent constructor
         audioComponent->setCompleteRoutingMatrices(getInputChannelMapping(), getOutputChannelMapping());
 
         return audioComponent;
@@ -483,11 +384,8 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
     void getState(std::string& s)
     {
         auto rootElement = std::make_unique<juce::XmlElement>("DeviceIo2State");
-
-        // Save output delay
         rootElement->setAttribute("outputDelayMs", outputDelayMs.load(std::memory_order_acquire));
 
-        // Save OBS channel mappings
         auto inputMapping = routingMatrix.getInputMapping();
         auto outputMapping = routingMatrix.getOutputMapping();
 
@@ -521,11 +419,9 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
             rootElement->addChildElement(outputMappingElement);
         }
 
-        // Save AudioClient subscriptions
         auto* subscriptionsElement = new juce::XmlElement("Subscriptions");
         auto clientState = audioClient.getSubscriptions();
 
-        // Save input subscriptions
         for (const auto& sub : clientState.inputSubscriptions)
         {
             auto* subElement = new juce::XmlElement("InputSub");
@@ -535,7 +431,6 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
             subscriptionsElement->addChildElement(subElement);
         }
 
-        // Save output subscriptions
         for (const auto& sub : clientState.outputSubscriptions)
         {
             auto* subElement = new juce::XmlElement("OutputSub");
@@ -561,15 +456,12 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
         if (!rootElement)
             return;
 
-        // Restore output delay
         if (rootElement->hasAttribute("outputDelayMs"))
         {
             float delayMs = static_cast<float>(rootElement->getDoubleAttribute("outputDelayMs"));
             outputDelayMs.store(delayMs, std::memory_order_release);
         }
 
-        // Restore AudioClient subscriptions FIRST
-        // This must happen before restoring routing matrix because matrix size depends on subscription count
         if (auto* subscriptionsElement = rootElement->getChildByName("Subscriptions"))
         {
             atk::AudioClientState state;
@@ -596,8 +488,6 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
             audioClient.setSubscriptions(state);
         }
 
-        // Restore complete routing matrix (OBS channels + device subscription channels)
-        // The matrix must include rows for both OBS and subscribed device channels
         if (auto* inputMappingElement = rootElement->getChildByName("InputMapping"))
         {
             std::vector<std::vector<bool>> inputMapping;
@@ -637,14 +527,11 @@ atk::DeviceIo2::DeviceIo2()
 
 atk::DeviceIo2::~DeviceIo2()
 {
-    // Cancel any pending async updates in the implementation
     if (pImpl)
         pImpl->cancelPendingUpdate();
 
-    // Delete implementation asynchronously on message thread to ensure
-    // audio processing has fully stopped before AudioClient unregisters
     auto* impl = pImpl;
-    pImpl = nullptr; // Clear pointer immediately to prevent further use
+    pImpl = nullptr;
 
     if (impl)
         juce::MessageManager::callAsync([impl]() { delete impl; });

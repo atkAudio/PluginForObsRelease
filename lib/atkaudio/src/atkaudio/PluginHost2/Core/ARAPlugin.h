@@ -78,7 +78,6 @@ private:
     ARAHostModel::AudioSource audioSource;
 };
 
-//==============================================================================
 class MusicalContext
 {
     auto getMusicalContextProperties() const
@@ -107,7 +106,6 @@ private:
     ARAHostModel::MusicalContext context;
 };
 
-//==============================================================================
 class RegionSequence
 {
     auto getRegionSequenceProperties() const
@@ -172,7 +170,6 @@ private:
     ARAHostModel::AudioModification modification;
 };
 
-//==============================================================================
 class PlaybackRegion
 {
     auto getPlaybackRegionProperties() const
@@ -214,7 +211,6 @@ private:
     ARAHostModel::PlaybackRegion region;
 };
 
-//==============================================================================
 class AudioAccessController final : public ARA::Host::AudioAccessControllerInterface
 {
 public:
@@ -1167,13 +1163,11 @@ public:
         setBusesLayout(inner->getBusesLayout());
     }
 
-    //==============================================================================
     AudioProcessorEditor* createARAHostEditor()
     {
         return araHost.createEditor();
     }
 
-    //==============================================================================
     const String getName() const override
     {
         std::lock_guard<std::mutex> lock(innerMutex);
@@ -1451,7 +1445,6 @@ public:
         return true;
     }
 
-    //==============================================================================
     void fillInPluginDescription(PluginDescription& description) const override
     {
         return inner->fillInPluginDescription(description);
@@ -1500,7 +1493,6 @@ private:
 
     PrepareToPlayParams prepareToPlayParams;
 
-    //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ARAPluginInstanceWrapper)
 };
 #endif

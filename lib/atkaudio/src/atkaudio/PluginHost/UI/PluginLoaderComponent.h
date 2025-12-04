@@ -14,10 +14,6 @@
 using juce::isPositiveAndBelow;
 using juce::NullCheckedInvocation;
 
-/**
- * UI component for browsing and loading audio plugins.
- * Displays the available plugins and provides controls for loading them.
- */
 class PluginLoaderComponent final : public juce::Component
 {
 public:

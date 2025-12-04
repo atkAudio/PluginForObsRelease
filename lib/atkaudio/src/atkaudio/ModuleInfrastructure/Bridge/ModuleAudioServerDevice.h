@@ -9,9 +9,6 @@
 namespace atk
 {
 
-/**
- * Lightweight info about an AudioServer device (just name and type)
- */
 struct AudioServerDeviceInfo
 {
     juce::String deviceName;
@@ -27,22 +24,11 @@ struct AudioServerDeviceInfo
     }
 };
 
-/**
- * AudioIODevice bridge for AudioServer devices
- *
- * These work just like OBS Audio - they're real usable devices that bridge
- * between AudioServer and JUCE's AudioDeviceManager.
- *
- * Audio flow: AudioServer device → directCallback → JUCE callback → Module Graph
- *
- * This is a reusable component that can be used by any module implementation.
- */
 class ModuleAudioServerDevice
     : public juce::AudioIODevice
-    , public juce::AudioIODeviceCallback // AudioServer calls us via this interface
+    , public juce::AudioIODeviceCallback
 {
 private:
-    // Device coordinator for this module instance
     std::shared_ptr<ModuleDeviceCoordinator> coordinator;
 
 public:
@@ -74,7 +60,6 @@ public:
         close();
     }
 
-    // AudioIODevice interface - Channel queries
     juce::StringArray getOutputChannelNames() override
     {
         if (auto* server = AudioServer::getInstanceWithoutCreating())
@@ -109,7 +94,6 @@ public:
         return sizes.isEmpty() ? 512 : sizes[0];
     }
 
-    // AudioIODevice interface - Open/Close
     juce::String open(
         const juce::BigInteger& inputChannels,
         const juce::BigInteger& outputChannels,
@@ -117,110 +101,42 @@ public:
         int bufferSizeSamples
     ) override
     {
-        DBG("ModuleAudioServerDevice::open() called for '" + actualDeviceName + "'");
-
-        // Check if device is already open with different parameters - need to reopen
         bool needsReopen = false;
 
         if (isOpen_)
         {
             const juce::ScopedLock sl(lock);
-
-            // Check if sample rate or buffer size changed - these require device reopen
             if ((sampleRate > 0.0 && !juce::exactlyEqual(currentSampleRate, sampleRate))
                 || (bufferSizeSamples > 0 && currentBufferSize != bufferSizeSamples))
             {
-                DBG("ModuleAudioServerDevice::open() parameters changed - reopening device");
-                DBG("  Current: "
-                    + juce::String(currentSampleRate)
-                    + "Hz, "
-                    + juce::String(currentBufferSize)
-                    + " samples");
-                DBG("  Requested: " + juce::String(sampleRate) + "Hz, " + juce::String(bufferSizeSamples) + " samples");
                 needsReopen = true;
             }
         }
 
-        // Update active channel configuration:
-        // - On first open: ALWAYS enable ALL channels (ignore passed channels - they may be from previous device)
-        // - When only channels changed (no rate/buffer change): use passed channels
-        // - When reopening for rate/buffer: PRESERVE existing channels (ignore passed ones)
         if (!isOpen_ || !needsReopen)
         {
             const juce::ScopedLock sl(lock);
 
-            // Get actual device channel counts from AudioServer
-            int actualInputChannels = 0;
-            int actualOutputChannels = 0;
+            int actualInputChannelCount = 0;
+            int actualOutputChannelCount = 0;
             if (auto* server = AudioServer::getInstanceWithoutCreating())
             {
-                actualInputChannels = server->getDeviceNumChannels(actualDeviceName, true);
-                actualOutputChannels = server->getDeviceNumChannels(actualDeviceName, false);
+                actualInputChannelCount = server->getDeviceNumChannels(actualDeviceName, true);
+                actualOutputChannelCount = server->getDeviceNumChannels(actualDeviceName, false);
             }
 
-            // Store UI channel selection (for filtering in audio callback)
             activeInputChannels.clear();
             activeOutputChannels.clear();
 
-            if (!isOpen_)
-            {
-                // First open: ALWAYS enable all channels by default
-                activeInputChannels.setRange(0, actualInputChannels, true);
-                activeOutputChannels.setRange(0, actualOutputChannels, true);
+            for (int i = 0; i < actualInputChannelCount; ++i)
+                if (inputChannels[i])
+                    activeInputChannels.setBit(i);
 
-                DBG("ModuleAudioServerDevice::open() first open - enabling ALL channels by default");
-            }
-            else
-            {
-                // Device already open, only channels changed - use passed channels
-                bool anyInputChannelRequested = false;
-                bool anyOutputChannelRequested = false;
-
-                for (int i = 0; i < actualInputChannels; ++i)
-                {
-                    if (inputChannels[i])
-                    {
-                        activeInputChannels.setBit(i);
-                        anyInputChannelRequested = true;
-                    }
-                }
-
-                for (int i = 0; i < actualOutputChannels; ++i)
-                {
-                    if (outputChannels[i])
-                    {
-                        activeOutputChannels.setBit(i);
-                        anyOutputChannelRequested = true;
-                    }
-                }
-
-                // If no specific channels requested, enable all channels
-                if (!anyInputChannelRequested && actualInputChannels > 0)
-                    activeInputChannels.setRange(0, actualInputChannels, true);
-
-                if (!anyOutputChannelRequested && actualOutputChannels > 0)
-                    activeOutputChannels.setRange(0, actualOutputChannels, true);
-            }
-
-            DBG("ModuleAudioServerDevice::open() channel configuration:");
-            DBG("  Hardware has " + juce::String(actualInputChannels) + " input channels (all open)");
-            DBG("  Hardware has " + juce::String(actualOutputChannels) + " output channels (all open)");
-            DBG("  UI will use input channels: " + activeInputChannels.toString(2));
-            DBG("  UI will use output channels: " + activeOutputChannels.toString(2));
-
-            // Don't store JUCE's passed parameters yet - they may be from a different device
-            // We'll query the actual parameters from AudioServer after opening
-        }
-        else
-        {
-            // Reopening for rate/buffer change - preserve existing channel selection
-            const juce::ScopedLock sl(lock);
-            DBG("ModuleAudioServerDevice::open() reopening - preserving existing active channels:");
-            DBG("  Active input: " + activeInputChannels.toString(2));
-            DBG("  Active output: " + activeOutputChannels.toString(2));
+            for (int i = 0; i < actualOutputChannelCount; ++i)
+                if (outputChannels[i])
+                    activeOutputChannels.setBit(i);
         }
 
-        // Only interact with AudioServer if we need to reopen or if it's the first open
         if (needsReopen || !isOpen_)
         {
             juce::AudioDeviceManager::AudioDeviceSetup currentSetup;
@@ -228,19 +144,10 @@ public:
             if (needsReopen)
             {
                 if (auto* server = AudioServer::getInstanceWithoutCreating())
-                {
                     hasCurrentSetup = server->getCurrentDeviceSetup(actualDeviceName, currentSetup);
-                    if (hasCurrentSetup)
-                    {
-                        DBG("ModuleAudioServerDevice::open() retrieved current setup before closing:");
-                        DBG("  Sample rate: " + juce::String(currentSetup.sampleRate));
-                        DBG("  Buffer size: " + juce::String(currentSetup.bufferSize));
-                    }
-                }
                 close();
             }
 
-            // Register with AudioServer (outside lock to avoid deadlock)
             if (!isOpen_)
             {
                 if (auto* server = AudioServer::getInstance())
@@ -249,62 +156,34 @@ public:
 
                     if (needsReopen && hasCurrentSetup)
                     {
-                        // Reopening - use current rate/buffer, but update what changed
                         setup.sampleRate = (sampleRate > 0.0 && !juce::exactlyEqual(currentSampleRate, sampleRate))
                                              ? sampleRate
                                              : currentSetup.sampleRate;
                         setup.bufferSize = (bufferSizeSamples > 0 && currentBufferSize != bufferSizeSamples)
                                              ? bufferSizeSamples
                                              : currentSetup.bufferSize;
-                        // Don't pass channel configuration - AudioServer always opens all channels
-
-                        DBG("ModuleAudioServerDevice::open() reopening with modified parameters");
                     }
                     else
                     {
-                        // First open - use device defaults (ignore JUCE's passed values from previous device)
                         setup.sampleRate = 0.0;
                         setup.bufferSize = 0;
-                        // Don't pass channel configuration - AudioServer always opens all channels
-                        DBG("ModuleAudioServerDevice::open() first open - requesting device defaults");
                     }
 
-                    DBG("ModuleAudioServerDevice::open() registering callback with AudioServer...");
-                    DBG("  Passing to AudioServer: sampleRate="
-                        + juce::String(setup.sampleRate)
-                        + ", bufferSize="
-                        + juce::String(setup.bufferSize));
+                    // Don't pass channel config - AudioServer opens with all channels,
+                    // and ModuleAudioServerDevice filters to active ones in the callback
 
                     if (!server->registerDirectCallback(actualDeviceName.toStdString(), this, setup))
-                    {
-                        DBG("ModuleAudioServerDevice::open() FAILED to register callback");
                         return "Failed to register with AudioServer";
-                    }
 
-                    // Now query the ACTUAL parameters that AudioServer opened the device with
                     const juce::ScopedLock sl(lock);
                     currentSampleRate = server->getCurrentSampleRate(actualDeviceName);
                     currentBufferSize = server->getCurrentBufferSize(actualDeviceName);
-
-                    DBG("ModuleAudioServerDevice::open() successfully registered callback");
-                    DBG("  Actual device parameters: sampleRate="
-                        + juce::String(currentSampleRate)
-                        + "Hz, bufferSize="
-                        + juce::String(currentBufferSize)
-                        + " samples");
                 }
 
                 isOpen_ = true;
             }
         }
-        else
-        {
-            // Device already open, only channels changed - no need to interact with AudioServer
-            DBG("ModuleAudioServerDevice::open() device already open with correct parameters - only updated channel "
-                "selection");
-        }
 
-        DBG("ModuleAudioServerDevice::open() completed - isOpen=" + juce::String(isOpen_ ? "true" : "false"));
         return {};
     }
 
@@ -313,24 +192,15 @@ public:
         if (!isOpen_)
             return;
 
-        DBG("ModuleAudioServerDevice::close() called for '" + actualDeviceName + "'");
-
         stop();
 
-        // Unregister from AudioServer
         if (auto* server = AudioServer::getInstanceWithoutCreating())
-        {
-            DBG("ModuleAudioServerDevice::close() unregistering callback from AudioServer...");
             server->unregisterDirectCallback(actualDeviceName.toStdString(), this);
-        }
 
         {
             const juce::ScopedLock sl(lock);
-            // Don't clear activeInputChannels/activeOutputChannels - they're UI state that should persist
             isOpen_ = false;
         }
-
-        DBG("ModuleAudioServerDevice::close() completed");
     }
 
     bool isOpen() override
@@ -338,25 +208,15 @@ public:
         return isOpen_;
     }
 
-    // AudioIODevice interface - Start/Stop
     void start(juce::AudioIODeviceCallback* newCallback) override
     {
-        DBG("ModuleAudioServerDevice::start() called for '" + actualDeviceName + "'");
-
         if (!isOpen_ || newCallback == nullptr)
-        {
-            DBG("ModuleAudioServerDevice::start() early return - not open or null callback");
             return;
-        }
 
         stop();
 
-        // Try to become the active device
         if (coordinator && !coordinator->tryActivate(this))
-        {
-            DBG("ModuleAudioServerDevice::start() failed to activate - another device is active");
             return;
-        }
 
         {
             const juce::ScopedLock sl(lock);
@@ -366,16 +226,12 @@ public:
 
         if (userCallback != nullptr)
             userCallback->audioDeviceAboutToStart(this);
-
-        DBG("ModuleAudioServerDevice::start() completed - now playing");
     }
 
     void stop() override
     {
         if (!isPlaying_)
             return;
-
-        DBG("ModuleAudioServerDevice::stop() called for '" + actualDeviceName + "'");
 
         if (coordinator)
             coordinator->deactivate(this);
@@ -390,8 +246,6 @@ public:
 
         if (callbackToStop != nullptr)
             callbackToStop->audioDeviceStopped();
-
-        DBG("ModuleAudioServerDevice::stop() completed - stopped playing");
     }
 
     bool isPlaying() override
@@ -399,7 +253,6 @@ public:
         return isPlaying_;
     }
 
-    // AudioIODevice interface - Status
     juce::String getLastError() override
     {
         return {};
@@ -407,12 +260,20 @@ public:
 
     int getCurrentBufferSizeSamples() override
     {
-        return currentBufferSize;
+        if (currentBufferSize > 0)
+            return currentBufferSize;
+        if (auto* server = AudioServer::getInstanceWithoutCreating())
+            return server->getCurrentBufferSize(actualDeviceName);
+        return 0;
     }
 
     double getCurrentSampleRate() override
     {
-        return currentSampleRate;
+        if (currentSampleRate > 0.0)
+            return currentSampleRate;
+        if (auto* server = AudioServer::getInstanceWithoutCreating())
+            return server->getCurrentSampleRate(actualDeviceName);
+        return 0.0;
     }
 
     int getCurrentBitDepth() override
@@ -422,17 +283,11 @@ public:
 
     juce::BigInteger getActiveInputChannels() const override
     {
-        // Return the user's UI channel selection
-        // This is what JUCE will use for displaying/editing channel selection
-        // and what the CallbackMaxSizeEnforcer will use to size its arrays
         return activeInputChannels;
     }
 
     juce::BigInteger getActiveOutputChannels() const override
     {
-        // Return the user's UI channel selection
-        // This is what JUCE will use for displaying/editing channel selection
-        // and what the CallbackMaxSizeEnforcer will use to size its arrays
         return activeOutputChannels;
     }
 
@@ -447,7 +302,6 @@ public:
     }
 
 private:
-    // AudioIODeviceCallback interface - called by AudioServer
     void audioDeviceIOCallbackWithContext(
         const float* const* inputChannelData,
         int numInputChannels,
@@ -562,9 +416,9 @@ private:
 
         // Copy filtered output back to hardware channels
         activeIdx = 0;
-        for (int ch = 0; ch < numOutputChannels && activeIdx < numActiveOutputs; ++ch)
+        for (int ch = 0; ch < numOutputChannels; ++ch)
         {
-            if (activeOutputChannels[ch] && outputChannelData[ch] != nullptr)
+            if (activeOutputChannels[ch] && outputChannelData[ch] != nullptr && activeIdx < numActiveOutputs)
             {
                 // Safety check: ensure we have valid buffer pointers
                 const float* srcPtr = tempOutputBuffer.getReadPointer(activeIdx);
@@ -598,8 +452,8 @@ private:
     juce::String actualDeviceName;
     juce::String deviceType;
     juce::AudioIODeviceCallback* userCallback = nullptr;
-    juce::BigInteger activeInputChannels;  // UI selection - which channels to actually use
-    juce::BigInteger activeOutputChannels; // UI selection - which channels to actually use
+    juce::BigInteger activeInputChannels;
+    juce::BigInteger activeOutputChannels;
     double currentSampleRate = 0.0;
     int currentBufferSize = 0;
     bool isOpen_ = false;
@@ -608,12 +462,9 @@ private:
     std::atomic<int> activeCallbackCount{0};
     juce::CriticalSection lock;
 
-    // Temp buffers for channel filtering in audio callback
-    // AudioServer passes ALL hardware channels, but JUCE's CallbackMaxSizeEnforcer
-    // expects only the active channels, so we filter before/after the user callback
     juce::AudioBuffer<float> tempOutputBuffer;
     juce::Array<const float*> activeInputPtrs;
-    std::vector<float*> activeOutputPtrs{32}; // Pre-allocate for up to 32 channels
+    std::vector<float*> activeOutputPtrs{32};
 };
 
 } // namespace atk

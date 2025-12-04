@@ -11,9 +11,6 @@ namespace atk
 
 class MidiServer;
 
-/**
- * Client subscription state - stores which devices the client is subscribed to
- */
 struct MidiClientState
 {
     juce::StringArray subscribedInputDevices;
@@ -25,24 +22,6 @@ struct MidiClientState
 
 class MidiMessageQueue;
 
-/**
- * MIDI Client - owns lock-free queues for real-time safe MIDI I/O
- *
- * REAL-TIME SAFETY:
- * - getPendingMidi(), sendMidi(), injectMidi() are lock-free
- * - setSubscriptions() and getSubscriptions() are NOT real-time safe
- *
- * Usage:
- *   class MyAudioProcessor {
- *       atk::MidiClient midiClient;
- *
- *       void processBlock(AudioBuffer& buffer, MidiBuffer& midi) {
- *           midiClient.getPendingMidi(midi, buffer.getNumSamples(), getSampleRate());
- *           // ... process ...
- *           midiClient.sendMidi(midi);
- *       }
- *   };
- */
 class MidiClient
 {
 public:
@@ -54,19 +33,14 @@ public:
     MidiClient(MidiClient&&) noexcept;
     MidiClient& operator=(MidiClient&&) noexcept;
 
-    /** Get pending MIDI from subscribed input devices (real-time safe) */
     void getPendingMidi(juce::MidiBuffer& outBuffer, int numSamples, double sampleRate);
 
-    /** Send MIDI to subscribed output devices (real-time safe) */
     void sendMidi(const juce::MidiBuffer& messages);
 
-    /** Inject MIDI directly - for virtual keyboard etc (real-time safe) */
     void injectMidi(const juce::MidiBuffer& messages);
 
-    /** Update device subscriptions (NOT real-time safe) */
     void setSubscriptions(const MidiClientState& state);
 
-    /** Get current subscriptions (NOT real-time safe) */
     MidiClientState getSubscriptions() const;
 
     void* getClientId() const
@@ -76,13 +50,10 @@ public:
 
 private:
     void* clientId;
-    std::shared_ptr<MidiMessageQueue> incomingQueue;
-    std::shared_ptr<MidiMessageQueue> outgoingQueue;
+    AtomicSharedPtr<MidiMessageQueue> incomingQueue;
+    AtomicSharedPtr<MidiMessageQueue> outgoingQueue;
 };
 
-/**
- * Thread-safe MIDI message queue (MPSC - Multi-Producer Single-Consumer)
- */
 class MidiMessageQueue
 {
 public:
@@ -108,7 +79,6 @@ public:
         messages.resize(queueSize);
     }
 
-    /** Push a message (thread-safe for multiple producers) */
     bool push(const juce::MidiMessage& message, int samplePosition)
     {
         juce::SpinLock::ScopedLockType lock(producerLock);
@@ -127,7 +97,6 @@ public:
         return false;
     }
 
-    /** Pop all messages into buffer (real-time safe, single consumer) */
     void popAll(juce::MidiBuffer& outBuffer, int maxSamples = 65536)
     {
         int start1, size1, start2, size2;
@@ -178,9 +147,6 @@ private:
     std::vector<TimestampedMidiMessage> messages;
 };
 
-/**
- * Global MIDI Server singleton - routes MIDI between devices and clients
- */
 class MidiServer
     : public juce::DeletedAtShutdown
     , private juce::MidiInputCallback
@@ -193,7 +159,6 @@ public:
     void initialize();
     void shutdown();
 
-    // Client management (internal API - use MidiClient class)
     void registerClient(
         void* clientId,
         const MidiClientState& state,
