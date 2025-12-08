@@ -23,7 +23,7 @@ public:
     virtual void getState(std::string& state) = 0;
     virtual void setState(std::string& state) = 0;
 
-    void setVisible(bool visible)
+    virtual void setVisible(bool visible)
     {
         auto doUi = [this, visible]()
         {

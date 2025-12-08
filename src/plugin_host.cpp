@@ -164,6 +164,10 @@ static void* pluginhost_create(obs_data_t* settings, obs_source_t* filter)
     struct pluginhost_data* ph = new pluginhost_data();
     ph->context = filter;
 
+    const char* filterUuid = obs_source_get_uuid(filter);
+    if (filterUuid)
+        ph->pluginHost.setDockId(filterUuid);
+
     pluginhost_update(ph, settings);
 
     ph->pointersToProcess.resize(ph->num_channels * 2, nullptr);

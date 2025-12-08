@@ -94,9 +94,59 @@ public:
             editor->setScaleFactor(scale);
     }
 
+    void setFooterVisible(bool visible)
+    {
+        if (footer.isVisible() == visible)
+            return;
+
+        footer.setVisible(visible);
+
+        // Recalculate size based on footer visibility
+        if (editor != nullptr)
+        {
+            const auto editorSize = editor->getLocalBounds();
+            int totalHeight = editorSize.getHeight();
+            if (visible)
+                totalHeight += margin + buttonHeight;
+            resizingFromChild = true;
+            setSize(editorSize.getWidth(), totalHeight);
+            resizingFromChild = false;
+
+            resized();
+            repaint();
+        }
+    }
+
+    juce::ComponentBoundsConstrainer* getEditorConstrainer() const
+    {
+        if (editor != nullptr)
+        {
+            auto* c = editor->getConstrainer();
+            if (c != nullptr)
+            {
+                if (c->getMinimumWidth() <= 0 || c->getMinimumHeight() <= 0)
+                    c->setMinimumSize(editor->getWidth(), editor->getHeight());
+                return c;
+            }
+        }
+        return nullptr;
+    }
+
     void resized() override
     {
-        doLayout(editor.get(), footer, buttonHeight, getLocalBounds());
+        auto bounds = getLocalBounds();
+
+        int footerSpace = footer.isVisible() ? (buttonHeight + margin) : 0;
+        auto editorBounds = bounds.removeFromTop(bounds.getHeight() - footerSpace);
+
+        if (footer.isVisible())
+        {
+            auto footerBounds = bounds.withTrimmedTop(margin);
+            footer.setBounds(footerBounds.reduced(margin, 0).withTrimmedBottom(margin));
+        }
+
+        if (editor != nullptr && !resizingFromChild)
+            editor->setBounds(editorBounds);
     }
 
     void childBoundsChanged(juce::Component* child) override
@@ -105,7 +155,14 @@ public:
             return;
 
         const auto size = editor != nullptr ? editor->getLocalBounds() : juce::Rectangle<int>();
-        setSize(size.getWidth(), margin + buttonHeight + size.getHeight());
+
+        int totalHeight = size.getHeight();
+        if (footer.isVisible())
+            totalHeight += margin + buttonHeight;
+
+        resizingFromChild = true;
+        setSize(size.getWidth(), totalHeight);
+        resizingFromChild = false;
     }
 
 private:
@@ -338,6 +395,7 @@ private:
     PluginHostFooter footer;
     std::unique_ptr<juce::DocumentWindow> audioWindow;
     std::unique_ptr<juce::DocumentWindow> midiWindow;
+    bool resizingFromChild = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginEditorComponent)
 };

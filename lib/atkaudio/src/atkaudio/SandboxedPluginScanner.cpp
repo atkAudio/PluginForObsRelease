@@ -72,18 +72,33 @@ bool SandboxedScanner::findPluginTypesFor(
     juce::ChildProcess process;
     juce::StringArray args{scannerPath.getFullPathName(), fileOrIdentifier};
     if (!process.start(args))
+    {
+        // Process failed to start - track as failed scan
+        failedScans.push_back({fileOrIdentifier, format.getName()});
+        DBG("[SandboxedScanner] Failed to start scanner for: " + fileOrIdentifier);
         return true;
+    }
 
     auto output = process.readAllProcessOutput();
 
     if (!process.waitForProcessToFinish(timeoutMs))
     {
         process.kill();
+        // Timeout - track as failed scan
+        failedScans.push_back({fileOrIdentifier, format.getName()});
+        DBG("[SandboxedScanner] Scanner timeout for: " + fileOrIdentifier);
         return true;
     }
 
     if (process.getExitCode() != 0)
+    {
+        // Non-zero exit code - track as failed scan
+        failedScans.push_back({fileOrIdentifier, format.getName()});
+        DBG(
+            "[SandboxedScanner] Scanner exit code " + juce::String(process.getExitCode()) + " for: " + fileOrIdentifier
+        );
         return true;
+    }
 
     // Strip any text before XML (e.g., debug output)
     if (auto xmlStart = output.indexOf("<?xml"); xmlStart > 0)
@@ -91,7 +106,12 @@ bool SandboxedScanner::findPluginTypesFor(
 
     auto xml = juce::parseXML(output);
     if (!xml || !xml->getBoolAttribute("success", false))
+    {
+        // Failed to parse or scan reported failure - track as failed scan
+        failedScans.push_back({fileOrIdentifier, format.getName()});
+        DBG("[SandboxedScanner] Scan failed for: " + fileOrIdentifier);
         return true;
+    }
 
     for (auto* item : xml->getChildIterator())
     {
@@ -107,6 +127,72 @@ void SandboxedScanner::scanFinished()
 {
     // Reset cancel flag so future scans work
     shouldCancel.store(false);
+
+    // If there were failed scans, offer fallback option
+    if (!failedScans.empty())
+        offerFallbackScan();
+}
+
+void SandboxedScanner::offerFallbackScan()
+{
+    auto numFailed = failedScans.size();
+
+    // Build list of failed plugin names
+    juce::String failedList;
+    for (size_t i = 0; i < std::min(numFailed, size_t(5)); ++i)
+        failedList += juce::File(failedScans[i].fileOrIdentifier).getFileName() + "\n";
+    if (numFailed > 5)
+        failedList += "...and " + juce::String(numFailed - 5) + " more\n";
+
+    juce::String message =
+        juce::String(numFailed) + " plugin(s) failed to scan:\n\n" + failedList + "\nRetry with in-process scanner?";
+
+    auto failedScansCopy = failedScans;
+    auto* fmCopy = formatManager;
+    auto* listCopy = knownPluginList;
+    failedScans.clear();
+
+    juce::MessageManager::callAsync(
+        [message, failedScansCopy, fmCopy, listCopy]()
+        {
+            auto options = juce::MessageBoxOptions()
+                               .withIconType(juce::MessageBoxIconType::QuestionIcon)
+                               .withTitle("Scan Failed")
+                               .withMessage(message)
+                               .withButton("Retry")
+                               .withButton("Skip");
+
+            juce::AlertWindow::showAsync(
+                options,
+                [failedScansCopy, fmCopy, listCopy](int result)
+                {
+                    if (result != 1 || !fmCopy || !listCopy)
+                        return;
+
+                    for (const auto& failed : failedScansCopy)
+                    {
+                        auto* format = [&]() -> juce::AudioPluginFormat*
+                        {
+                            for (int i = 0; i < fmCopy->getNumFormats(); ++i)
+                                if (fmCopy->getFormat(i)->getName() == failed.formatName)
+                                    return fmCopy->getFormat(i);
+                            return nullptr;
+                        }();
+
+                        if (!format)
+                            continue;
+
+                        juce::OwnedArray<juce::PluginDescription> descriptions;
+                        format->findAllTypesForFile(descriptions, failed.fileOrIdentifier);
+
+                        for (auto* desc : descriptions)
+                            if (desc)
+                                listCopy->addType(*desc);
+                    }
+                }
+            );
+        }
+    );
 }
 
 } // namespace atk

@@ -283,11 +283,13 @@ public:
 
     juce::BigInteger getActiveInputChannels() const override
     {
+        const juce::ScopedLock sl(lock);
         return activeInputChannels;
     }
 
     juce::BigInteger getActiveOutputChannels() const override
     {
+        const juce::ScopedLock sl(lock);
         return activeOutputChannels;
     }
 
@@ -311,100 +313,76 @@ private:
         const juce::AudioIODeviceCallbackContext& context
     ) override
     {
-        // Early exit if destroying to prevent use-after-free
+        // Early exit if destroying
         if (isDestroying.load(std::memory_order_acquire))
             return;
 
-        // Track active callbacks with RAII guard
+        // Track active callbacks for safe destruction
         activeCallbackCount.fetch_add(1, std::memory_order_acquire);
 
         struct Guard
         {
-            std::atomic<int>& count;
+            std::atomic<int>& c;
 
             ~Guard()
             {
-                count.fetch_sub(1, std::memory_order_release);
+                c.fetch_sub(1, std::memory_order_release);
             }
         } guard{activeCallbackCount};
 
-        // Double-check after incrementing
         if (isDestroying.load(std::memory_order_acquire))
             return;
 
+        auto clearOutputs = [&]()
+        {
+            if (outputChannelData != nullptr)
+                for (int ch = 0; ch < numOutputChannels; ++ch)
+                    if (outputChannelData[ch] != nullptr)
+                        juce::FloatVectorOperations::clear(outputChannelData[ch], numSamples);
+        };
+
         // Check if we're the active device
         if (!coordinator || !coordinator->isActive(this))
-        {
-            for (int ch = 0; ch < numOutputChannels; ++ch)
-                if (outputChannelData[ch] != nullptr)
-                    juce::FloatVectorOperations::clear(outputChannelData[ch], numSamples);
-            return;
-        }
+            return clearOutputs();
 
         const juce::ScopedLock sl(lock);
 
-        if (!isOpen_ || userCallback == nullptr || !isPlaying_)
-        {
-            for (int ch = 0; ch < numOutputChannels; ++ch)
-                if (outputChannelData[ch] != nullptr)
-                    juce::FloatVectorOperations::clear(outputChannelData[ch], numSamples);
-            return;
-        }
+        if (!isOpen_ || !isPlaying_ || userCallback == nullptr || numSamples <= 0)
+            return clearOutputs();
 
-        // AudioServer always passes ALL hardware channels
-        // We need to filter to only the active channels before passing to JUCE's CallbackMaxSizeEnforcer
-        // because it sizes its arrays based on getActiveInputChannels().countNumberOfSetBits()
+        // Count active channels within available range
+        int numActiveInputs = 0;
+        for (int ch = 0; ch < numInputChannels; ++ch)
+            if (activeInputChannels[ch])
+                ++numActiveInputs;
 
-        int numActiveInputs = activeInputChannels.countNumberOfSetBits();
-        int numActiveOutputs = activeOutputChannels.countNumberOfSetBits();
+        int numActiveOutputs = 0;
+        for (int ch = 0; ch < numOutputChannels; ++ch)
+            if (activeOutputChannels[ch])
+                ++numActiveOutputs;
 
-        // Resize temp output buffer if needed (for channel filtering)
-        // We receive ALL channels from AudioServer but need to pass only active channels to user callback
+        // Resize temp output buffer if needed
         if (tempOutputBuffer.getNumChannels() < numActiveOutputs || tempOutputBuffer.getNumSamples() < numSamples)
             tempOutputBuffer.setSize(numActiveOutputs, numSamples, false, false, true);
 
-        // Safety check: ensure temp buffer is valid after resize
-        if (tempOutputBuffer.getNumChannels() < numActiveOutputs || tempOutputBuffer.getNumSamples() < numSamples)
-        {
-            // Failed to allocate - clear outputs and return
-            for (int ch = 0; ch < numOutputChannels; ++ch)
-                if (outputChannelData[ch] != nullptr)
-                    juce::FloatVectorOperations::clear(outputChannelData[ch], numSamples);
-            return;
-        }
-
-        // Build filtered input channel pointers (inputs are read-only, so we can use direct pointers)
-        activeInputPtrs.clear();
-        int activeIdx = 0;
-        for (int ch = 0; ch < numInputChannels && activeIdx < numActiveInputs; ++ch)
-        {
-            if (activeInputChannels[ch] && inputChannelData[ch] != nullptr)
-            {
+        // Build filtered input pointers
+        activeInputPtrs.clearQuick();
+        for (int ch = 0; ch < numInputChannels; ++ch)
+            if (activeInputChannels[ch] && inputChannelData != nullptr && inputChannelData[ch] != nullptr)
                 activeInputPtrs.add(inputChannelData[ch]);
-                activeIdx++;
-            }
-        }
+
+        // Channel count mismatch - skip (will resync on next audioDeviceAboutToStart)
+        if (activeInputPtrs.size() != numActiveInputs)
+            return clearOutputs();
 
         // Build output pointers from temp buffer
-        // Ensure vector is large enough for the number of active outputs
         if (static_cast<int>(activeOutputPtrs.size()) < numActiveOutputs)
             activeOutputPtrs.resize(numActiveOutputs);
 
         for (int i = 0; i < numActiveOutputs; ++i)
-        {
-            auto* ptr = tempOutputBuffer.getWritePointer(i);
-            if (ptr == nullptr)
-            {
-                // Invalid buffer pointer - clear outputs and return
-                for (int ch = 0; ch < numOutputChannels; ++ch)
-                    if (outputChannelData[ch] != nullptr)
-                        juce::FloatVectorOperations::clear(outputChannelData[ch], numSamples);
-                return;
-            }
-            activeOutputPtrs[i] = ptr;
-        }
+            activeOutputPtrs[i] = tempOutputBuffer.getWritePointer(i);
 
-        // Call user callback with filtered channels
+        // Call user callback
         userCallback->audioDeviceIOCallbackWithContext(
             activeInputPtrs.getRawDataPointer(),
             numActiveInputs,
@@ -414,39 +392,56 @@ private:
             context
         );
 
-        // Copy filtered output back to hardware channels
-        activeIdx = 0;
+        // Copy output back to hardware channels
+        int activeIdx = 0;
         for (int ch = 0; ch < numOutputChannels; ++ch)
         {
-            if (activeOutputChannels[ch] && outputChannelData[ch] != nullptr && activeIdx < numActiveOutputs)
-            {
-                // Safety check: ensure we have valid buffer pointers
-                const float* srcPtr = tempOutputBuffer.getReadPointer(activeIdx);
-                if (srcPtr != nullptr && activeIdx < tempOutputBuffer.getNumChannels())
-                {
-                    std::copy(srcPtr, srcPtr + numSamples, outputChannelData[ch]);
-                }
-                else
-                {
-                    // Invalid source pointer - clear this channel
-                    juce::FloatVectorOperations::clear(outputChannelData[ch], numSamples);
-                }
-                activeIdx++;
-            }
-            else if (outputChannelData[ch] != nullptr)
-            {
-                // Clear non-active output channels
+            if (outputChannelData == nullptr || outputChannelData[ch] == nullptr)
+                continue;
+
+            if (activeOutputChannels[ch] && activeIdx < numActiveOutputs)
+                std::copy_n(tempOutputBuffer.getReadPointer(activeIdx++), numSamples, outputChannelData[ch]);
+            else
                 juce::FloatVectorOperations::clear(outputChannelData[ch], numSamples);
-            }
         }
     }
 
-    void audioDeviceAboutToStart(juce::AudioIODevice*) override
+    void audioDeviceAboutToStart(juce::AudioIODevice* device) override
     {
+        juce::AudioIODeviceCallback* callbackToNotify = nullptr;
+
+        {
+            const juce::ScopedLock sl(lock);
+
+            if (device != nullptr)
+            {
+                // Clamp active channels to device capabilities
+                auto deviceInputs = device->getActiveInputChannels();
+                auto deviceOutputs = device->getActiveOutputChannels();
+                activeInputChannels &= deviceInputs;
+                activeOutputChannels &= deviceOutputs;
+
+                currentSampleRate = device->getCurrentSampleRate();
+                currentBufferSize = device->getCurrentBufferSizeSamples();
+            }
+
+            callbackToNotify = userCallback;
+        }
+
+        if (callbackToNotify != nullptr)
+            callbackToNotify->audioDeviceAboutToStart(this);
     }
 
     void audioDeviceStopped() override
     {
+        juce::AudioIODeviceCallback* callbackToNotify = nullptr;
+        {
+            const juce::ScopedLock sl(lock);
+            callbackToNotify = userCallback;
+        }
+
+        if (callbackToNotify != nullptr)
+            callbackToNotify->audioDeviceStopped();
     }
 
     juce::String actualDeviceName;

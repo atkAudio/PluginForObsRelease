@@ -33,6 +33,7 @@ target_link_libraries(
     ${PROJECT_NAME}
     PRIVATE
         juce::juce_audio_utils
+        juce::juce_gui_extra
         juce::juce_dsp
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
@@ -108,6 +109,9 @@ endif()
 target_compile_definitions(${PROJECT_NAME} PRIVATE JUCE_ASIO=1)
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE JUCE_ASIO=1)
+
+# Enable Qt integration for dockable windows
+target_compile_definitions(${PROJECT_NAME} PRIVATE ENABLE_QT)
 
 file(COPY_FILE ${CMAKE_SOURCE_DIR}/LICENSE ${CMAKE_BINARY_DIR}/INSTALLER-LICENSE)
 

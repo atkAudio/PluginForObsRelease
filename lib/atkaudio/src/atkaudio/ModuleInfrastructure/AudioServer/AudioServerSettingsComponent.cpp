@@ -236,22 +236,68 @@ void AudioServerSettingsComponent::ChannelMappingMatrix::resized()
 
 void AudioServerSettingsComponent::ChannelMappingMatrix::setSubscribedChannels(const std::vector<MappingRow>& rows)
 {
-    // Save ALL current row mappings before resizing
-    std::vector<std::vector<bool>> savedMappings = mappingGrid;
-    std::vector<MappingRow> oldSubscribedChannels = subscribedChannels;
+    // Save current mappings with channel identity (not just row index)
+    std::vector<std::vector<bool>> savedFixedRowMappings;
+    for (int row = 0; row < numFixedTopRows && row < (int)mappingGrid.size(); ++row)
+        savedFixedRowMappings.push_back(mappingGrid[row]);
+
+    // Save subscribed channel mappings keyed by channel identity
+    struct ChannelIdentity
+    {
+        juce::String deviceName;
+        int deviceChannel;
+        bool isInput;
+
+        bool operator==(const ChannelIdentity& other) const
+        {
+            return deviceName == other.deviceName && deviceChannel == other.deviceChannel && isInput == other.isInput;
+        }
+    };
+
+    std::vector<std::pair<ChannelIdentity, std::vector<bool>>> savedSubscribedMappings;
+    for (size_t i = 0; i < subscribedChannels.size(); ++i)
+    {
+        int gridRow = numFixedTopRows + static_cast<int>(i);
+        if (gridRow < (int)mappingGrid.size())
+        {
+            ChannelIdentity id{
+                subscribedChannels[i].deviceName,
+                subscribedChannels[i].deviceChannel,
+                subscribedChannels[i].isInput
+            };
+            savedSubscribedMappings.push_back({id, mappingGrid[gridRow]});
+        }
+    }
 
     subscribedChannels = rows;
 
     // Resize grid to include fixed top rows + subscribed rows
-    int totalRows = numFixedTopRows + rows.size();
+    int totalRows = numFixedTopRows + static_cast<int>(rows.size());
     mappingGrid.clear();
     mappingGrid.resize(totalRows, std::vector<bool>(numClientChannels, false));
 
-    // Restore saved mappings for all rows that existed before
-    int rowsToRestore = juce::jmin((int)savedMappings.size(), totalRows);
-    for (int row = 0; row < rowsToRestore; ++row)
-        for (int col = 0; col < numClientChannels && col < (int)savedMappings[row].size(); ++col)
-            mappingGrid[row][col] = savedMappings[row][col];
+    // Restore fixed row mappings
+    for (int row = 0; row < numFixedTopRows && row < (int)savedFixedRowMappings.size(); ++row)
+        for (int col = 0; col < numClientChannels && col < (int)savedFixedRowMappings[row].size(); ++col)
+            mappingGrid[row][col] = savedFixedRowMappings[row][col];
+
+    // Restore subscribed channel mappings by matching channel identity
+    for (size_t i = 0; i < rows.size(); ++i)
+    {
+        ChannelIdentity newId{rows[i].deviceName, rows[i].deviceChannel, rows[i].isInput};
+        int gridRow = numFixedTopRows + static_cast<int>(i);
+
+        // Find matching saved mapping by channel identity
+        for (const auto& saved : savedSubscribedMappings)
+        {
+            if (saved.first == newId)
+            {
+                for (int col = 0; col < numClientChannels && col < (int)saved.second.size(); ++col)
+                    mappingGrid[gridRow][col] = saved.second[col];
+                break;
+            }
+        }
+    }
 
     table.updateContent();
     table.repaint();

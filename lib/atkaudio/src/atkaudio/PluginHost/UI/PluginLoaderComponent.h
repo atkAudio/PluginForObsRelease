@@ -39,6 +39,8 @@ public:
 
         // Use sandboxed scanner (shows warning once if not available)
         auto sandboxedScanner = std::make_unique<atk::SandboxedScanner>();
+        sandboxedScanner->setFormatManager(&manager);
+        sandboxedScanner->setKnownPluginList(&list);
         if (sandboxedScanner->isScannerAvailable())
             DBG("PluginLoaderComponent: Using sandboxed plugin scanner");
         else

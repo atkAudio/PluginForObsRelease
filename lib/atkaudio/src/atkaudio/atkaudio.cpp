@@ -58,10 +58,19 @@ void atk::create()
 void atk::pump()
 {
 #if JUCE_LINUX
-    // On Linux, pump the JUCE message loop with a timer
-    // On macOS, JUCE integrates with NSRunLoop and doesn't need manual pumping
-    // On Windows, JUCE integrates with Win32 message loop and doesn't need manual pumping
-    juce::MessageManager::getInstance()->runDispatchLoopUntil(3);
+    // On Linux, we need to pump the JUCE message loop
+    // Use dispatchPendingMessages() instead of runDispatchLoopUntil() to avoid
+    // conflicts with Qt's event loop - we just want to process pending JUCE messages
+    // without polling/blocking for new ones
+    if (auto* mm = juce::MessageManager::getInstanceWithoutCreating())
+    {
+        // Only dispatch if we're on the message thread
+        if (mm->isThisTheMessageThread())
+        {
+            // Process any pending async callbacks
+            mm->runDispatchLoopUntil(0); // 0ms = just process pending, don't wait
+        }
+    }
 #endif
 }
 

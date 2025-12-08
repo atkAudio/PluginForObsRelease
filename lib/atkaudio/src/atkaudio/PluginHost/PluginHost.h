@@ -17,6 +17,10 @@ public:
     // WindowModule interface
     void getState(std::string& s) override;
     void setState(std::string& s) override;
+    void setVisible(bool visible) override;
+
+    void setDockId(const std::string& id);
+    bool isDockVisible() const;
 
     int getInnerPluginChannelCount() const;
 

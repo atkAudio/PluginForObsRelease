@@ -16,11 +16,14 @@ class HostAudioProcessorEditor final : public juce::AudioProcessorEditor
 public:
     explicit HostAudioProcessorEditor(HostAudioProcessorImpl& owner);
 
-    void parentSizeChanged() override;
     void paint(juce::Graphics& g) override;
     void resized() override;
     void childBoundsChanged(juce::Component* child) override;
     void setScaleFactor(float scale) override;
+
+    void setFooterVisible(bool visible);
+
+    juce::ComponentBoundsConstrainer* getPluginConstrainer() const;
 
 private:
     void pluginChanged();
@@ -45,64 +48,65 @@ private:
         float desktopScale = 1.0f;
     };
 
-    static constexpr auto buttonHeight = 30;
-
     HostAudioProcessorImpl& hostProcessor;
     PluginLoaderComponent loader;
     std::unique_ptr<juce::Component> editor;
     PluginEditorComponent* currentEditorComponent = nullptr;
     juce::ScopedValueSetter<std::function<void()>> scopedCallback;
     float currentScaleFactor = 1.0f;
+    bool resizingFromChild = false;
+    bool pendingFooterVisible = true; // Footer visibility to apply when plugin loads
     juce::SharedResourcePointer<atk::LookAndFeel> lookAndFeel;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HostAudioProcessorEditor)
 };
 
-class HostEditorWindow
-    : public juce::DocumentWindow
-    , private juce::Button::Listener
+class HostEditorComponent final
+    : public juce::Component
+    , private juce::ComponentListener
 {
 public:
-    using PluginInOuts = PluginHolder::PluginInOuts;
+    HostEditorComponent(std::unique_ptr<PluginHolder> pluginHolderIn);
 
-    HostEditorWindow(
-        const juce::String& title,
-        juce::Colour backgroundColour,
-        std::unique_ptr<PluginHolder> pluginHolderIn,
-        std::function<bool()> getMultiCoreEnabledCallback = nullptr,
-        std::function<void(bool)> setMultiCoreEnabledCallback = nullptr
-    );
+    ~HostEditorComponent() override;
 
-    ~HostEditorWindow() override;
-
-    void visibilityChanged() override;
-    void closeButtonPressed() override;
-    void obsPluginShutdown();
+    void paint(juce::Graphics& g) override;
     void resized() override;
+    void childBoundsChanged(juce::Component* child) override;
 
     juce::AudioProcessor* getAudioProcessor() const noexcept;
     HostAudioProcessorImpl* getHostProcessor() const noexcept;
     juce::CriticalSection& getPluginHolderLock();
 
-    void resetToDefaultState();
-
     PluginHolder* getPluginHolder();
+
+    juce::ComponentBoundsConstrainer* getEditorConstrainer() const;
+
+    void destroyUI();
+    void recreateUI();
+
+    void setFooterVisible(bool visible);
+
+    void setIsDockedCallback(std::function<bool()> callback)
+    {
+        getIsDocked = std::move(callback);
+    }
+
     std::unique_ptr<PluginHolder> pluginHolder;
 
 private:
     class MainContentComponent;
-    class DecoratorConstrainer;
 
     void updateContent();
-    void buttonClicked(juce::Button*) override;
-    void handleMenuResult(int result);
-    static void menuCallback(int result, HostEditorWindow* button);
+    void componentMovedOrResized(juce::Component& component, bool wasMoved, bool wasResized) override;
 
     juce::CriticalSection pluginHolderLock;
-    DecoratorConstrainer* decoratorConstrainer;
+    std::unique_ptr<MainContentComponent> contentComponent;
+    juce::AudioProcessorEditor* editorToWatch = nullptr;
+    bool resizingFromEditor = false;
+    std::function<bool()> getIsDocked;
 
-    std::function<bool()> getMultiCoreEnabled;
-    std::function<void(bool)> setMultiCoreEnabled;
+    juce::SharedResourcePointer<atk::LookAndFeel> lookAndFeel;
 
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HostEditorWindow)
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HostEditorComponent)
 };

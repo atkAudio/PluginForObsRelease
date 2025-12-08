@@ -18,14 +18,10 @@ HostAudioProcessorEditor::HostAudioProcessorEditor(HostAudioProcessorImpl& owner
     , scopedCallback(owner.pluginChanged, [this] { pluginChanged(); })
 {
     setSize(500, 500);
-    setResizable(false, false);
+    setResizable(true, false);
     addAndMakeVisible(loader);
 
     hostProcessor.pluginChanged();
-}
-
-void HostAudioProcessorEditor::parentSizeChanged()
-{
 }
 
 void HostAudioProcessorEditor::paint(Graphics& g)
@@ -35,7 +31,12 @@ void HostAudioProcessorEditor::paint(Graphics& g)
 
 void HostAudioProcessorEditor::resized()
 {
-    loader.setBounds(getLocalBounds());
+    auto bounds = getLocalBounds();
+    loader.setBounds(bounds);
+
+    // When we're resized externally, resize the editor to match
+    if (editor != nullptr && !resizingFromChild)
+        editor->setBounds(bounds);
 }
 
 void HostAudioProcessorEditor::childBoundsChanged(Component* child)
@@ -44,7 +45,10 @@ void HostAudioProcessorEditor::childBoundsChanged(Component* child)
         return;
 
     const auto size = editor != nullptr ? editor->getLocalBounds() : Rectangle<int>();
+
+    resizingFromChild = true;
     setSize(size.getWidth(), size.getHeight());
+    resizingFromChild = false;
 }
 
 void HostAudioProcessorEditor::setScaleFactor(float scale)
@@ -81,6 +85,7 @@ void HostAudioProcessorEditor::pluginChanged()
         );
 
         editorComponent->setScaleFactor(currentScaleFactor);
+        editorComponent->setFooterVisible(pendingFooterVisible);
         currentEditorComponent = editorComponent.get();
 
         editor = [&]() -> std::unique_ptr<Component>
@@ -120,15 +125,32 @@ void HostAudioProcessorEditor::clearPlugin()
     hostProcessor.clearPlugin();
 }
 
-class HostEditorWindow::MainContentComponent
+void HostAudioProcessorEditor::setFooterVisible(bool visible)
+{
+    pendingFooterVisible = visible;
+    if (currentEditorComponent != nullptr)
+        currentEditorComponent->setFooterVisible(visible);
+}
+
+ComponentBoundsConstrainer* HostAudioProcessorEditor::getPluginConstrainer() const
+{
+    if (currentEditorComponent != nullptr)
+        return currentEditorComponent->getEditorConstrainer();
+    return nullptr;
+}
+
+//==============================================================================
+// HostEditorComponent - Main content for Qt embedding
+//==============================================================================
+
+class HostEditorComponent::MainContentComponent
     : public Component
     , private Value::Listener
-    , private Button::Listener
     , private ComponentListener
 {
 public:
-    MainContentComponent(HostEditorWindow& filterWindow)
-        : owner(filterWindow)
+    MainContentComponent(HostEditorComponent& ownerComponent)
+        : owner(ownerComponent)
         , editor(
               owner.getAudioProcessor()->hasEditor() ? owner.getAudioProcessor()->createEditorIfNeeded()
                                                      : new GenericAudioProcessorEditor(*owner.getAudioProcessor())
@@ -166,7 +188,7 @@ public:
 
     void paint(Graphics& g) override
     {
-        g.fillAll(owner.getBackgroundColour());
+        g.fillAll(getLookAndFeel().findColour(ResizableWindow::backgroundColourId));
     }
 
     void resized() override
@@ -176,24 +198,20 @@ public:
 
     ComponentBoundsConstrainer* getEditorConstrainer() const
     {
-        if (auto* e = editor.get())
-            return e->getConstrainer();
-
+        if (auto* hostEditor = dynamic_cast<HostAudioProcessorEditor*>(editor.get()))
+            return hostEditor->getPluginConstrainer();
         return nullptr;
     }
 
-    BorderSize<int> computeBorder() const
+    AudioProcessorEditor* getEditor() const
     {
-        const auto nativeFrame = [&]() -> BorderSize<int>
-        {
-            if (auto* peer = owner.getPeer())
-                if (const auto frameSize = peer->getFrameSizeIfPresent())
-                    return *frameSize;
+        return editor.get();
+    }
 
-            return {};
-        }();
-
-        return nativeFrame.addedTo(owner.getContentComponentBorder()).addedTo(BorderSize<int>{0, 0, 0, 0});
+    void setFooterVisible(bool visible)
+    {
+        if (auto* hostEditor = dynamic_cast<HostAudioProcessorEditor*>(editor.get()))
+            hostEditor->setFooterVisible(visible);
     }
 
 private:
@@ -213,25 +231,21 @@ private:
         inputMutedChanged(value.getValue());
     }
 
-    void buttonClicked(Button* button) override
-    {
-        (void)button;
-    }
-
     void handleResized()
     {
         auto r = getLocalBounds();
 
         if (editor != nullptr)
         {
-            const auto newPos = r.getTopLeft().toFloat().transformedBy(editor->getTransform().inverted());
-
             if (preventResizingEditor)
+            {
+                const auto newPos = r.getTopLeft().toFloat().transformedBy(editor->getTransform().inverted());
                 editor->setTopLeftPosition(newPos.roundToInt());
+            }
             else
-                editor->setBoundsConstrained(
-                    editor->getLocalArea(this, r.toFloat()).withPosition(newPos).toNearestInt()
-                );
+            {
+                editor->setBounds(r);
+            }
         }
     }
 
@@ -243,6 +257,9 @@ private:
         {
             auto rect = getSizeToContainEditor();
             setSize(rect.getWidth(), rect.getHeight());
+
+            if (auto* parent = getParentComponent())
+                parent->setSize(rect.getWidth(), rect.getHeight());
         }
     }
 
@@ -259,7 +276,7 @@ private:
         return {};
     }
 
-    HostEditorWindow& owner;
+    HostEditorComponent& owner;
     std::unique_ptr<AudioProcessorEditor> editor;
     Value inputMutedValue;
     bool shouldShowNotification = false;
@@ -268,189 +285,138 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainContentComponent)
 };
 
-class HostEditorWindow::DecoratorConstrainer : public BorderedComponentBoundsConstrainer
+HostEditorComponent::HostEditorComponent(std::unique_ptr<PluginHolder> pluginHolderIn)
+    : pluginHolder(std::move(pluginHolderIn))
 {
-public:
-    ComponentBoundsConstrainer* getWrappedConstrainer() const override
-    {
-        return contentComponent != nullptr ? contentComponent->getEditorConstrainer() : nullptr;
-    }
-
-    BorderSize<int> getAdditionalBorder() const override
-    {
-        return contentComponent != nullptr ? contentComponent->computeBorder() : BorderSize<int>{};
-    }
-
-    void setMainContentComponent(MainContentComponent* in)
-    {
-        contentComponent = in;
-    }
-
-private:
-    MainContentComponent* contentComponent = nullptr;
-};
-
-HostEditorWindow::HostEditorWindow(
-    const String& title,
-    Colour backgroundColour,
-    std::unique_ptr<PluginHolder> pluginHolderIn,
-    std::function<bool()> getMultiCoreEnabledCallback,
-    std::function<void(bool)> setMultiCoreEnabledCallback
-)
-    : juce::DocumentWindow(title, backgroundColour, DocumentWindow::allButtons)
-    , pluginHolder(std::move(pluginHolderIn))
-    , decoratorConstrainer(new DecoratorConstrainer())
-    , getMultiCoreEnabled(getMultiCoreEnabledCallback)
-    , setMultiCoreEnabled(setMultiCoreEnabledCallback)
-{
-    setConstrainer(decoratorConstrainer);
-    setTitleBarButtonsRequired(DocumentWindow::minimiseButton | DocumentWindow::closeButton, false);
-
+    setOpaque(true);
     updateContent();
 
-    const auto windowScreenBounds = [this]() -> Rectangle<int>
-    {
-        const auto width = getWidth();
-        const auto height = getHeight();
+    editorToWatch = contentComponent->getEditor();
+    if (editorToWatch != nullptr)
+        editorToWatch->addComponentListener(this);
 
-        const auto& displays = Desktop::getInstance().getDisplays();
+    setSize(contentComponent->getWidth(), contentComponent->getHeight());
 
-        if (displays.displays.isEmpty())
-            return {width, height};
-
-        if (auto* props = pluginHolder->settings.get())
-        {
-            constexpr int defaultValue = -100;
-
-            const auto x = props->getIntValue("windowX", defaultValue);
-            const auto y = props->getIntValue("windowY", defaultValue);
-
-            if (x != defaultValue && y != defaultValue)
-            {
-                const auto screenLimits = displays.getDisplayForRect({x, y, width, height})->userArea;
-
-                return {
-                    jlimit(screenLimits.getX(), jmax(screenLimits.getX(), screenLimits.getRight() - width), x),
-                    jlimit(screenLimits.getY(), jmax(screenLimits.getY(), screenLimits.getBottom() - height), y),
-                    width,
-                    height
-                };
-            }
-        }
-
-        const auto displayArea = displays.getPrimaryDisplay()->userArea;
-
-        return {displayArea.getCentreX() - width / 2, displayArea.getCentreY() - height / 2, width, height};
-    }();
-
-    setBoundsConstrained(windowScreenBounds);
-
-    if (auto* processor = getAudioProcessor())
-        if (auto* editor = processor->getActiveEditor())
-            setResizable(editor->isResizable(), false);
-
-    removeFromDesktop();
+    if (getWidth() == 0 || getHeight() == 0)
+        setSize(500, 500);
 }
 
-HostEditorWindow::~HostEditorWindow()
+HostEditorComponent::~HostEditorComponent()
 {
-#if (!JUCE_IOS) && (!JUCE_ANDROID)
-    if (auto* props = pluginHolder->settings.get())
-    {
-        props->setValue("windowX", getX());
-        props->setValue("windowY", getY());
-    }
-#endif
+    if (editorToWatch != nullptr)
+        editorToWatch->removeComponentListener(this);
 
     pluginHolder->stopPlaying();
-    clearContentComponent();
+    contentComponent = nullptr;
     pluginHolder = nullptr;
-    delete decoratorConstrainer;
 }
 
-void HostEditorWindow::visibilityChanged()
+void HostEditorComponent::paint(Graphics& g)
 {
+    g.fillAll(getLookAndFeel().findColour(ResizableWindow::backgroundColourId));
 }
 
-AudioProcessor* HostEditorWindow::getAudioProcessor() const noexcept
+void HostEditorComponent::resized()
+{
+    if (contentComponent != nullptr && !resizingFromEditor)
+        contentComponent->setBounds(getLocalBounds());
+}
+
+void HostEditorComponent::childBoundsChanged(Component* child)
+{
+    if (child == contentComponent.get() && contentComponent != nullptr)
+    {
+        const auto newWidth = contentComponent->getWidth();
+        const auto newHeight = contentComponent->getHeight();
+
+        if (newWidth > 0 && newHeight > 0 && (newWidth != getWidth() || newHeight != getHeight()))
+            setSize(newWidth, newHeight);
+    }
+}
+
+void HostEditorComponent::componentMovedOrResized(Component& component, bool /*wasMoved*/, bool wasResized)
+{
+    if (wasResized && &component == editorToWatch)
+    {
+        const auto newWidth = component.getWidth();
+        const auto newHeight = component.getHeight();
+
+        if (newWidth > 0 && newHeight > 0)
+        {
+            resizingFromEditor = true;
+            setSize(newWidth, newHeight);
+            resizingFromEditor = false;
+        }
+    }
+}
+
+AudioProcessor* HostEditorComponent::getAudioProcessor() const noexcept
 {
     return pluginHolder ? pluginHolder->processor.get() : nullptr;
 }
 
-HostAudioProcessorImpl* HostEditorWindow::getHostProcessor() const noexcept
+HostAudioProcessorImpl* HostEditorComponent::getHostProcessor() const noexcept
 {
     return pluginHolder ? pluginHolder->getHostProcessor() : nullptr;
 }
 
-CriticalSection& HostEditorWindow::getPluginHolderLock()
+CriticalSection& HostEditorComponent::getPluginHolderLock()
 {
     return pluginHolderLock;
 }
 
-void HostEditorWindow::resetToDefaultState()
-{
-    ScopedLock lock(pluginHolderLock);
-    pluginHolder->stopPlaying();
-    clearContentComponent();
-    pluginHolder->deletePlugin();
-
-    if (auto* props = pluginHolder->settings.get())
-        props->removeValue("filterState");
-
-    pluginHolder->createPlugin();
-    updateContent();
-    pluginHolder->startPlaying();
-}
-
-void HostEditorWindow::closeButtonPressed()
-{
-    setVisible(false);
-}
-
-void HostEditorWindow::obsPluginShutdown()
-{
-    pluginHolder->savePluginState();
-}
-
-void HostEditorWindow::handleMenuResult(int result)
-{
-    (void)result;
-}
-
-void HostEditorWindow::menuCallback(int result, HostEditorWindow* button)
-{
-    if (button != nullptr && result != 0)
-        button->handleMenuResult(result);
-}
-
-void HostEditorWindow::resized()
-{
-    DocumentWindow::resized();
-}
-
-PluginHolder* HostEditorWindow::getPluginHolder()
+PluginHolder* HostEditorComponent::getPluginHolder()
 {
     return pluginHolder.get();
 }
 
-void HostEditorWindow::updateContent()
+ComponentBoundsConstrainer* HostEditorComponent::getEditorConstrainer() const
 {
-    auto* content = new MainContentComponent(*this);
-    decoratorConstrainer->setMainContentComponent(content);
-
-    constexpr auto resizeAutomatically = true;
-    setContentOwned(content, resizeAutomatically);
+    if (contentComponent != nullptr)
+        return contentComponent->getEditorConstrainer();
+    return nullptr;
 }
 
-void HostEditorWindow::buttonClicked(Button*)
+void HostEditorComponent::setFooterVisible(bool visible)
 {
-    PopupMenu m;
-    m.addItem(1, TRANS("Audio/MIDI Settings..."));
-    m.addSeparator();
-    m.addItem(2, TRANS("Save current state..."));
-    m.addItem(3, TRANS("Load a saved state..."));
-    m.addSeparator();
-    m.addItem(4, TRANS("Reset to default state"));
+    if (contentComponent != nullptr)
+        contentComponent->setFooterVisible(visible);
+}
 
-    m.showMenuAsync(PopupMenu::Options(), ModalCallbackFunction::forComponent(menuCallback, this));
+void HostEditorComponent::destroyUI()
+{
+    if (editorToWatch != nullptr)
+    {
+        editorToWatch->removeComponentListener(this);
+        editorToWatch = nullptr;
+    }
+
+    contentComponent = nullptr;
+}
+
+void HostEditorComponent::recreateUI()
+{
+    if (!pluginHolder || !pluginHolder->processor)
+        return;
+
+    destroyUI();
+    updateContent();
+
+    bool isDocked = getIsDocked ? getIsDocked() : false;
+    contentComponent->setFooterVisible(!isDocked);
+
+    editorToWatch = contentComponent->getEditor();
+    if (editorToWatch != nullptr)
+        editorToWatch->addComponentListener(this);
+
+    setSize(contentComponent->getWidth(), contentComponent->getHeight());
+}
+
+void HostEditorComponent::updateContent()
+{
+    contentComponent = std::make_unique<MainContentComponent>(*this);
+    addAndMakeVisible(contentComponent.get());
+
+    if (contentComponent != nullptr)
+        setSize(contentComponent->getWidth(), contentComponent->getHeight());
 }

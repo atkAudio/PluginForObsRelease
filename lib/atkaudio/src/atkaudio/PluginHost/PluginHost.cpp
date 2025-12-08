@@ -7,6 +7,13 @@
 #include <atkaudio/FifoBuffer.h>
 #include <chrono>
 
+#include "UI/QtDockWidget.h"
+#include <obs-frontend-api.h>
+#include <QWidget>
+#include <QThread>
+#include <QCoreApplication>
+#include <QMetaObject>
+
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
     return new HostAudioProcessor();
@@ -84,16 +91,16 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
 
         auto* impl = context->owner;
 
-        if (!impl->mainWindow->getPluginHolderLock().tryEnter())
+        if (!impl->mainComponent->getPluginHolderLock().tryEnter())
         {
             context->markCompleted();
             return;
         }
 
-        auto* processor = impl->mainWindow->getAudioProcessor();
+        auto* processor = impl->mainComponent->getAudioProcessor();
         if (!processor->getCallbackLock().tryEnter())
         {
-            impl->mainWindow->getPluginHolderLock().exit();
+            impl->mainComponent->getPluginHolderLock().exit();
             context->markCompleted();
             return;
         }
@@ -128,25 +135,24 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
         }
 
         processor->getCallbackLock().exit();
-        impl->mainWindow->getPluginHolderLock().exit();
+        impl->mainComponent->getPluginHolderLock().exit();
 
         context->markCompleted();
     }
 
+    static void frontendEventCallback(enum obs_frontend_event event, void* private_data)
+    {
+        auto* impl = static_cast<Impl*>(private_data);
+        if (event == OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN)
+            impl->obsExiting = true;
+    }
+
     Impl()
-        : mainWindow(
-              std::make_unique<HostEditorWindow>(
-                  "atkAudio PluginHost",
-                  juce::LookAndFeel::getDefaultLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId),
-                  createPluginHolder(),
-                  [this]() { return useThreadPool.load(std::memory_order_acquire); },
-                  [this](bool enabled) { setMultiCoreEnabled(enabled); }
-              )
-          )
+        : mainComponent(new HostEditorComponent(createPluginHolder()))
     {
         jobContext.owner = this;
 
-        if (auto* hostProc = mainWindow->getHostProcessor())
+        if (auto* hostProc = mainComponent->getHostProcessor())
         {
             hostProc->getMultiCoreEnabled = [this]() { return useThreadPool.load(std::memory_order_acquire); };
             hostProc->setMultiCoreEnabled = [this](bool enabled) { setMultiCoreEnabled(enabled); };
@@ -154,18 +160,34 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
             hostProc->getLatencyMs = [this]() { return getLatencyMs(); };
         }
 
-        mainWindow->setVisible(false);
+        obs_frontend_add_event_callback(frontendEventCallback, this);
+
+        qtWidget = new atk::JuceQtWidget(
+            mainComponent,
+            [this]() { mainComponent->recreateUI(); },
+            [this]() { mainComponent->destroyUI(); }
+        );
+        qtWidget->setWindowTitle("atkAudio PluginHost");
+        qtWidget->setConstrainerGetter([this]() { return mainComponent->getEditorConstrainer(); });
+
+        mainComponent->setIsDockedCallback([this]() { return qtWidget->isDocked(); });
+        qtWidget->setDockStateChangedCallback([this](bool isDocked) { mainComponent->setFooterVisible(!isDocked); });
+
+        mainComponent->destroyUI();
+        mainComponent->setVisible(false);
     }
 
     ~Impl()
     {
+        obs_frontend_remove_event_callback(frontendEventCallback, this);
+
         cancelPendingUpdate();
 
         std::lock_guard<std::mutex> lock(timerMutex);
 
-        if (mainWindow)
+        if (mainComponent)
         {
-            if (auto* hostProc = mainWindow->getHostProcessor())
+            if (auto* hostProc = mainComponent->getHostProcessor())
             {
                 hostProc->getMultiCoreEnabled = nullptr;
                 hostProc->setMultiCoreEnabled = nullptr;
@@ -180,14 +202,30 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
             jobContext.waitForCompletionWithTimeout(timeout);
         }
 
-        if (juce::MessageManager::getInstanceWithoutCreating() == nullptr)
+        if (qtWidget)
+            qtWidget->clearCallbacks();
+
+        if (dockId && !obsExiting)
         {
-            mainWindow.release();
-            return;
+            // obs_frontend_remove_dock() destroys Qt widgets - must run on main thread
+            const char* dockIdToRemove = dockId;
+            auto removeDock = [dockIdToRemove]() { obs_frontend_remove_dock(dockIdToRemove); };
+
+            if (QThread::currentThread() == QCoreApplication::instance()->thread())
+            {
+                removeDock();
+            }
+            else
+            {
+                // We're on a background thread - invoke synchronously on the main thread
+                QMetaObject::invokeMethod(QCoreApplication::instance(), removeDock, Qt::BlockingQueuedConnection);
+            }
+
+            dockId = nullptr;
+            qtWidget = nullptr;
         }
 
-        auto* window = mainWindow.release();
-        juce::MessageManager::callAsync([window]() { delete window; });
+        mainComponent = nullptr;
     }
 
     void handleAsyncUpdate() override
@@ -215,8 +253,8 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
 
     void prepareProcessorOnMessageThread(int channels, int samples, double rate)
     {
-        juce::ScopedLock lock(mainWindow->getPluginHolderLock());
-        auto* processor = mainWindow->getAudioProcessor();
+        juce::ScopedLock lock(mainComponent->getPluginHolderLock());
+        auto* processor = mainComponent->getAudioProcessor();
         juce::ScopedLock callbackLock(processor->getCallbackLock());
 
         if (isPrepared)
@@ -283,7 +321,6 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
 
             if (!wasUsingThreading)
             {
-                DBG("PluginHost: Enabling MT mode (FIFO-based)");
                 inputFifo.reset();
                 outputFifo.reset();
                 workerBuffer.clear();
@@ -330,39 +367,29 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
             return;
         }
 
-        //======================================================================
-        // SYNC MODE: Direct in-place processing on OBS audio thread
-        //
-        // No double-buffering, no latency. processBlock() is called directly
-        // with the OBS buffer. Device outputs and OBS output are in sync.
-        //======================================================================
-
-        // Transition from MT to sync
         if (wasUsingThreading)
         {
             if (!jobContext.isCompleted())
                 jobContext.waitForCompletion();
-            DBG("PluginHost: Disabling MT mode");
             wasUsingThreading = false;
         }
 
-        if (!mainWindow->getPluginHolderLock().tryEnter())
+        if (!mainComponent->getPluginHolderLock().tryEnter())
         {
             for (int ch = 0; ch < newNumChannels * 2; ++ch)
                 juce::FloatVectorOperations::clear(buffer[ch], newNumSamples);
             return;
         }
 
-        auto* processor = mainWindow->getAudioProcessor();
+        auto* processor = mainComponent->getAudioProcessor();
         if (!processor->getCallbackLock().tryEnter())
         {
-            mainWindow->getPluginHolderLock().exit();
+            mainComponent->getPluginHolderLock().exit();
             for (int ch = 0; ch < newNumChannels * 2; ++ch)
                 juce::FloatVectorOperations::clear(buffer[ch], newNumSamples);
             return;
         }
 
-        // Process in-place: syncBuffer references the OBS buffer directly
         syncBuffer.setDataToReferTo(buffer, newNumChannels * 2, newNumSamples);
         syncMidiBuffer.clear();
 
@@ -373,19 +400,67 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
         }
 
         processor->getCallbackLock().exit();
-        mainWindow->getPluginHolderLock().exit();
+        mainComponent->getPluginHolderLock().exit();
+    }
+
+    void setVisible(bool visible)
+    {
+        dockVisible = visible;
+
+        if (!qtWidget)
+            return;
+
+        if (visible)
+        {
+            if (!dockId && !dockIdStorage.empty())
+            {
+                dockId = dockIdStorage.c_str();
+                obs_frontend_add_dock_by_id(dockId, "atkAudio PluginHost", qtWidget);
+            }
+
+            if (QWidget* parentDock = qtWidget->parentWidget())
+            {
+                parentDock->show();
+                parentDock->raise();
+                parentDock->activateWindow();
+            }
+            else
+            {
+                qtWidget->show();
+            }
+        }
+        else
+        {
+            if (QWidget* parentDock = qtWidget->parentWidget())
+                parentDock->hide();
+            else
+                qtWidget->hide();
+        }
+    }
+
+    void setDockId(const std::string& id)
+    {
+        if (id.empty())
+            return;
+
+        dockIdStorage = "atkaudio_pluginhost_" + id;
+    }
+
+    bool isDockVisible() const
+    {
+        return dockVisible;
     }
 
     juce::Component* getWindowComponent()
     {
-        return mainWindow.get();
+        return mainComponent;
     }
 
     HostAudioProcessorImpl* getHostProcessor() const
     {
-        if (!mainWindow)
+        if (!mainComponent)
             return nullptr;
-        return mainWindow->getHostProcessor();
+        return mainComponent->getHostProcessor();
     }
 
     int getInnerPluginChannelCount() const
@@ -403,15 +478,21 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
 
     void getState(std::string& s)
     {
-        juce::ScopedLock lock(mainWindow->getPluginHolderLock());
-        auto* processor = mainWindow->getAudioProcessor();
+        juce::ScopedLock lock(mainComponent->getPluginHolderLock());
+        auto* processor = mainComponent->getAudioProcessor();
         juce::ScopedLock callbackLock(processor->getCallbackLock());
         juce::MemoryBlock state;
         processor->getStateInformation(state);
         auto stateString = state.toString().toStdString();
 
         bool multiEnabled = useThreadPool.load(std::memory_order_acquire);
-        s = "MULTICORE:" + std::string(multiEnabled ? "1" : "0") + "\n" + stateString;
+        s = "MULTICORE:"
+          + std::string(multiEnabled ? "1" : "0")
+          + "\n"
+          + "DOCKVISIBLE:"
+          + std::string(dockVisible ? "1" : "0")
+          + "\n"
+          + stateString;
     }
 
     void setState(std::string& s)
@@ -421,17 +502,33 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
 
         std::string pluginState = s;
         bool multiEnabled = false;
+        bool restoreDockVisible = false;
 
-        if (s.rfind("MULTICORE:", 0) == 0)
+        // Parse MULTICORE header
+        if (pluginState.rfind("MULTICORE:", 0) == 0)
         {
-            size_t newlinePos = s.find('\n');
+            size_t newlinePos = pluginState.find('\n');
             if (newlinePos != std::string::npos)
             {
-                std::string header = s.substr(0, newlinePos);
+                std::string header = pluginState.substr(0, newlinePos);
                 multiEnabled = (header.find(":1") != std::string::npos);
-                pluginState = s.substr(newlinePos + 1);
-
+                pluginState = pluginState.substr(newlinePos + 1);
                 setMultiCoreEnabled(multiEnabled);
+            }
+        }
+
+        // Parse DOCKVISIBLE header
+        if (pluginState.rfind("DOCKVISIBLE:", 0) == 0)
+        {
+            size_t newlinePos = pluginState.find('\n');
+            if (newlinePos != std::string::npos)
+            {
+                std::string header = pluginState.substr(0, newlinePos);
+                restoreDockVisible = (header.find(":1") != std::string::npos);
+                pluginState = pluginState.substr(newlinePos + 1);
+
+                if (restoreDockVisible)
+                    setVisible(true);
             }
         }
 
@@ -448,8 +545,8 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
         if (stateString.empty())
             return;
 
-        juce::ScopedLock lock(mainWindow->getPluginHolderLock());
-        auto* processor = mainWindow->getAudioProcessor();
+        juce::ScopedLock lock(mainComponent->getPluginHolderLock());
+        auto* processor = mainComponent->getAudioProcessor();
         juce::ScopedLock callbackLock(processor->getCallbackLock());
         juce::MemoryBlock stateData(stateString.data(), stateString.size());
         processor->setStateInformation(stateData.getData(), (int)stateData.getSize());
@@ -502,10 +599,10 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
     int getLatencyMs() const
     {
         std::lock_guard<std::mutex> lock(timerMutex);
-        if (!mainWindow || sampleRate <= 0.0)
+        if (!mainComponent || sampleRate <= 0.0)
             return 0;
 
-        auto* hostProc = mainWindow->getHostProcessor();
+        auto* hostProc = mainComponent->getHostProcessor();
         if (!hostProc)
             return 0;
 
@@ -545,7 +642,12 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
     }
 
 private:
-    std::unique_ptr<HostEditorWindow> mainWindow;
+    HostEditorComponent* mainComponent = nullptr;
+    atk::JuceQtWidget* qtWidget = nullptr;
+    const char* dockId = nullptr;
+    std::string dockIdStorage;
+    bool obsExiting = false;
+    bool dockVisible = false;
 
     juce::AudioBuffer<float> syncBuffer;
     juce::MidiBuffer syncMidiBuffer;
@@ -634,6 +736,35 @@ int atk::PluginHost::getLatencyMs() const
         return 0;
 
     return pImpl->getLatencyMs();
+}
+
+void atk::PluginHost::setVisible(bool visible)
+{
+    if (!pImpl)
+        return;
+
+    auto doUi = [this, visible]() { pImpl->setVisible(visible); };
+
+    if (juce::MessageManager::getInstance()->isThisTheMessageThread())
+        doUi();
+    else
+        juce::MessageManager::callAsync(doUi);
+}
+
+void atk::PluginHost::setDockId(const std::string& id)
+{
+    if (!pImpl)
+        return;
+
+    pImpl->setDockId(id);
+}
+
+bool atk::PluginHost::isDockVisible() const
+{
+    if (!pImpl)
+        return false;
+
+    return pImpl->isDockVisible();
 }
 
 atk::PluginHost::PluginHost()
