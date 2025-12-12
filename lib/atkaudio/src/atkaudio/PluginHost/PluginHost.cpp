@@ -3,7 +3,7 @@
 #include "Core/HostAudioProcessor.h"
 #include "Core/PluginHolder.h"
 #include "UI/HostEditorWindow.h"
-#include "SecondaryThreadPool.h"
+#include "../AudioProcessorGraphMT/AudioThreadPool.h"
 #include <atkaudio/FifoBuffer.h>
 #include <chrono>
 
@@ -13,6 +13,9 @@
 #include <QThread>
 #include <QCoreApplication>
 #include <QMetaObject>
+#include <QDockWidget>
+#include <QMainWindow>
+#include <QTimer>
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
@@ -164,14 +167,28 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
 
         qtWidget = new atk::JuceQtWidget(
             mainComponent,
-            [this]() { mainComponent->recreateUI(); },
-            [this]() { mainComponent->destroyUI(); }
+            [this]()
+            {
+                mainComponent->recreateUI();
+                updateDockState();
+            },
+            [this]()
+            {
+                mainComponent->destroyUI();
+                updateDockState();
+            }
         );
         qtWidget->setWindowTitle("atkAudio PluginHost");
         qtWidget->setConstrainerGetter([this]() { return mainComponent->getEditorConstrainer(); });
 
         mainComponent->setIsDockedCallback([this]() { return qtWidget->isDocked(); });
-        qtWidget->setDockStateChangedCallback([this](bool isDocked) { mainComponent->setFooterVisible(!isDocked); });
+        qtWidget->setDockStateChangedCallback(
+            [this](bool isDocked)
+            {
+                mainComponent->setFooterVisible(!isDocked);
+                updateDockState();
+            }
+        );
 
         mainComponent->destroyUI();
         mainComponent->setVisible(false);
@@ -205,21 +222,16 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
         if (qtWidget)
             qtWidget->clearCallbacks();
 
-        if (dockId && !obsExiting)
+        if (dockId)
         {
-            // obs_frontend_remove_dock() destroys Qt widgets - must run on main thread
-            const char* dockIdToRemove = dockId;
-            auto removeDock = [dockIdToRemove]() { obs_frontend_remove_dock(dockIdToRemove); };
-
-            if (QThread::currentThread() == QCoreApplication::instance()->thread())
-            {
-                removeDock();
-            }
-            else
-            {
-                // We're on a background thread - invoke synchronously on the main thread
-                QMetaObject::invokeMethod(QCoreApplication::instance(), removeDock, Qt::BlockingQueuedConnection);
-            }
+            // obs_frontend_remove_dock() destroys Qt widgets - defer to Qt event loop
+            // Capture string by value since dockIdStorage will be destroyed
+            std::string dockIdCopy = dockIdStorage;
+            QMetaObject::invokeMethod(
+                QCoreApplication::instance(),
+                [dockIdCopy]() { obs_frontend_remove_dock(dockIdCopy.c_str()); },
+                Qt::QueuedConnection
+            );
 
             dockId = nullptr;
             qtWidget = nullptr;
@@ -253,6 +265,11 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
 
     void prepareProcessorOnMessageThread(int channels, int samples, double rate)
     {
+        // Wait for any background processing job to complete first
+        if (!jobContext.isCompleted())
+            jobContext.waitForCompletion();
+
+        // Acquire locks - audio callback uses tryEnter so it will bail out
         juce::ScopedLock lock(mainComponent->getPluginHolderLock());
         auto* processor = mainComponent->getAudioProcessor();
         juce::ScopedLock callbackLock(processor->getCallbackLock());
@@ -312,7 +329,7 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
         if (!isPrepared)
             return;
 
-        auto* pool = atk::SecondaryThreadPool::getInstance();
+        auto* pool = atk::AudioThreadPool::getInstance();
         const bool canUseThreading = useThreadPool.load(std::memory_order_acquire) && pool && pool->isReady();
 
         if (canUseThreading)
@@ -360,8 +377,7 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
             if (jobContext.isCompleted())
             {
                 jobContext.reset();
-                pool->addJob(&Impl::executeProcessJob, &jobContext);
-                pool->kickWorkers();
+                pool->submitTask(&Impl::executeProcessJob, &jobContext);
             }
 
             return;
@@ -418,6 +434,14 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
                 obs_frontend_add_dock_by_id(dockId, "atkAudio PluginHost", qtWidget);
             }
 
+            // Try to apply pending dock state immediately
+            applyPendingDockState();
+
+            // If we still have pending state and parent isn't ready yet, retry after a short delay
+            // (parent dock might not be set immediately by OBS)
+            if ((hasPendingDockFloating || hasPendingDockGeom || hasPendingDockArea) && !qtWidget->parentWidget())
+                QTimer::singleShot(10, qtWidget, [this]() { applyPendingDockState(); });
+
             if (QWidget* parentDock = qtWidget->parentWidget())
             {
                 parentDock->show();
@@ -435,6 +459,85 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
                 parentDock->hide();
             else
                 qtWidget->hide();
+        }
+    }
+
+    void applyPendingDockState()
+    {
+        if (!qtWidget)
+            return;
+
+        QWidget* parentDock = qtWidget->parentWidget();
+        if (!parentDock)
+            return;
+
+        auto* dock = qobject_cast<QDockWidget*>(parentDock);
+        if (!dock)
+            return;
+
+        // Connect to dock signals if not already connected
+        if (!dockSignalsConnected)
+            connectDockSignals(dock);
+
+        // Apply pending floating state
+        if (hasPendingDockFloating)
+        {
+            dock->setFloating(pendingDockFloating);
+            hasPendingDockFloating = false;
+        }
+
+        // Apply geometry for floating windows
+        if (hasPendingDockGeom && dock->isFloating())
+        {
+            if (pendingDockGeom.w > 0 && pendingDockGeom.h > 0)
+                dock->setGeometry(pendingDockGeom.x, pendingDockGeom.y, pendingDockGeom.w, pendingDockGeom.h);
+            hasPendingDockGeom = false;
+        }
+
+        // Apply dock area for docked windows
+        if (hasPendingDockArea && !dock->isFloating())
+        {
+            if (auto* mainWin = qobject_cast<QMainWindow*>(static_cast<QWidget*>(obs_frontend_get_main_window())))
+            {
+                auto area = static_cast<Qt::DockWidgetArea>(pendingDockArea);
+                mainWin->addDockWidget(area, dock);
+            }
+            hasPendingDockArea = false;
+        }
+    }
+
+    void connectDockSignals(QDockWidget* dock)
+    {
+        if (!dock || dockSignalsConnected)
+            return;
+
+        // Initialize current state from the dock
+        updateDockState();
+
+        // Track any state changes from the dock widget
+        QObject::connect(dock, &QDockWidget::visibilityChanged, qtWidget, [this](bool) { updateDockState(); });
+
+        QObject::connect(dock, &QDockWidget::topLevelChanged, qtWidget, [this](bool) { updateDockState(); });
+
+        dockSignalsConnected = true;
+    }
+
+    void updateDockState()
+    {
+        if (!qtWidget)
+            return;
+
+        // Query current state from the dock widget
+        if (auto* dock = qobject_cast<QDockWidget*>(qtWidget->parentWidget()))
+        {
+            dockVisible = dock->isVisible();
+            dockFloating = dock->isFloating();
+        }
+        else if (qtWidget->isVisible())
+        {
+            // Widget visible but no parent dock yet
+            dockVisible = true;
+            dockFloating = false;
         }
     }
 
@@ -478,19 +581,68 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
 
     void getState(std::string& s)
     {
-        juce::ScopedLock lock(mainComponent->getPluginHolderLock());
-        auto* processor = mainComponent->getAudioProcessor();
-        juce::ScopedLock callbackLock(processor->getCallbackLock());
         juce::MemoryBlock state;
-        processor->getStateInformation(state);
+
+        {
+            // Wait for any background processing job first
+            if (!jobContext.isCompleted())
+                jobContext.waitForCompletion();
+
+            juce::ScopedLock lock(mainComponent->getPluginHolderLock());
+            auto* processor = mainComponent->getAudioProcessor();
+            juce::ScopedLock callbackLock(processor->getCallbackLock());
+            processor->getStateInformation(state);
+        }
         auto stateString = state.toString().toStdString();
 
         bool multiEnabled = useThreadPool.load(std::memory_order_acquire);
+
+        // Get dock geometry info
+        bool isFloating = dockFloating;
+        int dockX = 0, dockY = 0, dockW = 0, dockH = 0;
+        int dockArea = 0; // Qt::DockWidgetArea: 1=left, 2=right, 4=top, 8=bottom
+        if (qtWidget)
+        {
+            if (auto* dock = qobject_cast<QDockWidget*>(qtWidget->parentWidget()))
+            {
+                // isFloating already set from dockFloating state
+                auto geom = dock->geometry();
+                dockX = geom.x();
+                dockY = geom.y();
+                dockW = geom.width();
+                dockH = geom.height();
+
+                if (!isFloating)
+                {
+                    if (auto* mainWin =
+                            qobject_cast<QMainWindow*>(static_cast<QWidget*>(obs_frontend_get_main_window())))
+                    {
+                        dockArea = static_cast<int>(mainWin->dockWidgetArea(dock));
+                    }
+                }
+            }
+        }
+
         s = "MULTICORE:"
           + std::string(multiEnabled ? "1" : "0")
           + "\n"
           + "DOCKVISIBLE:"
           + std::string(dockVisible ? "1" : "0")
+          + "\n"
+          + "DOCKFLOATING:"
+          + std::string(isFloating ? "1" : "0")
+          + "\n"
+          + "DOCKAREA:"
+          + std::to_string(dockArea)
+          + "\n"
+          + "DOCKGEOM:"
+          + std::to_string(dockX)
+          + ","
+          + std::to_string(dockY)
+          + ","
+          + std::to_string(dockW)
+          + ","
+          + std::to_string(dockH)
           + "\n"
           + stateString;
     }
@@ -526,11 +678,65 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
                 std::string header = pluginState.substr(0, newlinePos);
                 restoreDockVisible = (header.find(":1") != std::string::npos);
                 pluginState = pluginState.substr(newlinePos + 1);
-
-                if (restoreDockVisible)
-                    setVisible(true);
             }
         }
+
+        // Parse DOCKFLOATING header
+        if (pluginState.rfind("DOCKFLOATING:", 0) == 0)
+        {
+            size_t newlinePos = pluginState.find('\n');
+            if (newlinePos != std::string::npos)
+            {
+                std::string header = pluginState.substr(0, newlinePos);
+                pendingDockFloating = (header.find(":1") != std::string::npos);
+                hasPendingDockFloating = true;
+                pluginState = pluginState.substr(newlinePos + 1);
+            }
+        }
+
+        // Skip legacy DOCKTAB header if present
+        if (pluginState.rfind("DOCKTAB:", 0) == 0)
+        {
+            size_t newlinePos = pluginState.find('\n');
+            if (newlinePos != std::string::npos)
+                pluginState = pluginState.substr(newlinePos + 1);
+        }
+
+        // Parse DOCKAREA header
+        if (pluginState.rfind("DOCKAREA:", 0) == 0)
+        {
+            size_t newlinePos = pluginState.find('\n');
+            if (newlinePos != std::string::npos)
+            {
+                std::string header = pluginState.substr(9, newlinePos - 9); // Skip "DOCKAREA:"
+                pluginState = pluginState.substr(newlinePos + 1);
+                pendingDockArea = std::atoi(header.c_str());
+                hasPendingDockArea = (pendingDockArea > 0);
+            }
+        }
+
+        // Parse DOCKGEOM header
+        if (pluginState.rfind("DOCKGEOM:", 0) == 0)
+        {
+            size_t newlinePos = pluginState.find('\n');
+            if (newlinePos != std::string::npos)
+            {
+                std::string header = pluginState.substr(9, newlinePos - 9); // Skip "DOCKGEOM:"
+                pluginState = pluginState.substr(newlinePos + 1);
+
+                // Parse geometry: x,y,width,height
+                int x = 0, y = 0, w = 0, h = 0;
+                if (sscanf(header.c_str(), "%d,%d,%d,%d", &x, &y, &w, &h) == 4)
+                {
+                    pendingDockGeom = {x, y, w, h};
+                    hasPendingDockGeom = true;
+                }
+            }
+        }
+
+        // Restore dock visibility
+        if (restoreDockVisible)
+            setVisible(true);
 
         {
             juce::ScopedLock lock(pendingStateLock);
@@ -544,6 +750,9 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
     {
         if (stateString.empty())
             return;
+
+        if (!jobContext.isCompleted())
+            jobContext.waitForCompletion();
 
         juce::ScopedLock lock(mainComponent->getPluginHolderLock());
         auto* processor = mainComponent->getAudioProcessor();
@@ -563,8 +772,9 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
 
         if (enabled && !wasEnabled)
         {
-            auto* pool = atk::SecondaryThreadPool::getInstance();
-            pool->initialize();
+            auto* pool = atk::AudioThreadPool::getInstance();
+            if (pool && !pool->isReady())
+                pool->initialize();
         }
         else if (!enabled && wasEnabled)
         {
@@ -648,6 +858,20 @@ private:
     std::string dockIdStorage;
     bool obsExiting = false;
     bool dockVisible = false;
+    bool dockFloating = true; // Default to floating when no state is loaded
+    bool dockSignalsConnected = false;
+    bool pendingDockFloating = false;
+    bool hasPendingDockFloating = false;
+
+    struct DockGeom
+    {
+        int x, y, w, h;
+    };
+
+    DockGeom pendingDockGeom{};
+    bool hasPendingDockGeom = false;
+    int pendingDockArea = 0;
+    bool hasPendingDockArea = false;
 
     juce::AudioBuffer<float> syncBuffer;
     juce::MidiBuffer syncMidiBuffer;

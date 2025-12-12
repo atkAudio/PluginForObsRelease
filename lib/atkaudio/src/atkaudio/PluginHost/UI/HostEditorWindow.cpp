@@ -51,23 +51,6 @@ void HostAudioProcessorEditor::childBoundsChanged(Component* child)
     resizingFromChild = false;
 }
 
-void HostAudioProcessorEditor::setScaleFactor(float scale)
-{
-    currentScaleFactor = scale;
-    AudioProcessorEditor::setScaleFactor(scale);
-
-    [[maybe_unused]] const auto posted = MessageManager::callAsync(
-        [ref = SafePointer<HostAudioProcessorEditor>(this), scale]
-        {
-            if (auto* r = ref.getComponent())
-                if (auto* e = r->currentEditorComponent)
-                    e->setScaleFactor(scale);
-        }
-    );
-
-    jassert(posted);
-}
-
 void HostAudioProcessorEditor::pluginChanged()
 {
     loader.setVisible(!hostProcessor.isPluginLoaded());
@@ -84,7 +67,6 @@ void HostAudioProcessorEditor::pluginChanged()
             }
         );
 
-        editorComponent->setScaleFactor(currentScaleFactor);
         editorComponent->setFooterVisible(pendingFooterVisible);
         currentEditorComponent = editorComponent.get();
 
@@ -99,7 +81,7 @@ void HostAudioProcessorEditor::pluginChanged()
 
             case EditorStyle::newWindow:
                 const auto bg = getLookAndFeel().findColour(ResizableWindow::backgroundColourId).darker();
-                auto window = std::make_unique<ScaledDocumentWindow>(bg, currentScaleFactor);
+                auto window = std::make_unique<SimpleDocumentWindow>(bg);
                 window->setAlwaysOnTop(true);
                 window->setContentOwned(editorComponent.release(), true);
                 window->centreAroundComponent(this, window->getWidth(), window->getHeight());

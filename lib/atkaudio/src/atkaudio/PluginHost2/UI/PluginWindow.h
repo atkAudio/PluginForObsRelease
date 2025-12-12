@@ -287,11 +287,6 @@ private:
 
     DecoratorConstrainer constrainer{*this};
 
-    float getDesktopScaleFactor() const override
-    {
-        return 1.0f;
-    }
-
     static AudioProcessorEditor* createProcessorEditor(AudioProcessor& processor, PluginWindow::Type type)
     {
         if (type == PluginWindow::Type::normal)

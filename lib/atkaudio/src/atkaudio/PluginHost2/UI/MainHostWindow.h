@@ -10,6 +10,8 @@ using namespace juce;
 
 #include <atkaudio/ModuleInfrastructure/AudioServer/AudioServer.h>
 #include <atkaudio/ModuleInfrastructure/MidiServer/MidiServer.h>
+#include <obs-module.h>
+#include <string>
 
 namespace CommandIDs
 {
@@ -79,6 +81,17 @@ public:
 
     void addPluginsToMenu(PopupMenu&);
     std::optional<PluginDescriptionAndPreference> getChosenType(int menuID) const;
+
+    // Parent OBS source UUID (the source in which this PluginHost2 filter is)
+    void setParentSourceUuid(const std::string& uuid)
+    {
+        parentSourceUuid = uuid;
+    }
+
+    const std::string& getParentSourceUuid() const
+    {
+        return parentSourceUuid;
+    }
 
     std::unique_ptr<GraphDocumentComponent> graphHolder;
 
@@ -194,6 +207,9 @@ private:
     std::unique_ptr<PluginListWindow> pluginListWindow;
 
     juce::SharedResourcePointer<atk::LookAndFeel> lookAndFeel;
+
+    // Parent OBS source UUID (not ref-counted, just the UUID string)
+    std::string parentSourceUuid;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainHostWindow)
 };

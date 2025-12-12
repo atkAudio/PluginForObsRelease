@@ -46,6 +46,8 @@ struct pluginhost_data
 
     std::mutex sidechain_mutex;
     size_t max_sidechain_frames;
+
+    bool hasLoadedState = false;
 };
 
 /* -------------------------------------------------------- */
@@ -86,18 +88,32 @@ static void save(void* data, obs_data_t* settings)
     std::string s;
     ph->pluginHost.getState(s);
 
-    blog(LOG_INFO, "[PluginHost] Saving state, size: %zu bytes", s.size());
+    obs_source_t* parent = obs_filter_get_parent(ph->context);
+    const char* parentName = parent ? obs_source_get_name(parent) : "(no parent)";
+    blog(LOG_INFO, "[PluginHost] save() - parent: %s, state size: %zu bytes", parentName, s.size());
+
     obs_data_set_string(settings, FILTER_ID, s.c_str());
 }
 
 static void load(void* data, obs_data_t* settings)
 {
     auto* ph = (struct pluginhost_data*)data;
-    std::string s;
+    obs_source_t* parent = obs_filter_get_parent(ph->context);
+    const char* parentName = parent ? obs_source_get_name(parent) : "(no parent)";
+
+    if (ph->hasLoadedState)
+    {
+        blog(LOG_INFO, "[PluginHost] load() - parent: %s, SKIPPED (already loaded)", parentName);
+        return;
+    }
+    ph->hasLoadedState = true;
+
     const char* chunkData = obs_data_get_string(settings, FILTER_ID);
-    s = chunkData;
-    blog(LOG_INFO, "[PluginHost] Loading state, size: %zu bytes", s.size());
-    ph->pluginHost.setState(s);
+    size_t stateSize = chunkData ? strlen(chunkData) : 0;
+    blog(LOG_INFO, "[PluginHost] load() - parent: %s, state size: %zu bytes", parentName, stateSize);
+
+    std::string stateStr = chunkData ? chunkData : "";
+    ph->pluginHost.setState(stateStr);
 }
 
 static void pluginhost_update(void* data, obs_data_t* s)
@@ -154,15 +170,18 @@ static void pluginhost_update(void* data, obs_data_t* s)
 
         obs_weak_source_release(old_weak_sidechain);
     }
-
-    // load state
-    load(data, s);
 }
 
 static void* pluginhost_create(obs_data_t* settings, obs_source_t* filter)
 {
     struct pluginhost_data* ph = new pluginhost_data();
     ph->context = filter;
+
+    obs_source_t* parent = obs_filter_get_parent(filter);
+    const char* parentName = parent ? obs_source_get_name(parent) : "(no parent)";
+    const char* chunkData = obs_data_get_string(settings, FILTER_ID);
+    size_t stateSize = chunkData ? strlen(chunkData) : 0;
+    blog(LOG_INFO, "[PluginHost] create() - parent: %s, settings has state: %zu bytes", parentName, stateSize);
 
     const char* filterUuid = obs_source_get_uuid(filter);
     if (filterUuid)
@@ -178,6 +197,18 @@ static void* pluginhost_create(obs_data_t* settings, obs_source_t* filter)
     ph->sidechain_sync.setInterpolationType(atk::InterpolationType::Linear);
     ph->sidechain_sync.setTargetLevelFactor(1.0f);
     ph->sidechain_sync.setHysteresis(0.25f);
+
+    // Pre-prepare the plugin processor so setState works before first audio callback
+    ph->pluginHost.process(nullptr, (int)ph->num_channels, AUDIO_OUTPUT_FRAMES, (double)ph->sample_rate);
+
+    // Load state from settings if present (OBS load callback may not be called for all source types)
+    if (stateSize > 0)
+    {
+        blog(LOG_INFO, "[PluginHost] create() - loading state from settings");
+        std::string stateStr = chunkData;
+        ph->pluginHost.setState(stateStr);
+        ph->hasLoadedState = true;
+    }
 
     return ph;
 }
@@ -394,5 +425,5 @@ struct obs_source_info pluginhost_filter = {
     .video_tick = pluginhost_tick,
     .filter_audio = pluginhost_filter_audio,
     .save = save,
-    // .load = load,
+    .load = load,
 };

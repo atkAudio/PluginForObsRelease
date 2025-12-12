@@ -18,6 +18,9 @@ public:
     void getState(std::string& s) override;
     void setState(std::string& s) override;
 
+    // Set the parent OBS source (extracts UUID for filtering)
+    void setParentSource(void* parentSource);
+
 protected:
     // AudioModule interface - only need to provide the window component
     juce::Component* getWindowComponent() override;

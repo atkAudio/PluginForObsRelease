@@ -3,6 +3,7 @@
 #include "../../FifoBuffer2.h"
 
 #include <juce_audio_utils/juce_audio_utils.h>
+#include <obs-frontend-api.h>
 #include <obs-module.h>
 #include <atomic>
 #include <cmath>
@@ -39,14 +40,22 @@ static void drawTextLayout(
     textLayout.draw(g, textBounds.toFloat());
 }
 
-static std::vector<std::string> GetObsAudioSources(obs_source_t* parentSource = nullptr)
+static std::vector<std::string> GetObsAudioSources(const char* parentUuid = nullptr)
 {
     std::vector<std::string> sourceNames;
+
+    struct EnumContext
+    {
+        std::vector<std::string>* names;
+        const char* parentUuid;
+    };
+
+    EnumContext context{&sourceNames, parentUuid};
 
     obs_enum_sources(
         [](void* param, obs_source_t* src)
         {
-            auto* names = static_cast<std::vector<std::string>*>(param);
+            auto* ctx = static_cast<EnumContext*>(param);
             const char* name = obs_source_get_name(src);
             uint32_t caps = obs_source_get_output_flags(src);
 
@@ -56,11 +65,19 @@ static std::vector<std::string> GetObsAudioSources(obs_source_t* parentSource = 
             if (name && std::string(name).find("ph2out") != std::string::npos)
                 return true;
 
+            // Filter out the parent source by UUID comparison
+            if (ctx->parentUuid)
+            {
+                const char* srcUuid = obs_source_get_uuid(src);
+                if (srcUuid && strcmp(srcUuid, ctx->parentUuid) == 0)
+                    return true;
+            }
+
             if (name)
-                names->push_back(std::string(name));
+                ctx->names->push_back(std::string(name));
             return true;
         },
-        &sourceNames
+        &context
     );
 
     return sourceNames;
@@ -98,10 +115,14 @@ public:
         midiMuteEnabledParam = apvts.getParameter("midiMute");
 
         startTimerHz(30); // Start the timer to process MIDI messages
+
+        // Register for scene collection changes to release OBS resources
+        obs_frontend_add_event_callback(frontendEventCallback, this);
     }
 
     ~ObsSourceAudioProcessor() override
     {
+        obs_frontend_remove_event_callback(frontendEventCallback, this);
         stopTimer();
         removeObsAudioCaptureCallback();
     }
@@ -201,6 +222,7 @@ public:
 
     void releaseResources() override
     {
+        removeObsAudioCaptureCallback();
     }
 
     juce::AudioProcessorEditor* createEditor() override;
@@ -252,7 +274,7 @@ public:
             if (xmlState->hasTagName(apvts.state.getType()))
                 apvts.replaceState(juce::ValueTree::fromXml(*xmlState));
 
-        addObsAudioCaptureCallback();
+        scheduleSourceConnection();
     }
 
     bool acceptsMidi() const override
@@ -276,6 +298,20 @@ public:
         return currentObsSource;
     }
 
+private:
+    static void frontendEventCallback(enum obs_frontend_event event, void* private_data)
+    {
+        auto* self = static_cast<ObsSourceAudioProcessor*>(private_data);
+
+        if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING)
+        {
+            self->connectionScheduled.store(false, std::memory_order_release);
+            self->removeObsAudioCaptureCallback();
+            self->scheduleSourceConnection();
+        }
+    }
+
+public:
     void removeObsAudioCaptureCallback()
     {
         juce::ScopedLock lock(sourceUpdateMutex);
@@ -286,7 +322,35 @@ public:
             obs_source_remove_audio_capture_callback(currentObsSource, obs_capture_callback, this);
             obs_source_release(currentObsSource);
             currentObsSource = nullptr;
+            sourceConnected.store(false, std::memory_order_release);
         }
+    }
+
+    void scheduleSourceConnection()
+    {
+        // Return if already scheduled (acq_rel for exchange)
+        if (connectionScheduled.exchange(true, std::memory_order_acq_rel))
+            return;
+
+        juce::Timer::callAfterDelay(
+            2000,
+            [this]()
+            {
+                juce::MessageManager::callAsync(
+                    [this]()
+                    {
+                        // Check if connection already exists (acquire)
+                        if (sourceConnected.load(std::memory_order_acquire))
+                        {
+                            connectionScheduled.store(false, std::memory_order_release);
+                            return;
+                        }
+                        addObsAudioCaptureCallback();
+                        connectionScheduled.store(false, std::memory_order_release);
+                    }
+                );
+            }
+        );
     }
 
     void addObsAudioCaptureCallback()
@@ -334,11 +398,16 @@ public:
             obs_source_add_audio_capture_callback(source, obs_capture_callback, this);
 
             currentObsSource = source;
+            sourceConnected.store(true, std::memory_order_release);
         }
     }
 
     void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiBuffer) override
     {
+        // Schedule connection if no source exists (acquire)
+        if (!sourceConnected.load(std::memory_order_acquire))
+            scheduleSourceConnection();
+
         syncBuffer.read(
             buffer.getArrayOfWritePointers(),
             getMainBusNumOutputChannels(),
@@ -505,6 +574,8 @@ private:
     SyncBuffer syncBuffer;
     obs_source_t* currentObsSource = nullptr;
     juce::AudioProcessorValueTreeState apvts;
+    std::atomic<bool> connectionScheduled{false};
+    std::atomic<bool> sourceConnected{false};
 
     // MIDI control parameters for volume
     std::atomic<float>* midiEnabled = nullptr;
@@ -539,9 +610,21 @@ private:
     std::atomic<bool> muteLearnCaptured = false;
     std::atomic<bool> muteStateUpdated = false;
 
-    // Thread safety - separate concerns like OBS compressor
-    mutable juce::CriticalSection sourceUpdateMutex; // Protects source pointer changes
+    mutable juce::CriticalSection sourceUpdateMutex;
+    std::string parentSourceUuid;
 
+public:
+    void setParentSourceUuid(const std::string& uuid)
+    {
+        parentSourceUuid = uuid;
+    }
+
+    const std::string& getParentSourceUuid() const
+    {
+        return parentSourceUuid;
+    }
+
+private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ObsSourceAudioProcessor)
 };
 
@@ -559,13 +642,6 @@ public:
         , followVolumeToggle("Follow Source Volume")
         , followMuteToggle("Follow Source Mute")
     {
-        auto sources = GetObsAudioSources();
-        auto savedSourceRaw = processor.getApvts()
-                                  .state.getOrCreateChildWithName(CHILD_NAME, nullptr)
-                                  .getProperty(PROPERTY_NAME)
-                                  .toString()
-                                  .toRawUTF8();
-
         followVolumeToggle.setButtonText("Follow Source Volume");
         auto followVolumeState = processor.getApvts()
                                      .state.getOrCreateChildWithName(FOLLOW_VOLUME_CHILD, nullptr)
@@ -645,16 +721,6 @@ public:
         addAndMakeVisible(followMuteToggle);
         addAndMakeVisible(listBox);
 
-        auto selectedIdx = -1;
-        for (size_t i = 0; i < sources.size(); ++i)
-        {
-            if (sources[i] == savedSourceRaw)
-            {
-                selectedIdx = static_cast<int>(i);
-                break;
-            }
-        }
-
         setSize(300, 600);
         setResizable(true, true);
         setResizeLimits(300, 550, 400, 800);
@@ -728,10 +794,24 @@ private:
             : ListBox({}, nullptr)
             , processor(p)
         {
-            for (const auto& item : GetObsAudioSources())
-                items.push_back(item);
             setModel(this);
             setOutlineThickness(1);
+        }
+
+        void refreshSources()
+        {
+            items.clear();
+            const auto& parentUuid = processor.getParentSourceUuid();
+            const char* parentUuidPtr = parentUuid.empty() ? nullptr : parentUuid.c_str();
+            for (const auto& item : GetObsAudioSources(parentUuidPtr))
+                items.push_back(item);
+            updateContent();
+        }
+
+        void visibilityChanged() override
+        {
+            if (isVisible())
+                refreshSources();
         }
 
         int getNumRows() override

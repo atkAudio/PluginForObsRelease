@@ -4,14 +4,13 @@
 
 #include "../CpuInfo.h"
 #include "../RealtimeThread.h"
+#include "DependencyTaskGraph.h"
+
+#include <juce_core/juce_core.h>
 
 #include <algorithm>
 #include <atomic>
-#include <barrier>
-#include <cassert>
 #include <condition_variable>
-#include <cstdio>
-#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -21,167 +20,116 @@ namespace atk
 {
 
 //==============================================================================
-/** Thread barrier type alias using C++20 std::barrier */
-using ThreadBarrier = std::shared_ptr<std::barrier<>>;
-
-inline ThreadBarrier makeBarrier(int numThreadsToSynchronise)
-{
-    return std::make_shared<std::barrier<>>(numThreadsToSynchronise);
-}
-
-//==============================================================================
 /**
-    Job context for audio processing jobs.
-    Fixed-size struct to avoid std::function allocations.
+    Lock-free MPMC task queue for parallel audio processing.
 */
-struct AudioJobContext
-{
-    void* userData = nullptr;
-    void (*execute)(void*) = nullptr;
-    std::atomic<bool> completed{false};
-
-    AudioJobContext()
-        : userData(nullptr)
-        , execute(nullptr)
-        , completed(false)
-    {
-    }
-
-    AudioJobContext(AudioJobContext&& other) noexcept
-        : userData(other.userData)
-        , execute(other.execute)
-        , completed(other.completed.load(std::memory_order_acquire))
-    {
-        other.userData = nullptr;
-        other.execute = nullptr;
-    }
-
-    AudioJobContext& operator=(AudioJobContext&& other) noexcept
-    {
-        if (this != &other)
-        {
-            userData = other.userData;
-            execute = other.execute;
-            completed.store(other.completed.load(std::memory_order_acquire), std::memory_order_release);
-            other.userData = nullptr;
-            other.execute = nullptr;
-        }
-        return *this;
-    }
-
-    AudioJobContext(const AudioJobContext&) = delete;
-    AudioJobContext& operator=(const AudioJobContext&) = delete;
-
-    bool isValid() const
-    {
-        return execute != nullptr;
-    }
-
-    void run()
-    {
-        if (execute && userData)
-            execute(userData);
-    }
-
-    void reset()
-    {
-        userData = nullptr;
-        execute = nullptr;
-        completed.store(false, std::memory_order_release);
-    }
-};
-
-//==============================================================================
-/**
-    Lock-free job queue for parallel audio processing.
-*/
-class RealtimeJobQueue
+class RealtimeTaskQueue
 {
 public:
-    using Job = AudioJobContext;
-
-    RealtimeJobQueue()
+    RealtimeTaskQueue()
         : head(0)
         , tail(0)
     {
-        jobs.resize(8192);
+        static_assert((kCapacity & (kCapacity - 1)) == 0, "Capacity must be power of 2");
+        for (size_t i = 0; i < kCapacity; ++i)
+            slots[i].sequence.store(i, std::memory_order_relaxed);
     }
 
     void reset()
     {
-        head.store(0, std::memory_order_release);
-        tail.store(0, std::memory_order_release);
+        head.store(0, std::memory_order_relaxed);
+        tail.store(0, std::memory_order_relaxed);
+        for (size_t i = 0; i < kCapacity; ++i)
+            slots[i].sequence.store(i, std::memory_order_relaxed);
     }
 
-    size_t addJob(void (*execute)(void*), void* userData)
+    struct Task
     {
-        const size_t index = head.fetch_add(1, std::memory_order_acq_rel) % jobs.size();
-        jobs[index].execute = execute;
-        jobs[index].userData = userData;
-        jobs[index].completed.store(false, std::memory_order_release);
-        return index;
-    }
+        void* userData = nullptr;
+        void (*execute)(void*) = nullptr;
+    };
 
-    bool tryClaimJob(Job*& outJob)
+    bool tryPush(void (*execute)(void*), void* userData)
     {
-        while (true)
+        size_t pos = head.load(std::memory_order_relaxed);
+        for (;;)
         {
-            int currentTail = tail.load(std::memory_order_acquire);
-            const int currentHead = head.load(std::memory_order_acquire);
+            Slot& slot = slots[pos & (kCapacity - 1)];
+            size_t seq = slot.sequence.load(std::memory_order_acquire);
+            auto diff = static_cast<intptr_t>(seq) - static_cast<intptr_t>(pos);
 
-            if (currentTail >= currentHead)
-                return false;
-
-            if (tail.compare_exchange_weak(
-                    currentTail,
-                    currentTail + 1,
-                    std::memory_order_acq_rel,
-                    std::memory_order_acquire
-                ))
+            if (diff == 0)
             {
-                const size_t index = currentTail % jobs.size();
-                outJob = &jobs[index];
-                return outJob->isValid();
+                if (head.compare_exchange_weak(pos, pos + 1, std::memory_order_relaxed))
+                {
+                    slot.task.execute = execute;
+                    slot.task.userData = userData;
+                    slot.sequence.store(pos + 1, std::memory_order_release);
+                    return true;
+                }
             }
+            else if (diff < 0)
+                return false; // Queue full
+            else
+                pos = head.load(std::memory_order_relaxed);
         }
     }
 
-    int getRemainingJobs() const
+    bool tryPop(Task& outTask)
     {
-        const int h = head.load(std::memory_order_acquire);
-        const int t = tail.load(std::memory_order_acquire);
-        return (std::max)(0, h - t);
+        size_t pos = tail.load(std::memory_order_relaxed);
+        for (;;)
+        {
+            Slot& slot = slots[pos & (kCapacity - 1)];
+            size_t seq = slot.sequence.load(std::memory_order_acquire);
+            auto diff = static_cast<intptr_t>(seq) - static_cast<intptr_t>(pos + 1);
+
+            if (diff == 0)
+            {
+                if (tail.compare_exchange_weak(pos, pos + 1, std::memory_order_relaxed))
+                {
+                    outTask = slot.task;
+                    slot.sequence.store(pos + kCapacity, std::memory_order_release);
+                    return true;
+                }
+            }
+            else if (diff < 0)
+                return false; // Queue empty
+            else
+                pos = tail.load(std::memory_order_relaxed);
+        }
     }
 
-    int getTotalJobs() const
+    bool isEmpty() const
     {
-        return head.load(std::memory_order_acquire);
-    }
-
-    int getTail() const
-    {
-        return tail.load(std::memory_order_acquire);
+        return head.load(std::memory_order_acquire) == tail.load(std::memory_order_acquire);
     }
 
 private:
-    std::vector<Job> jobs;
-    std::atomic<int> head;
-    std::atomic<int> tail;
+    static constexpr size_t kCapacity = 8192;
 
-    RealtimeJobQueue(const RealtimeJobQueue&) = delete;
-    RealtimeJobQueue& operator=(const RealtimeJobQueue&) = delete;
+    struct Slot
+    {
+        std::atomic<size_t> sequence;
+        Task task;
+    };
+
+    alignas(64) std::atomic<size_t> head;
+    alignas(64) std::atomic<size_t> tail;
+    alignas(64) Slot slots[kCapacity];
+
+    RealtimeTaskQueue(const RealtimeTaskQueue&) = delete;
+    RealtimeTaskQueue& operator=(const RealtimeTaskQueue&) = delete;
 };
 
 //==============================================================================
 /**
-    Global audio thread pool singleton for realtime parallel processing.
-    Lock-free job queue, barrier synchronization, high-priority worker threads.
+    Global realtime thread pool singleton.
+    Workers pull tasks from queue and execute them. That's it.
 */
 class AudioThreadPool
 {
 public:
-    /** Get singleton instance.
-        @note Not thread-safe. Call only during single-threaded program initialization. */
     static AudioThreadPool* getInstance()
     {
         if (!instance)
@@ -195,155 +143,161 @@ public:
         instance = nullptr;
     }
 
-    void initialize(int numWorkers = 0, int /*priority*/ = 8)
+    void initialize(int numWorkers = 0)
     {
         std::lock_guard<std::mutex> lock(poolMutex);
 
-        if (isInitialized)
+        if (initialized.load(std::memory_order_acquire))
             return;
 
         if (numWorkers <= 0)
-        {
-            const int physicalCores = getNumPhysicalCpus();
-            numWorkers = (std::max)(1, physicalCores - 2);
-        }
+            numWorkers = (std::max)(1, getNumPhysicalCpus() - 2);
 
-        workerThreads.reserve(numWorkers);
+        // Get physical core mapping - pin workers to physical cores
+        // Reserve first 2 physical cores for main thread and OS (if available)
+        auto physicalCores = getPhysicalCoreMapping();
+        const int numPhysical = static_cast<int>(physicalCores.size());
+
+        DBG("[AudioThreadPool] Initializing with "
+            << numWorkers
+            << " workers, "
+            << numPhysical
+            << " physical cores detected");
 
         for (int i = 0; i < numWorkers; ++i)
-            workerThreads.push_back(std::make_unique<WorkerThread>(*this));
+        {
+            int coreId = -1;
+            if (numPhysical > 2)
+            {
+                int physicalIndex = 2 + (i % (numPhysical - 2));
+                coreId = physicalCores[physicalIndex];
+            }
+            else if (numPhysical > 0)
+            {
+                coreId = physicalCores[i % numPhysical];
+            }
+            workers.push_back(std::make_unique<Worker>(*this, coreId));
+        }
 
-        isInitialized = true;
+        DBG("[AudioThreadPool] All workers started");
 
-#ifndef NDEBUG
-        printf(
-            "AudioThreadPool initialized with %d worker threads (CPU cores: %d)\n",
-            numWorkers,
-            getNumPhysicalCpus()
-        );
-#endif
+        initialized.store(true, std::memory_order_release);
     }
 
     void shutdown()
     {
         std::lock_guard<std::mutex> lock(poolMutex);
 
-        if (!isInitialized)
+        if (!initialized.load(std::memory_order_acquire))
             return;
 
-        workerThreads.clear();
-        isInitialized = false;
+        workers.clear();
+        initialized.store(false, std::memory_order_release);
     }
 
     bool isReady() const
     {
-        return isInitialized;
+        return initialized.load(std::memory_order_acquire);
     }
 
     int getNumWorkers() const
     {
-        return static_cast<int>(workerThreads.size());
+        return static_cast<int>(workers.size());
     }
 
-    void configure(int /*samplesPerBlock*/, double /*sampleRate*/)
+    /** Submit a task for execution. Returns true if queued successfully. */
+    bool submitTask(void (*execute)(void*), void* userData)
     {
-        // Reserved for future use (e.g., adaptive spin lock tuning)
+        if (!initialized.load(std::memory_order_acquire) || execute == nullptr)
+            return false;
+
+        if (!taskQueue.tryPush(execute, userData))
+            return false;
+
+        // Wake one worker
+        cv.notify_one();
+        return true;
     }
 
-    void prepareJobs(ThreadBarrier newBarrier)
+    /** Try to steal and execute one task (for caller participation). Returns true if executed. */
+    bool tryExecuteTask()
     {
-        barrier = std::move(newBarrier);
-        jobQueue.reset();
-    }
-
-    void addJob(void (*execute)(void*), void* userData)
-    {
-        jobQueue.addJob(execute, userData);
-    }
-
-    void kickWorkers()
-    {
-        // Set all ready flags first
-        for (auto& worker : workerThreads)
-            if (worker != nullptr)
-                worker->setReady();
-
-        // Wake all workers at once
+        RealtimeTaskQueue::Task task;
+        if (taskQueue.tryPop(task) && task.execute != nullptr)
         {
-            std::lock_guard<std::mutex> lock(mutex);
-            cv.notify_all();
-        }
-    }
-
-    bool tryStealAndExecuteJob()
-    {
-        RealtimeJobQueue::Job* job = nullptr;
-        if (jobQueue.tryClaimJob(job) && job != nullptr && job->isValid())
-        {
-            job->run();
-            job->completed.store(true, std::memory_order_release);
+            task.execute(task.userData);
             return true;
         }
         return false;
     }
 
-    ThreadBarrier getBarrier() const
-    {
-        return barrier;
-    }
-
     bool isCalledFromWorkerThread() const
     {
         auto currentId = std::this_thread::get_id();
-        for (const auto& worker : workerThreads)
-            if (worker && worker->getThreadId() == currentId)
+        for (const auto& w : workers)
+            if (w && w->getThreadId() == currentId)
                 return true;
         return false;
     }
 
-    RealtimeJobQueue& getJobQueue()
+    void executeDependencyGraph(DependencyTaskGraph* graph)
     {
-        return jobQueue;
-    }
+        if (!graph || graph->empty())
+            return;
 
-    std::mutex& getMutex()
-    {
-        return mutex;
-    }
+        const int numWorkerThreads = getNumWorkers();
+        graph->setNumWorkers(numWorkerThreads);
+        graph->prepare();
 
-    std::condition_variable& getCV()
-    {
-        return cv;
+        for (int i = 0; i < numWorkerThreads; ++i)
+        {
+            workerContexts[i].graph = graph;
+            workerContexts[i].workerId = i;
+            submitTask(&executeGraphHelperWithAffinity, &workerContexts[i]);
+        }
+
+        graph->executeUntilDone();
     }
 
 private:
-    class WorkerThread
+    struct WorkerContext
+    {
+        DependencyTaskGraph* graph = nullptr;
+        int workerId = -1;
+    };
+
+    // Pre-allocated to avoid allocation during audio callback
+    WorkerContext workerContexts[32];
+
+    static void executeGraphHelperWithAffinity(void* userData)
+    {
+        auto* ctx = static_cast<WorkerContext*>(userData);
+        if (ctx && ctx->graph)
+            ctx->graph->executeUntilDoneForWorker(ctx->workerId);
+    }
+
+    class Worker
     {
     public:
-        explicit WorkerThread(AudioThreadPool& poolRef)
-            : pool(poolRef)
-            , ready(false)
-            , shouldExit(false)
-            , thread(&WorkerThread::run, this)
+        explicit Worker(AudioThreadPool& p, int coreId = -1)
+            : pool(p)
+            , thread(&Worker::run, this)
         {
             trySetRealtimePriority(thread);
+
+            if (coreId >= 0)
+            {
+                if (tryPinThreadToCore(thread, coreId))
+                    DBG("[AudioThreadPool] Worker pinned to core " << coreId);
+            }
         }
 
-        ~WorkerThread()
+        ~Worker()
         {
             shouldExit.store(true, std::memory_order_release);
-            {
-                std::lock_guard<std::mutex> lock(pool.getMutex());
-                ready.store(true, std::memory_order_release);
-            }
-            pool.getCV().notify_all();
+            pool.cv.notify_all();
             if (thread.joinable())
                 thread.join();
-        }
-
-        void setReady()
-        {
-            ready.store(true, std::memory_order_release);
         }
 
         std::thread::id getThreadId() const
@@ -356,50 +310,29 @@ private:
         {
             while (!shouldExit.load(std::memory_order_acquire))
             {
-                // Wait for work signal
+                RealtimeTaskQueue::Task task;
+                if (pool.taskQueue.tryPop(task) && task.execute != nullptr)
                 {
-                    std::unique_lock<std::mutex> lock(pool.getMutex());
-                    pool.getCV().wait(
+                    task.execute(task.userData);
+                }
+                else
+                {
+                    // No tasks - wait for notification
+                    std::unique_lock<std::mutex> lock(pool.mutex);
+                    pool.cv.wait(
                         lock,
-                        [this]
-                        { return ready.load(std::memory_order_acquire) || shouldExit.load(std::memory_order_acquire); }
+                        [this] { return shouldExit.load(std::memory_order_acquire) || !pool.taskQueue.isEmpty(); }
                     );
-                    ready.store(false, std::memory_order_release);
                 }
-
-                if (shouldExit.load(std::memory_order_acquire))
-                    return;
-
-                // Process all available jobs
-                RealtimeJobQueue::Job* job = nullptr;
-                while (pool.getJobQueue().tryClaimJob(job))
-                {
-                    if (job && job->isValid())
-                    {
-                        job->run();
-                        job->completed.store(true, std::memory_order_release);
-                    }
-
-                    if (shouldExit.load(std::memory_order_acquire))
-                        return;
-                }
-
-                // Synchronize at barrier
-                if (auto syncBarrier = pool.getBarrier())
-                    syncBarrier->arrive_and_wait();
             }
         }
 
         AudioThreadPool& pool;
-        std::atomic<bool> ready;
-        std::atomic<bool> shouldExit;
+        std::atomic<bool> shouldExit{false};
         std::thread thread;
     };
 
-    AudioThreadPool()
-        : isInitialized(false)
-    {
-    }
+    AudioThreadPool() = default;
 
 public:
     ~AudioThreadPool()
@@ -410,13 +343,11 @@ public:
 private:
     inline static AudioThreadPool* instance = nullptr;
 
-    std::vector<std::unique_ptr<WorkerThread>> workerThreads;
-    RealtimeJobQueue jobQueue;
-    ThreadBarrier barrier;
+    std::vector<std::unique_ptr<Worker>> workers;
+    RealtimeTaskQueue taskQueue;
     std::mutex poolMutex;
-    std::atomic<bool> isInitialized{false};
+    std::atomic<bool> initialized{false};
 
-    // Shared condition variable for all workers
     std::mutex mutex;
     std::condition_variable cv;
 

@@ -26,6 +26,8 @@ struct pluginhost2_data
 
     size_t num_channels;
     size_t sample_rate;
+
+    bool hasLoadedState = false;
 };
 
 static const char* pluginhost2_name(void* unused)
@@ -46,10 +48,13 @@ static void save(void* data, obs_data_t* settings)
 static void load(void* data, obs_data_t* settings)
 {
     auto* ph = (struct pluginhost2_data*)data;
-    std::string s;
+    if (ph->hasLoadedState)
+        return;
+    ph->hasLoadedState = true;
+
     const char* chunkData = obs_data_get_string(settings, FILTER_ID);
-    s = chunkData;
-    ph->pluginHost2.setState(s);
+    std::string stateStr = chunkData ? chunkData : "";
+    ph->pluginHost2.setState(stateStr);
 }
 
 static void pluginhost2_update(void* data, obs_data_t* s)
@@ -61,9 +66,6 @@ static void pluginhost2_update(void* data, obs_data_t* s)
 
     ph->num_channels = num_channels;
     ph->sample_rate = sample_rate;
-
-    // load state
-    load(data, s);
 }
 
 static void* pluginhost2_create(obs_data_t* settings, obs_source_t* filter)
@@ -71,9 +73,18 @@ static void* pluginhost2_create(obs_data_t* settings, obs_source_t* filter)
     struct pluginhost2_data* ph = new pluginhost2_data();
     ph->context = filter;
     ph->parent = obs_filter_get_parent(filter);
-    obs_source_release(ph->parent);
+    ph->pluginHost2.setParentSource(ph->parent);
 
     pluginhost2_update(ph, settings);
+
+    // Load state from settings if present (OBS load callback may not be called for all source types)
+    const char* chunkData = obs_data_get_string(settings, FILTER_ID);
+    if (chunkData && strlen(chunkData) > 0)
+    {
+        std::string stateStr = chunkData;
+        ph->pluginHost2.setState(stateStr);
+        ph->hasLoadedState = true;
+    }
 
     return ph;
 }
@@ -98,27 +109,6 @@ static struct obs_audio_data* pluginhost2_filter_audio(void* data, struct obs_au
     ph->pluginHost2.process(samples, (int)ph->num_channels, num_samples, (double)ph->sample_rate);
 
     return audio;
-}
-
-struct sidechain_prop_info
-{
-    obs_property_t* sources;
-    obs_source_t* parent;
-};
-
-static bool add_sources(void* data, obs_source_t* source)
-{
-    struct sidechain_prop_info* info = (struct sidechain_prop_info*)data;
-    uint32_t caps = obs_source_get_output_flags(source);
-
-    if (source == info->parent)
-        return true;
-    if ((caps & OBS_SOURCE_AUDIO) == 0)
-        return true;
-
-    const char* name = obs_source_get_name(source);
-    obs_property_list_add_string(info->sources, name, name);
-    return true;
 }
 
 static bool open_editor_button_clicked(obs_properties_t* props, obs_property_t* property, void* data)
@@ -164,6 +154,13 @@ static obs_properties_t* pluginhost2_properties(void* data)
     return props;
 }
 
+static void pluginhost2_filter_add(void* data, obs_source_t* source)
+{
+    struct pluginhost2_data* ph = (struct pluginhost2_data*)data;
+    ph->parent = source;
+    ph->pluginHost2.setParentSource(source);
+}
+
 struct obs_source_info pluginhost2_filter = {
     .id = FILTER_ID,
     .type = OBS_SOURCE_TYPE_FILTER,
@@ -175,5 +172,6 @@ struct obs_source_info pluginhost2_filter = {
     .update = pluginhost2_update,
     .filter_audio = pluginhost2_filter_audio,
     .save = save,
-    // .load = load,
+    .load = load,
+    .filter_add = pluginhost2_filter_add,
 };

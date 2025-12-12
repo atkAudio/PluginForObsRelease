@@ -28,14 +28,13 @@ public:
         ccParam = apvts->getParameter("cc");
         midiEnabledParam = apvts->getParameter("midi");
 
-        startTimerHz(30); // Start the timer to process MIDI messages
+        startTimerHz(30);
     }
 
     void timerCallback() override
     {
         if (midiEnabled->load(std::memory_order_acquire) > 0.5f)
         {
-            // Only update gain if we've received a MIDI message
             if (gainUpdated.load(std::memory_order_acquire))
             {
                 auto gain = toUiGain.load(std::memory_order_acquire);
@@ -47,7 +46,6 @@ public:
 
         if (midiLearn->load(std::memory_order_acquire) > 0.5f)
         {
-            // Check if we've captured new values
             if (learnCaptured.load(std::memory_order_acquire))
             {
                 auto cc = toUiCc.load(std::memory_order_acquire);
@@ -58,17 +56,10 @@ public:
 
                 ccParam->setValueNotifyingHost(cc);
                 channelParam->setValueNotifyingHost(ch);
-
-                // Enable MIDI control
                 midiEnabledParam->setValueNotifyingHost(1.0f);
 
-                DBG("GainPlugin MIDI Learn complete: ch=" << toUiChannel.load() << " cc=" << toUiCc.load());
-
-                // Turn off learn mode
                 auto* learnParam = apvts->getParameter("learn");
                 learnParam->setValueNotifyingHost(0.0f);
-
-                // Clear the capture flag
                 learnCaptured.store(false, std::memory_order_release);
             }
         }
@@ -77,8 +68,8 @@ public:
     void prepareToPlay(double sampleRate, int samplesPerBlock) override
     {
         juce::ignoreUnused(sampleRate, samplesPerBlock);
-        gainValueSmoothed.reset(sampleRate, 0.05f);  // Smooth the gain value with a time constant of 50ms
-        gain2ValueSmoothed.reset(sampleRate, 0.05f); // Smooth the gain2 value with a time constant of 50ms
+        gainValueSmoothed.reset(sampleRate, 0.05f);
+        gain2ValueSmoothed.reset(sampleRate, 0.05f);
     }
 
     void releaseResources() override
@@ -92,10 +83,6 @@ public:
         auto gain2Linear = juce::Decibels::decibelsToGain(gain2Db);
         auto invert = invertPhase->load(std::memory_order_acquire) > 0.5f ? -1.0f : 1.0f;
 
-        // Debug: Check if we're receiving any MIDI
-        if (!midiBuffer.isEmpty())
-            DBG("GainPlugin received " << midiBuffer.getNumEvents() << " MIDI events");
-
         if (midiEnabled->load(std::memory_order_acquire) > 0.5f)
         {
             for (const auto& metadata : midiBuffer)
@@ -106,27 +93,13 @@ public:
                     auto expectedChannel = static_cast<int>(midiChannel->load(std::memory_order_acquire));
                     auto expectedCc = static_cast<int>(midiCc->load(std::memory_order_acquire));
 
-                    DBG("GainPlugin MIDI CC: ch="
-                        << message.getChannel()
-                        << " cc="
-                        << message.getControllerNumber()
-                        << " value="
-                        << message.getControllerValue()
-                        << " | Expected: ch="
-                        << expectedChannel
-                        << " cc="
-                        << expectedCc);
-
-                    if (message.getChannel() == expectedChannel && message.getControllerNumber() == expectedCc)
+                    bool channelMatches = (expectedChannel == 0) || (message.getChannel() == expectedChannel);
+                    if (channelMatches && message.getControllerNumber() == expectedCc)
                     {
-                        // Convert MIDI CC to gain using the parameter's normalisable range
-                        // The gain parameter already has skew set to 0.125 for cubic response
                         auto faderPos = message.getControllerValue() / 127.0f;
-
                         gain = gainParam->getNormalisableRange().convertFrom0to1(faderPos);
                         toUiGain.store(gain, std::memory_order_release);
                         gainUpdated.store(true, std::memory_order_release);
-                        DBG("GainPlugin updated gain to: " << gain);
                     }
                 }
             }
@@ -149,24 +122,11 @@ public:
 
         if (midiLearn->load(std::memory_order_acquire) > 0.5f)
         {
-            DBG("GainPlugin: Learn mode active, buffer has " << midiBuffer.getNumEvents() << " events");
-
             for (const auto& metadata : midiBuffer)
             {
                 const juce::MidiMessage message(metadata.data, metadata.numBytes, metadata.samplePosition);
-
-                DBG("GainPlugin: Learn mode checking message - isController="
-                    << (message.isController() ? "yes" : "no")
-                    << " isNoteOn="
-                    << (message.isNoteOn() ? "yes" : "no"));
-
                 if (message.isController())
                 {
-                    DBG("GainPlugin MIDI Learn captured: ch="
-                        << message.getChannel()
-                        << " cc="
-                        << message.getControllerNumber());
-
                     toUiChannel.store(message.getChannel(), std::memory_order_release);
                     toUiCc.store(message.getControllerNumber(), std::memory_order_release);
                     learnCaptured.store(true, std::memory_order_release);
@@ -264,7 +224,7 @@ private:
         gainRange.setSkewForCentre(0.125f); // Match cubic curve: 0.5^3 = 0.125
 
         auto channelRange = NormalisableRange<float>(0.0f, 16.0f, 1.0f, 1.0f);
-        auto ccRange = NormalisableRange<float>(0.0f, 128.0f, 1.0f, 1.0f);
+        auto ccRange = NormalisableRange<float>(0.0f, 127.0f, 1.0f, 1.0f);
 
         params.push_back(std::make_unique<AudioParameterFloat>(ParameterID{"gain", 1}, "Gain", gainRange, 1.0f));
 
@@ -276,7 +236,6 @@ private:
 
         params.push_back(std::make_unique<AudioParameterBool>(ParameterID{"learn", 1}, "Learn", false));
 
-        // Gain2 parameter with -30 to +30 dB range
         auto gain2Range = NormalisableRange<float>(-30.0f, 30.0f, 0.1f, 1.0f);
         params.push_back(
             std::make_unique<AudioParameterFloat>(ParameterID{"gain2", 1}, "Gainsborough", gain2Range, 0.0f)

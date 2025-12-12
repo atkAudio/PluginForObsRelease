@@ -2,11 +2,14 @@
 
 #include "SubgraphExtractor.h"
 #include "AudioThreadPool.h"
+#include "DependencyTaskGraph.h"
 
 #include <juce_dsp/juce_dsp.h>
 
 // Pre-allocated buffer configuration for chain processing
 #define CHAIN_MAX_CHANNELS 64 // Maximum audio channels per chain
+
+#define AUDIO_INPUT_SOURCE_ID (UINT32_MAX - 1)
 
 namespace atk
 {
@@ -172,6 +175,7 @@ public:
 
     bool addConnection(const Nodes& n, const Connection& c)
     {
+#ifdef ATK_DEBUG
         String msg = "Connections::addConnection: src="
                    + String((int)c.source.nodeID.uid)
                    + "."
@@ -182,19 +186,24 @@ public:
                    + String(c.destination.channelIndex);
         DBG(msg);
         Logger::writeToLog(msg);
+#endif
 
         if (!canConnect(n, c))
         {
+#ifdef ATK_DEBUG
             DBG("  canConnect returned FALSE");
             Logger::writeToLog("  canConnect returned FALSE");
+#endif
             return false;
         }
 
         sourcesForDestination[c.destination].insert(c.source);
 
+#ifdef ATK_DEBUG
         String countMsg = "  Connection added. Total connections: " + String(getConnections().size());
         DBG(countMsg);
         Logger::writeToLog(countMsg);
+#endif
         jassert(isConnected(c));
         return true;
     }
@@ -1122,34 +1131,6 @@ public:
 
     static constexpr auto midiChannelIndex = AudioProcessorGraphMT::midiChannelIndex;
 
-    // Calculate latency for all nodes in the graph (recursive, with memoization)
-    // Returns a map of nodeID -> latency samples
-    static std::unordered_map<uint32, int> calculateGlobalDelays(const Nodes& n, const Connections& c)
-    {
-        std::unordered_map<uint32, int> delays;
-        const auto orderedNodes = createOrderedNodeList(n, c);
-
-        // Process nodes in topological order so dependencies are already calculated
-        for (const auto* node : orderedNodes)
-        {
-            // Find max latency among all input sources
-            int maxInputLatency = 0;
-            const auto sources = c.getSourceNodesForDestination(node->nodeID);
-            for (const auto& sourceNodeID : sources)
-            {
-                auto it = delays.find(sourceNodeID.uid);
-                int sourceLatency = (it != delays.end()) ? it->second : 0;
-                maxInputLatency = jmax(maxInputLatency, sourceLatency);
-            }
-
-            // This node's latency = max input latency + processor's own latency
-            const int thisNodeLatency = maxInputLatency + node->getProcessor()->getLatencySamples();
-            delays[node->nodeID.uid] = thisNodeLatency;
-        }
-
-        return delays;
-    }
-
     static SequenceAndLatency build(const Nodes& n, const Connections& c)
     {
         GraphRenderSequence sequence;
@@ -1366,15 +1347,6 @@ private:
 
             const auto nodeDelay = getNodeDelay(src.nodeID);
             const auto needsDelay = nodeDelay < maxLatency;
-
-            DBG("[LATENCY]   Input source: nodeID="
-                << (int)src.nodeID.uid
-                << " nodeDelay="
-                << nodeDelay
-                << " maxLatency="
-                << maxLatency
-                << " needsDelay="
-                << (needsDelay ? "YES" : "NO"));
 
             if ((inputChan < numOuts || needsDelay) && isBufferNeededLater(reversed, ourRenderingIndex, inputChan, src))
             {
@@ -1761,24 +1733,6 @@ private:
         // - Within the subgraph, delays accumulate naturally as we process nodes in order
         delays = globalDelays;
 
-        DBG("[LATENCY] === RenderSequenceBuilder (filtered) ===");
-        DBG("[LATENCY] Building filtered sequence for " << orderedNodes.size() << " nodes");
-        for (auto* node : orderedNodes)
-        {
-            (void)node; // Used in DBG macros only
-            DBG("[LATENCY]   Node in subgraph: "
-                << node->getProcessor()->getName()
-                << " (nodeID="
-                << (int)node->nodeID.uid
-                << ")");
-        }
-        for (const auto& [nodeId, delay] : globalDelays)
-        {
-            (void)nodeId;
-            (void)delay; // Used in DBG macros only
-            DBG("[LATENCY]   GlobalDelay: nodeID=" << (int)nodeId << " delay=" << delay);
-        }
-
         int maxChannelsNeeded = 0;
         int maxMidiBuffersNeeded = 1; // At least one MIDI buffer
 
@@ -1803,46 +1757,14 @@ private:
             auto numOuts = processor.getTotalNumOutputChannels();
             auto totalChans = jmax(numIns, numOuts);
 
-            // Calculate max input latency for this node (for cross-subgraph delay compensation)
-            // Check all input channels to find the maximum source latency
-            int maxInputLatency = 0;
-            for (int ch = 0; ch < numIns; ++ch)
-            {
-                NodeAndChannel destPin{node->nodeID, ch};
-                auto channelSources = c.getSourcesForDestination(destPin);
-                for (const auto& src : channelSources)
-                {
-                    int srcLatency = getNodeDelay(src.nodeID);
-                    maxInputLatency = jmax(maxInputLatency, srcLatency);
-                }
-            }
-
-            DBG("[LATENCY] Node " << processor.getName() << " maxInputLatency=" << maxInputLatency);
-
-            DBG("Chain node "
-                << i
-                << " ("
-                << processor.getName()
-                << "): "
-                << numIns
-                << " inputs, "
-                << numOuts
-                << " outputs, "
-                << totalChans
-                << " total channels");
-
-            // Clear any input channels that have NO incoming connection
-            // Check each input channel to see if it has a source connection
+            // Clear any input channels with no incoming connection
             for (int ch = 0; ch < numIns; ++ch)
             {
                 NodeAndChannel destPin{node->nodeID, ch};
                 auto sources = c.getSourcesForDestination(destPin);
 
                 if (sources.empty())
-                {
-                    DBG("  -> Clearing unconnected input channel " << ch);
                     sequence.addClearChannelOp(ch);
-                }
             }
 
             // Direct channel mapping: channel 0→0, 1→1, 2→2, etc.
@@ -2170,7 +2092,6 @@ public:
     // Forward declaration for job context
     struct ChainRenderSequence;
 
-    // Helper class for delay-compensated mixing
     // Applies delay to individual sources before mixing them into destination
     // Uses pooled delay lines that persist across graph rebuilds
     class DelayCompensatingMixer
@@ -2182,7 +2103,6 @@ public:
         {
         }
 
-        // Register a source that will be mixed with delay compensation
         void registerSource(
             uint32 sourceId,
             int sourceLatency,
@@ -2193,22 +2113,15 @@ public:
         )
         {
             int delayNeeded = totalLatency - sourceLatency;
-
-            // Acquire delay line from pool (reuses if connection already exists)
             DelayLinePool::DelayLineKey key{sourceId, destId};
-            auto pooledLine = pool->acquireDelayLine(key, delayNeeded, sampleRate, blockSize, numChannels);
-
-            // Store the pooled delay line
-            delayLines[sourceId] = pooledLine;
+            delayLines[sourceId] = pool->acquireDelayLine(key, delayNeeded, sampleRate, blockSize, numChannels);
         }
 
-        // Mix a source into destination with delay compensation
         void mixWithDelay(uint32 sourceId, const float* src, float* dst, int numSamples, int channel = 0)
         {
             auto it = delayLines.find(sourceId);
             if (it == delayLines.end())
             {
-                // Source not registered - fallback to direct add
                 FloatVectorOperations::add(dst, src, numSamples);
                 return;
             }
@@ -2217,23 +2130,17 @@ public:
             auto& delayLine = pooledLine->delayLine;
             int delay = pooledLine->delayAmount.load();
 
-            // Apply delay compensation
             for (int i = 0; i < numSamples; ++i)
             {
                 delayLine.pushSample(channel, src[i]);
-                float delayedSample = delayLine.popSample(channel, static_cast<float>(delay));
-                dst[i] += delayedSample;
+                dst[i] += delayLine.popSample(channel, static_cast<float>(delay));
             }
         }
 
         void clearSources()
         {
-            // Release all delay lines back to pool
             for (auto& [sourceId, pooledLine] : delayLines)
-            {
-                DelayLinePool::DelayLineKey key{sourceId, destId};
-                pool->releaseDelayLine(key);
-            }
+                pool->releaseDelayLine({sourceId, destId});
             delayLines.clear();
         }
 
@@ -2243,21 +2150,267 @@ public:
         std::unordered_map<uint32, std::shared_ptr<DelayLinePool::PooledDelayLine>> delayLines;
     };
 
+    //==========================================================================
+    // Unified output routing with delay compensation
+    class OutputRouter
+    {
+    public:
+        enum class SourceType : uint8_t
+        {
+            Chain = 0,
+            Passthrough = 1
+        };
+
+        struct Route
+        {
+            SourceType type;
+            size_t sourceIndex;
+            int sourceChannel;
+            int destChannel;
+            uint32 obsNodeId = 0;
+        };
+
+        explicit OutputRouter(DelayLinePool* pool)
+            : mixer(UINT32_MAX, pool)
+        {
+        }
+
+        void clear()
+        {
+            mixer.clearSources();
+            hostOutputRoutes.clear();
+            obsNodes.clear();
+        }
+
+        void addChainToHostRoute(
+            size_t chainIndex,
+            int sourceChannel,
+            int destChannel,
+            int chainLatency,
+            int totalLatency,
+            double sampleRate,
+            uint32 blockSize
+        )
+        {
+            uint32 sourceId = makeSourceId(SourceType::Chain, chainIndex, sourceChannel);
+
+            if (registeredSources.insert(sourceId).second)
+                mixer.registerSource(sourceId, chainLatency, totalLatency, sampleRate, blockSize);
+
+            hostOutputRoutes.push_back({SourceType::Chain, chainIndex, sourceChannel, destChannel, 0});
+        }
+
+        void addPassthroughRoute(
+            size_t passthroughIndex,
+            int inputChannel,
+            int outputChannel,
+            int totalLatency,
+            double sampleRate,
+            uint32 blockSize
+        )
+        {
+            uint32 sourceId = makeSourceId(SourceType::Passthrough, passthroughIndex, inputChannel);
+
+            if (registeredSources.insert(sourceId).second)
+                mixer.registerSource(sourceId, 0, totalLatency, sampleRate, blockSize);
+
+            hostOutputRoutes.push_back({SourceType::Passthrough, passthroughIndex, inputChannel, outputChannel, 0});
+        }
+
+        size_t addObsNode(Node::Ptr node, std::shared_ptr<ChainBufferPool::PooledBuffer> buffer)
+        {
+            size_t index = obsNodes.size();
+            obsNodes.push_back({node, buffer, {}, {}});
+            return index;
+        }
+
+        size_t getObsNodeCount() const
+        {
+            return obsNodes.size();
+        }
+
+        void addChainToObsRoute(size_t obsNodeIndex, NodeID sourceNodeID, int sourceChannel, int destChannel)
+        {
+            if (obsNodeIndex < obsNodes.size())
+                obsNodes[obsNodeIndex].chainInputConnections.push_back({sourceNodeID, sourceChannel, destChannel});
+        }
+
+        void addInputToObsRoute(size_t obsNodeIndex, int hostInputChannel, int nodeInputChannel)
+        {
+            if (obsNodeIndex < obsNodes.size())
+                obsNodes[obsNodeIndex].directInputConnections.push_back({hostInputChannel, nodeInputChannel});
+        }
+
+        void routeAllOutputs(
+            AudioBuffer<float>& hostOutput,
+            MidiBuffer& hostMidi,
+            const AudioBuffer<float>& savedInput,
+            const std::vector<std::unique_ptr<ChainRenderSequence>>& chains,
+            const std::unordered_map<uint32, ChainRenderSequence*>& nodeToChainMap,
+            int numSamples
+        )
+        {
+            hostOutput.clear();
+            hostMidi.clear();
+
+            for (const auto& route : hostOutputRoutes)
+            {
+                const float* src = nullptr;
+
+                if (route.type == SourceType::Chain)
+                {
+                    if (route.sourceIndex < chains.size())
+                    {
+                        const auto& chain = chains[route.sourceIndex];
+                        if (route.sourceChannel < chain->getAudioBuffer().getNumChannels())
+                            src = chain->getAudioBuffer().getReadPointer(route.sourceChannel);
+                    }
+                }
+                else if (route.type == SourceType::Passthrough)
+                {
+                    if (route.sourceChannel < savedInput.getNumChannels())
+                        src = savedInput.getReadPointer(route.sourceChannel);
+                }
+
+                if (src && route.destChannel < hostOutput.getNumChannels())
+                {
+                    uint32 sourceId = makeSourceId(route.type, route.sourceIndex, route.sourceChannel);
+                    float* dst = hostOutput.getWritePointer(route.destChannel);
+                    mixer.mixWithDelay(sourceId, src, dst, numSamples);
+                }
+            }
+
+            for (const auto& chain : chains)
+                if (chain->connectsToMidiOutput)
+                    hostMidi.addEvents(chain->getMidiBuffer(), 0, numSamples, 0);
+
+            for (auto& obsNode : obsNodes)
+            {
+                auto& nodeBuffer = obsNode.buffer->audioBuffer;
+                nodeBuffer.setSize(nodeBuffer.getNumChannels(), numSamples, false, false, true);
+                nodeBuffer.clear();
+
+                for (const auto& [hostInputChannel, nodeInputChannel] : obsNode.directInputConnections)
+                {
+                    if (hostInputChannel < savedInput.getNumChannels()
+                        && nodeInputChannel < nodeBuffer.getNumChannels())
+                    {
+                        FloatVectorOperations::add(
+                            nodeBuffer.getWritePointer(nodeInputChannel),
+                            savedInput.getReadPointer(hostInputChannel),
+                            numSamples
+                        );
+                    }
+                }
+
+                for (const auto& [sourceNodeID, sourceChannel, destChannel] : obsNode.chainInputConnections)
+                {
+                    auto it = nodeToChainMap.find(sourceNodeID.uid);
+                    if (it != nodeToChainMap.end() && destChannel < nodeBuffer.getNumChannels())
+                    {
+                        auto* sourceChain = it->second;
+                        if (sourceChannel < sourceChain->getAudioBuffer().getNumChannels())
+                        {
+                            FloatVectorOperations::add(
+                                nodeBuffer.getWritePointer(destChannel),
+                                sourceChain->getAudioBuffer().getReadPointer(sourceChannel),
+                                numSamples
+                            );
+                        }
+                    }
+                }
+
+                // Process the OBS Output node
+                if (auto* proc = obsNode.node->getProcessor())
+                {
+                    MidiBuffer emptyMidi;
+                    proc->processBlock(nodeBuffer, emptyMidi);
+                }
+            }
+        }
+
+        void routePassthroughOnly(AudioBuffer<float>& hostOutput, const AudioBuffer<float>& savedInput, int numSamples)
+        {
+            hostOutput.clear();
+
+            for (const auto& route : hostOutputRoutes)
+            {
+                if (route.type == SourceType::Passthrough)
+                {
+                    if (route.sourceChannel < savedInput.getNumChannels()
+                        && route.destChannel < hostOutput.getNumChannels())
+                    {
+                        FloatVectorOperations::add(
+                            hostOutput.getWritePointer(route.destChannel),
+                            savedInput.getReadPointer(route.sourceChannel),
+                            numSamples
+                        );
+                    }
+                }
+            }
+
+            for (auto& obsNode : obsNodes)
+            {
+                auto& nodeBuffer = obsNode.buffer->audioBuffer;
+                nodeBuffer.setSize(nodeBuffer.getNumChannels(), numSamples, false, false, true);
+                nodeBuffer.clear();
+
+                for (const auto& [hostInputChannel, nodeInputChannel] : obsNode.directInputConnections)
+                {
+                    if (hostInputChannel < savedInput.getNumChannels()
+                        && nodeInputChannel < nodeBuffer.getNumChannels())
+                    {
+                        FloatVectorOperations::add(
+                            nodeBuffer.getWritePointer(nodeInputChannel),
+                            savedInput.getReadPointer(hostInputChannel),
+                            numSamples
+                        );
+                    }
+                }
+
+                if (auto* proc = obsNode.node->getProcessor())
+                {
+                    MidiBuffer emptyMidi;
+                    proc->processBlock(nodeBuffer, emptyMidi);
+                }
+            }
+        }
+
+    private:
+        static uint32 makeSourceId(SourceType type, size_t index, int channel)
+        {
+            return (uint32(type) << 30) | ((uint32(index) & 0x3FFFFF) << 8) | (uint32(channel) & 0xFF);
+        }
+
+        DelayCompensatingMixer mixer;
+        std::vector<Route> hostOutputRoutes;
+        std::set<uint32> registeredSources;
+
+        struct ObsNodeData
+        {
+            Node::Ptr node;
+            std::shared_ptr<ChainBufferPool::PooledBuffer> buffer;
+            std::vector<std::tuple<NodeID, int, int>> chainInputConnections;
+            std::vector<std::pair<int, int>> directInputConnections;
+        };
+
+        std::vector<ObsNodeData> obsNodes;
+    };
+
     // Each chain represents an independent subgraph that can execute in parallel
     struct ChainRenderSequence
     {
         std::unique_ptr<RenderSequence> sequence;
-        int chainLatency = 0;
-        int latencySum = 0; // Sum of all processor latencies in this subgraph for change detection
+        int chainLatency = 0;       // Internal latency (sum of processors in this chain)
+        int accumulatedLatency = 0; // max(source chain latencies) + chainLatency
+        int latencySum = 0;         // For runtime change detection
         int topologicalLevel = 0;
         size_t subgraphIndex = 0;
-        bool connectsToOutput = false;     // True if this chain has audio outputs connecting to the audio output node
-        bool connectsToMidiOutput = false; // True if this chain has MIDI outputs connecting to the MIDI output node
+        bool connectsToOutput = false;
+        bool connectsToMidiOutput = false;
 
-        // Reference to pooled buffer (shared ownership with pool)
         std::shared_ptr<ChainBufferPool::PooledBuffer> pooledBuffer;
 
-        // Convenience accessors to the pooled buffers
         AudioBuffer<float>& getAudioBuffer()
         {
             return pooledBuffer->audioBuffer;
@@ -2273,13 +2426,13 @@ public:
             return pooledBuffer->midiBuffer;
         }
 
-        // Dependency tracking for parallel execution
         std::atomic<int> pendingDependencies{0};
         int initialDependencyCount = 0;
         std::vector<ChainRenderSequence*> dependentChains;
+        std::vector<ChainRenderSequence*> sourceChains;
 
-        // Input delay compensation mixer for cross-subgraph latency alignment
-        // Each chain that feeds into this chain registers as a source with its latency
+        AudioPlayHead* cachedPlayHead = nullptr;
+        class ParallelRenderSequence* parentSequence = nullptr;
         DelayCompensatingMixer inputMixer;
 
         ChainRenderSequence(uint32 chainId, DelayLinePool* pool)
@@ -2289,33 +2442,14 @@ public:
 
         ~ChainRenderSequence()
         {
-            // Release buffer back to pool by marking it as free
             if (pooledBuffer)
                 pooledBuffer->refCount.store(0, std::memory_order_release);
         }
 
-        // Non-copyable, non-movable due to atomic
         ChainRenderSequence(const ChainRenderSequence&) = delete;
         ChainRenderSequence& operator=(const ChainRenderSequence&) = delete;
         ChainRenderSequence(ChainRenderSequence&&) = delete;
         ChainRenderSequence& operator=(ChainRenderSequence&&) = delete;
-    };
-
-    // Job context for parallel chain processing
-    // Contains all data needed to process a chain on a worker thread
-    struct ChainProcessingJob
-    {
-        ChainRenderSequence* chain;
-        AudioBuffer<float>* audioBufferView;
-        AudioPlayHead* playHead;
-
-        // Static function for thread pool execution
-        static void execute(void* context)
-        {
-            auto* job = static_cast<ChainProcessingJob*>(context);
-            if (job && job->chain && job->audioBufferView)
-                job->chain->sequence->process(*job->audioBufferView, job->chain->getMidiBuffer(), job->playHead);
-        }
     };
 
     ParallelRenderSequence(
@@ -2330,13 +2464,8 @@ public:
         , nodes(n)
         , bufferPool(pool)
         , delayLinePool(delayPool)
-        , outputMixer(UINT32_MAX, &delayPool) // Use UINT32_MAX as destId for output mixer
+        , outputRouter(&delayPool)
     {
-        DBG("========================================");
-        DBG("[RENDER SEQ] Building new ParallelRenderSequence");
-        DBG("[RENDER SEQ] Total nodes in graph: " << n.getNodes().size());
-        DBG("[RENDER SEQ] Total connections: " << c.getConnections().size());
-
         // Helper to check if a vector contains a value
         auto contains = [](const auto& vec, const auto& val)
         { return std::find(vec.begin(), vec.end(), val) != vec.end(); };
@@ -2351,17 +2480,6 @@ public:
         auto* audioPool = atk::AudioThreadPool::getInstance();
         const size_t totalWorkers = audioPool ? static_cast<size_t>(audioPool->getNumWorkers() + 1) : SIZE_MAX;
         extractor.buildSubgraphDependencies(subgraphs, connectionsVec, totalWorkers);
-
-        DBG("[PARALLEL] Extracted " << subgraphs.size() << " subgraphs");
-        for (size_t i = 0; i < subgraphs.size(); ++i)
-        {
-            DBG("[PARALLEL]   Subgraph "
-                << i
-                << " has "
-                << subgraphs[i].nodeIDs.size()
-                << " nodes, level "
-                << subgraphs[i].topologicalLevel);
-        }
 
         // Find I/O nodes (needed for both processor graphs and passthrough-only graphs)
         for (const auto& node : n.getNodes())
@@ -2381,19 +2499,10 @@ public:
 
         // Build passthrough mappings for direct Input → Output connections (no processors)
         // This must be done even when subgraphs.empty() to handle passthrough-only graphs
+        // Supports 1-to-many and many-to-1 routing
         for (const auto& conn : connectionsVec)
-        {
             if (conn.source.nodeID == audioInputNodeID && conn.destination.nodeID == audioOutputNodeID)
-            {
-                passthroughChannelMap[conn.source.channelIndex] = conn.destination.channelIndex;
-                DBG("Passthrough: input ch"
-                    << conn.source.channelIndex
-                    << " -> output ch"
-                    << conn.destination.channelIndex);
-            }
-        }
-
-        DBG("Total passthrough mappings: " << passthroughChannelMap.size());
+                passthroughConnections.push_back({conn.source.channelIndex, conn.destination.channelIndex});
 
         // Collect OBS Output nodes for sequential processing (to avoid deadlock with nested PluginHost2 MT)
         // Must happen before early return for empty subgraphs
@@ -2402,9 +2511,8 @@ public:
             if (!node || !node->getProcessor() || node->getProcessor()->getName() != "OBS Output")
                 continue;
 
-            ObsOutputNode obsNode;
-            obsNode.node = node;
-            obsNode.buffer = bufferPool.acquireBuffer(s.blockSize);
+            auto buffer = bufferPool.acquireBuffer(s.blockSize);
+            size_t obsNodeIndex = outputRouter.addObsNode(node, buffer);
 
             // Scan connections to find inputs to this OBS Output node
             for (const auto& conn : connectionsVec)
@@ -2415,48 +2523,39 @@ public:
                 if (conn.source.nodeID == audioInputNodeID)
                 {
                     // Direct: Audio Input -> OBS Output
-                    obsNode.directInputConnections.push_back({conn.source.channelIndex, conn.destination.channelIndex});
+                    outputRouter
+                        .addInputToObsRoute(obsNodeIndex, conn.source.channelIndex, conn.destination.channelIndex);
                 }
                 else
                 {
                     // From processor node -> OBS Output
-                    obsNode.chainInputConnections.push_back(
-                        {conn.source.nodeID, conn.source.channelIndex, conn.destination.channelIndex}
+                    outputRouter.addChainToObsRoute(
+                        obsNodeIndex,
+                        conn.source.nodeID,
+                        conn.source.channelIndex,
+                        conn.destination.channelIndex
                     );
                 }
             }
-
-            obsOutputNodes.push_back(std::move(obsNode));
         }
-
-        if (!obsOutputNodes.empty())
-            DBG("[OBS OUTPUT] Collected " << obsOutputNodes.size() << " OBS Output node(s) for sequential processing");
 
         // Pre-allocate buffer pool to avoid allocation in audio thread
-        // Need: 1 for savedInput + subgraphs.size() for chains + obsOutputNodes.size() already acquired above
+        // Need: 1 for savedInput + subgraphs.size() for chains + OBS nodes already acquired above
         // Add extra margin for safety
-        const size_t numBuffersNeeded = 1 + subgraphs.size() + obsOutputNodes.size() + 2;
+        const size_t numBuffersNeeded = 1 + subgraphs.size() + outputRouter.getObsNodeCount() + 2;
         bufferPool.preallocate(numBuffersNeeded, s.blockSize);
-        DBG("[BUFFER POOL] Pre-allocated " << numBuffersNeeded << " buffers at " << s.blockSize << " samples");
 
-        // If no subgraphs (no processor nodes besides OBS Output), we're done
         if (subgraphs.empty())
         {
-            DBG("No processor chains - passthrough-only graph");
+            // Register passthrough routes even when there are no chains
+            // totalLatency = 0 when there are no chains
+            for (size_t i = 0; i < passthroughConnections.size(); ++i)
+            {
+                const auto& [inputCh, outputCh] = passthroughConnections[i];
+                outputRouter.addPassthroughRoute(i, inputCh, outputCh, 0, s.sampleRate, s.blockSize);
+            }
             return;
         }
-
-        // Calculate global delays for ALL nodes in the graph
-        // This is critical for cross-subgraph delay compensation
-        const auto globalDelays = RenderSequenceBuilder::calculateGlobalDelays(n, c);
-
-        // Store global delays for later use in output latency compensation
-        nodeLatencies = globalDelays;
-
-        DBG("[LATENCY] Global delays calculated for " << nodeLatencies.size() << " nodes:");
-        for (const auto& [nodeId, latency] : nodeLatencies)
-            if (latency > 0)
-                DBG("[LATENCY]   Node " << (int)nodeId << ": " << latency << " samples");
 
         // Build filtered RenderSequences for all subgraphs
         chains.reserve(subgraphs.size());
@@ -2467,34 +2566,25 @@ public:
             const auto& subgraph = subgraphs[i];
             auto chain = std::make_unique<ChainRenderSequence>(static_cast<uint32>(i), &delayLinePool);
 
-            // Acquire buffer from pool first (thread-safe, reuses freed buffers)
-            // Buffer is sized to blockSize from prepareToPlay
             chain->pooledBuffer = bufferPool.acquireBuffer(s.blockSize);
 
-            // Build filtered RenderSequence with pooled buffer
-            // RenderOps will be prepared immediately with the pooled buffer (no separate binding step)
-            // Pass globalDelays so nodes at subgraph boundaries can see input latencies from other subgraphs
-            // Linear chains use direct channel mapping (0→0, 1→1, etc.) - no complex buffer allocation needed
+            // Build RenderSequence - pass empty delays since we calculate accumulated latency at chain level
+            static const std::unordered_map<uint32, int> emptyDelays;
             chain->sequence =
-                std::make_unique<RenderSequence>(s, n, c, subgraph.nodeIDs, globalDelays, chain->getAudioBuffer());
+                std::make_unique<RenderSequence>(s, n, c, subgraph.nodeIDs, emptyDelays, chain->getAudioBuffer());
             chain->chainLatency = chain->sequence->getLatencySamples();
             chain->topologicalLevel = subgraph.topologicalLevel;
             chain->subgraphIndex = i;
 
-            // Store latency sum for runtime change detection
             for (const auto& nodeID : subgraph.nodeIDs)
                 if (auto node = n.getNodeForId(nodeID))
                     if (auto* proc = node->getProcessor())
                         chain->latencySum += proc->getLatencySamples();
 
-            // Check if any node in this subgraph connects to the audio or MIDI output nodes
-            chain->connectsToOutput = false;
-            chain->connectsToMidiOutput = false;
             for (const auto& conn : connectionsVec)
             {
                 if (contains(subgraph.nodeIDs, conn.source.nodeID))
                 {
-                    // Check if destination is an output node
                     auto destNode = n.getNodeForId(conn.destination.nodeID);
                     if (destNode)
                     {
@@ -2510,22 +2600,24 @@ public:
                 }
             }
 
-            // Set up dependency tracking
             chain->initialDependencyCount = static_cast<int>(subgraph.dependsOn.size());
             chain->pendingDependencies.store(chain->initialDependencyCount, std::memory_order_relaxed);
 
             maxTopologicalLevel = std::max(maxTopologicalLevel, chain->topologicalLevel);
-            totalLatency = std::max(totalLatency, chain->chainLatency);
 
             chains.push_back(std::move(chain));
         }
 
-        // Build dependency pointers
         for (size_t i = 0; i < subgraphs.size(); ++i)
         {
+            chains[i]->parentSequence = this;
             for (size_t dependentIdx : subgraphs[i].dependents)
                 if (dependentIdx < chains.size())
                     chains[i]->dependentChains.push_back(chains[dependentIdx].get());
+
+            for (size_t sourceIdx : subgraphs[i].dependsOn)
+                if (sourceIdx < chains.size())
+                    chains[i]->sourceChains.push_back(chains[sourceIdx].get());
         }
 
         // Build inter-chain MIDI connection mapping
@@ -2560,14 +2652,9 @@ public:
 
                 // If both found and different chains, record the MIDI connection
                 if (sourceChainIdx != SIZE_MAX && destChainIdx != SIZE_MAX)
-                {
                     midiChainConnections.insert({sourceChainIdx, destChainIdx});
-                    DBG("MIDI connection: Chain " << sourceChainIdx << " -> Chain " << destChainIdx);
-                }
             }
         }
-
-        DBG("Total inter-chain MIDI connections: " << midiChainConnections.size());
 
         // Build NodeID -> Chain map for efficient OBS Output routing
         nodeToChainMap.clear();
@@ -2579,339 +2666,230 @@ public:
                     nodeToChainMap[nodeID.uid] = chain.get();
         }
 
-        // NOTE: OBS Output nodes are collected earlier (before the empty subgraphs check)
-        // to ensure they're found even in passthrough-only graphs
-
-        // Initialize input mixers for delay compensation
-        // Query the graph to find which nodes (from other chains) feed into each chain's first node
-        for (size_t i = 0; i < chains.size(); ++i)
+        // Calculate accumulated latency for each chain in topological order
+        // accumulatedLatency = max(source chain accumulated latencies) + own chainLatency
+        // Calculate accumulated latency per chain in topological order
+        for (int level = 0; level <= maxTopologicalLevel; ++level)
         {
-            auto& destChain = chains[i];
-            const auto& destSubgraph = subgraphs[i];
-
-            // Find the first node in this chain's subgraph (topologically first)
-            // Since subgraphs are linear chains, we need to find the node with no internal predecessor
-            NodeID firstNodeInChain;
-            bool foundFirstNode = false;
-
-            for (const auto& nodeID : destSubgraph.nodeIDs)
+            for (auto& chain : chains)
             {
-                // Check if this node has any input from within the same subgraph
-                bool hasInternalInput = false;
-                for (const auto& conn : connectionsVec)
-                {
-                    if (conn.destination.nodeID == nodeID && contains(destSubgraph.nodeIDs, conn.source.nodeID))
-                    {
-                        hasInternalInput = true;
-                        break;
-                    }
-                }
+                if (chain->topologicalLevel != level)
+                    continue;
 
-                if (!hasInternalInput)
+                int maxSourceLatency = 0;
+                for (const auto* sourceChain : chain->sourceChains)
+                    maxSourceLatency = std::max(maxSourceLatency, sourceChain->accumulatedLatency);
+
+                chain->accumulatedLatency = maxSourceLatency + chain->chainLatency;
+            }
+        }
+
+        // Register input mixers for delay compensation
+        for (auto& chain : chains)
+        {
+            int maxInputLatency = 0;
+            for (const auto* sourceChain : chain->sourceChains)
+                maxInputLatency = std::max(maxInputLatency, sourceChain->accumulatedLatency);
+
+            bool hasAudioInputConnection = false;
+            for (const auto& conn : connectionsVec)
+            {
+                if (conn.source.nodeID == audioInputNodeID
+                    && contains(subgraphs[chain->subgraphIndex].nodeIDs, conn.destination.nodeID))
                 {
-                    firstNodeInChain = nodeID;
-                    foundFirstNode = true;
+                    hasAudioInputConnection = true;
                     break;
                 }
             }
 
-            if (!foundFirstNode)
-                continue;
-
-            // Now find all connections from other chains to this first node
-            // Build a map of source chain -> accumulated latency
-            std::unordered_map<size_t, int> sourceChainLatencies;
-
-            for (const auto& conn : connectionsVec)
+            if (hasAudioInputConnection)
             {
-                if (conn.destination.nodeID == firstNodeInChain)
-                {
-                    // Find which chain contains the source node
-                    for (size_t j = 0; j < subgraphs.size(); ++j)
-                    {
-                        if (i != j && contains(subgraphs[j].nodeIDs, conn.source.nodeID))
-                        {
-                            // Source node is in chain j, get its accumulated latency from globalDelays
-                            int accumulatedLatency = 0;
-                            auto it = nodeLatencies.find(conn.source.nodeID.uid);
-                            if (it != nodeLatencies.end())
-                                accumulatedLatency = it->second;
-
-                            sourceChainLatencies[j] = std::max(sourceChainLatencies[j], accumulatedLatency);
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // Calculate max input latency
-            int maxInputLatency = 0;
-            for (const auto& [chainIdx, latency] : sourceChainLatencies)
-                maxInputLatency = std::max(maxInputLatency, latency);
-
-            // Register each source chain with this chain's input mixer
-            for (const auto& [sourceChainIdx, accumulatedLatency] : sourceChainLatencies)
-            {
-                // Get the source chain's channel count (chains[sourceChainIdx] should exist)
-                int numChannels = 2; // Default to stereo
-                if (sourceChainIdx < chains.size())
-                    numChannels = chains[sourceChainIdx]->getAudioBuffer().getNumChannels();
-
-                destChain->inputMixer.registerSource(
-                    static_cast<int>(sourceChainIdx), // sourceId = source chain index
-                    accumulatedLatency,               // accumulated latency from globalDelays
-                    maxInputLatency,                  // max of all input latencies
+                chain->inputMixer.registerSource(
+                    AUDIO_INPUT_SOURCE_ID,
+                    0,
+                    maxInputLatency,
                     s.sampleRate,
                     s.blockSize,
-                    numChannels // Number of channels
+                    CHAIN_MAX_CHANNELS
+                );
+            }
+
+            for (const auto* sourceChain : chain->sourceChains)
+            {
+                chain->inputMixer.registerSource(
+                    static_cast<int>(sourceChain->subgraphIndex),
+                    sourceChain->accumulatedLatency,
+                    maxInputLatency,
+                    s.sampleRate,
+                    s.blockSize,
+                    sourceChain->getAudioBuffer().getNumChannels()
                 );
             }
         }
 
-        // DELAY COMPENSATION STRATEGY:
-        // =============================
-        // Global delays calculated BEFORE building subgraphs give each node's accumulated latency.
-        // These are passed to filtered RenderSequenceBuilders so that:
-        //
-        // 1. Nodes with SINGLE input: No compensation needed (data flows naturally)
-        // 2. Nodes with MULTIPLE inputs at DIFFERENT latencies: Compensate for the difference
-        //
-        // Key insight: Only the DIFFERENCE in input latencies matters. A node receiving inputs
-        // from parallel paths (e.g., PathA=256ms, PathB=128ms) needs to delay the faster path
-        // by 128ms to align them. This happens automatically in createRenderingOpsForNode when
-        // it sees maxLatency > nodeDelay for a particular input.
-        //
-        // Within a subgraph's linear chain (A→B), delays accumulate naturally with no compensation.
-        // At subgraph boundaries where parallel paths merge, global delays enable proper alignment.
+        totalLatency = 0;
+        for (const auto& chain : chains)
+            if (chain->connectsToOutput)
+                totalLatency = std::max(totalLatency, chain->accumulatedLatency);
 
-        // Organize chains by topological level
         chainsByLevel.resize(maxTopologicalLevel + 1);
         for (auto& chain : chains)
             chainsByLevel[chain->topologicalLevel].push_back(chain.get());
 
-        // Build input channel mappings: Audio Input node → chains
-        // Maps (chainIndex, destinationChannel) → sourceChannel from host input
         for (const auto& conn : connectionsVec)
         {
             if (conn.source.nodeID == audioInputNodeID)
             {
-                // Find which chain contains the destination node
                 for (size_t i = 0; i < subgraphs.size(); ++i)
                 {
                     if (contains(subgraphs[i].nodeIDs, conn.destination.nodeID))
                     {
-                        // Map: chain i, destination channel → source channel
                         inputChannelMap[{i, conn.destination.channelIndex}] = conn.source.channelIndex;
-
-                        DBG("Input mapping: Chain "
-                            << i
-                            << ", dest ch "
-                            << conn.destination.channelIndex
-                            << " <- source ch "
-                            << conn.source.channelIndex);
-
                         break;
                     }
                 }
             }
         }
 
-        DBG("Total input mappings: " << inputChannelMap.size());
-
         // Build MIDI input mappings: MIDI Input node → chains
-        // Track which chains should receive MIDI input
         for (const auto& conn : connectionsVec)
         {
             if (conn.source.nodeID == midiInputNodeID)
             {
-                // Find which chain contains the destination node
                 for (size_t i = 0; i < subgraphs.size(); ++i)
                 {
                     if (contains(subgraphs[i].nodeIDs, conn.destination.nodeID))
                     {
                         midiInputChains.insert(i);
-
-                        DBG("MIDI input mapping: Chain " << i << " receives MIDI");
-
                         break;
                     }
                 }
             }
         }
 
-        DBG("Total MIDI input chains: " << midiInputChains.size());
-
         // Build output channel mappings: chains → Audio Output node
-        // Maps (chainIndex, sourceChannel) → destinationChannel to host output
-        // Also build delay compensation info for each mapping
-        struct OutputMappingInfo
-        {
-            int destChannel;
-            NodeID sourceNodeID;
-            int delayNeeded;
-        };
-
-        std::map<std::pair<size_t, int>, OutputMappingInfo> outputMappingInfo; // (chainIndex, sourceChannel) -> info
-
+        // Supports 1-to-many routing (one source channel to multiple output channels)
         for (const auto& conn : connectionsVec)
         {
             if (conn.destination.nodeID == audioOutputNodeID)
             {
-                // Find which chain contains the source node
                 for (size_t i = 0; i < subgraphs.size(); ++i)
                 {
                     if (contains(subgraphs[i].nodeIDs, conn.source.nodeID))
                     {
-                        // Map: chain i, source channel → destination channel
-                        outputChannelMap[{i, conn.source.channelIndex}] = conn.destination.channelIndex;
-
-                        // Store mapping info for delay compensation
-                        outputMappingInfo[{i, conn.source.channelIndex}] = {
+                        int chainLatency = (i < chains.size()) ? chains[i]->accumulatedLatency : 0;
+                        outputRouter.addChainToHostRoute(
+                            i,
+                            conn.source.channelIndex,
                             conn.destination.channelIndex,
-                            conn.source.nodeID,
-                            0 // delay will be calculated next
-                        };
-
+                            chainLatency,
+                            totalLatency,
+                            s.sampleRate,
+                            s.blockSize
+                        );
                         break;
                     }
                 }
             }
         }
 
-        // Calculate delay compensation for each output mapping
-        // Each chain->output mapping needs to be registered with the output mixer
-        int maxOutputLatency = 0;
-        std::map<std::pair<size_t, int>, int>
-            outputSourceLatencies; // (chainIndex, sourceChannel) -> accumulated latency
-
-        for (auto& [key, info] : outputMappingInfo)
+        // Register passthrough routes (Audio Input → Audio Output with no processors)
+        for (size_t i = 0; i < passthroughConnections.size(); ++i)
         {
-            auto it = nodeLatencies.find(info.sourceNodeID.uid);
-            int sourceLatency = (it != nodeLatencies.end()) ? it->second : 0;
-            outputSourceLatencies[key] = sourceLatency;
-            maxOutputLatency = std::max(maxOutputLatency, sourceLatency);
+            const auto& [inputCh, outputCh] = passthroughConnections[i];
+            outputRouter.addPassthroughRoute(i, inputCh, outputCh, totalLatency, s.sampleRate, s.blockSize);
         }
 
-        // Register each output source with the output mixer
-        // Use a unique ID that combines chain index and source channel
-        for (const auto& [key, info] : outputMappingInfo)
-        {
-            const auto& [chainIdx, sourceChannel] = key;
-            int sourceLatency = outputSourceLatencies[key];
-
-            // Create unique source ID by combining chain index and channel
-            uint32 sourceId = (uint32(chainIdx) << 16) | uint32(sourceChannel);
-
-            outputMixer.registerSource(sourceId, sourceLatency, maxOutputLatency, s.sampleRate, s.blockSize);
-        }
-
-        // Find the maximum output channel number (for buffer allocation)
-        int maxOutputChannels = 0;
-        for (const auto& [key, info] : outputMappingInfo)
-            maxOutputChannels = std::max(maxOutputChannels, info.destChannel + 1);
-        for (const auto& [inputCh, outputCh] : passthroughChannelMap)
-            maxOutputChannels = std::max(maxOutputChannels, outputCh + 1);
-
-        // ========================================================================
-        // PRE-ALLOCATE RESOURCES FOR REALTIME-SAFE PARALLEL PROCESSING
-        // ========================================================================
-        // Allocate all resources during graph rebuild (message thread) to avoid
-        // allocations in the audio thread during process()
-
-        // Get thread pool for worker count (needed for barrier creation)
         auto* threadPool = atk::AudioThreadPool::getInstance();
         const int numWorkers = threadPool ? threadPool->getNumWorkers() : 0;
 
-        // Pre-allocate barriers (one per topological level)
-        barriers.clear();
-        barriers.reserve(chainsByLevel.size());
-        for (size_t level = 0; level < chainsByLevel.size(); ++level)
+        useDependencyMode = false;
+        if (threadPool && threadPool->isReady())
         {
-            if (!chainsByLevel[level].empty() && numWorkers > 0)
+            taskGraph.clear();
+            taskGraph.reserve(chains.size());
+            chainToTaskIndex.clear();
+            chainToTaskIndex.reserve(chains.size());
+
+            for (size_t i = 0; i < chains.size(); ++i)
             {
-                // Create barrier: numWorkers + 1 (for main thread participation)
-                auto barrier = atk::makeBarrier(numWorkers + 1);
-                barriers.push_back(std::move(barrier));
+                auto* chain = chains[i].get();
+                size_t taskIdx = taskGraph.addTask(chain, &executeChainTask, 0);
+                chainToTaskIndex.push_back(taskIdx);
             }
-            else
+
+            for (size_t i = 0; i < subgraphs.size(); ++i)
             {
-                // No parallel execution needed for this level (empty or no workers)
-                barriers.push_back(nullptr);
+                for (size_t dependsOnIdx : subgraphs[i].dependsOn)
+                    if (dependsOnIdx < chainToTaskIndex.size() && i < chainToTaskIndex.size())
+                        taskGraph.addDependency(chainToTaskIndex[i], chainToTaskIndex[dependsOnIdx]);
             }
+
+            // Dependency mode: tasks route their inputs before processing
+            useDependencyMode = true;
         }
-
-        // Pre-allocate job and buffer view vectors for each level
-        jobsPerLevel.clear();
-        bufferViewsPerLevel.clear();
-        jobsPerLevel.resize(chainsByLevel.size());
-        bufferViewsPerLevel.resize(chainsByLevel.size());
-
-        for (size_t level = 0; level < chainsByLevel.size(); ++level)
-        {
-            const size_t numChainsAtLevel = chainsByLevel[level].size();
-            if (numChainsAtLevel > 0)
-            {
-                // Pre-size vectors to exact capacity needed (no allocation during process())
-                // We'll use resize() to create default-constructed elements that we can assign to
-                jobsPerLevel[level].resize(numChainsAtLevel);
-                bufferViewsPerLevel[level].resize(numChainsAtLevel);
-            }
-        }
-
-        DBG("[PARALLEL] Pre-allocated " << barriers.size() << " barriers and job vectors for realtime-safe processing");
     }
 
-    // Process OBS Output nodes sequentially (called from multiple code paths)
-    void processObsOutputNodes(
-        AudioBuffer<float>& audio,
-        int numSamples,
-        const std::shared_ptr<ChainBufferPool::PooledBuffer>& savedInputBuffer
-    )
+    // Route audio/MIDI from a source chain to a destination chain
+    // Called by the destination chain's task - safe because only one task writes to destChain's buffer
+    void routeFromSourceToChain(ChainRenderSequence* sourceChain, ChainRenderSequence* destChain, int numSamples)
     {
-        (void)audio; // Unused in current implementation
-        for (auto& obsNode : obsOutputNodes)
+        auto contains = [](const auto& vec, const auto& val)
+        { return std::find(vec.begin(), vec.end(), val) != vec.end(); };
+
+        for (const auto& conn : connectionsVec)
         {
-            auto& nodeBuffer = obsNode.buffer->audioBuffer;
-            nodeBuffer.setSize(nodeBuffer.getNumChannels(), numSamples, false, false, true);
-            nodeBuffer.clear();
+            if (conn.source.isMIDI() || conn.destination.isMIDI())
+                continue;
 
-            // Route from Audio Input -> OBS Output (using saved input buffer)
-            if (savedInputBuffer)
-            {
-                for (const auto& [hostInputChannel, nodeInputChannel] : obsNode.directInputConnections)
-                    if (hostInputChannel < savedInputBuffer->audioBuffer.getNumChannels()
-                        && nodeInputChannel < nodeBuffer.getNumChannels())
-                        FloatVectorOperations::add(
-                            nodeBuffer.getWritePointer(nodeInputChannel),
-                            savedInputBuffer->audioBuffer.getReadPointer(hostInputChannel),
-                            numSamples
-                        );
-            }
+            bool sourceInChain = contains(subgraphs[sourceChain->subgraphIndex].nodeIDs, conn.source.nodeID);
+            bool destInTarget = contains(subgraphs[destChain->subgraphIndex].nodeIDs, conn.destination.nodeID);
 
-            // Route from chains -> OBS Output
-            for (const auto& [sourceNodeID, sourceChannel, destChannel] : obsNode.chainInputConnections)
+            if (sourceInChain && destInTarget)
             {
-                // Look up which chain contains this source node (using prebuilt map)
-                auto it = nodeToChainMap.find(sourceNodeID.uid);
-                if (it != nodeToChainMap.end() && destChannel < nodeBuffer.getNumChannels())
+                int srcChannel = conn.source.channelIndex;
+                int dstChannel = conn.destination.channelIndex;
+
+                if (srcChannel < sourceChain->getAudioBuffer().getNumChannels()
+                    && dstChannel < destChain->getAudioBuffer().getNumChannels())
                 {
-                    auto* sourceChain = it->second;
-                    if (sourceChannel < sourceChain->getAudioBuffer().getNumChannels())
-                        FloatVectorOperations::add(
-                            nodeBuffer.getWritePointer(destChannel),
-                            sourceChain->getAudioBuffer().getReadPointer(sourceChannel),
-                            numSamples
-                        );
+                    const auto* src = sourceChain->getAudioBuffer().getReadPointer(srcChannel);
+                    auto* dst = destChain->getAudioBuffer().getWritePointer(dstChannel);
+                    destChain->inputMixer
+                        .mixWithDelay(static_cast<int>(sourceChain->subgraphIndex), src, dst, numSamples, dstChannel);
                 }
             }
-
-            // Process the OBS Output node
-            if (auto* proc = obsNode.node->getProcessor())
-            {
-                MidiBuffer emptyMidi;
-                proc->processBlock(nodeBuffer, emptyMidi);
-            }
         }
+
+        if (midiChainConnections.count({sourceChain->subgraphIndex, destChain->subgraphIndex}) > 0)
+            destChain->getMidiBuffer().addEvents(sourceChain->getMidiBuffer(), 0, numSamples, 0);
+    }
+
+    // Dependency task: Route inputs from completed source chains, then process
+    // This is safe because the dependency graph ensures all source chains have completed
+    // before this task executes, so we're the only writer to our input buffer.
+    static void executeChainTask(void* userData)
+    {
+        auto* chain = static_cast<ChainRenderSequence*>(userData);
+        if (!chain || !chain->sequence || !chain->parentSequence)
+            return;
+
+        auto* parent = chain->parentSequence;
+        int numSamples = parent->cachedNumSamples;
+
+        // Route inputs from all source chains that feed into this chain
+        // Safe: source chains are guaranteed complete (dependency graph), and only this
+        // task writes to this chain's buffer (each chain has exactly one task)
+        for (auto* sourceChain : chain->sourceChains)
+            parent->routeFromSourceToChain(sourceChain, chain, numSamples);
+
+        AudioBuffer<float> chainBufferView(
+            chain->getAudioBuffer().getArrayOfWritePointers(),
+            chain->getAudioBuffer().getNumChannels(),
+            numSamples
+        );
+
+        chain->sequence->process(chainBufferView, chain->getMidiBuffer(), chain->cachedPlayHead);
     }
 
     void process(AudioBuffer<float>& audio, MidiBuffer& midi, AudioPlayHead* playHead)
@@ -2922,10 +2900,6 @@ public:
 
         const int numSamples = audio.getNumSamples();
 
-        // ========================================================================
-        // BASE CASE: Save input for passthrough and OBS Output
-        // Everything flows through by default unless intercepted by chains
-        // ========================================================================
         auto savedInput = bufferPool.acquireBuffer(numSamples);
         savedInput->audioBuffer.setSize(savedInput->audioBuffer.getNumChannels(), numSamples, false, false, true);
 
@@ -2937,115 +2911,82 @@ public:
             FloatVectorOperations::copy(dst, src, numSamples);
         }
 
-        // If no chains, just do passthrough and OBS Output
         if (chains.empty())
         {
-            audio.clear();
             midi.clear();
-
-            // Apply passthrough mappings (default flow)
-            for (const auto& mapping : passthroughChannelMap)
-            {
-                int inputChannel = mapping.first;
-                int outputChannel = mapping.second;
-
-                if (inputChannel < savedInput->audioBuffer.getNumChannels() && outputChannel < audio.getNumChannels())
-                {
-                    const auto* src = savedInput->audioBuffer.getReadPointer(inputChannel);
-                    auto* dst = audio.getWritePointer(outputChannel);
-                    FloatVectorOperations::add(dst, src, numSamples);
-                }
-            }
-
-            // OBS Output gets the input directly
-            processObsOutputNodes(audio, numSamples, savedInput);
+            // No chains = no latency, use simplified passthrough-only routing
+            outputRouter.routePassthroughOnly(audio, savedInput->audioBuffer, numSamples);
             return;
         }
 
-        // ========================================================================
-        // CHAIN PROCESSING: Chains intercept and process audio
-        // ========================================================================
-        // Flow:
-        // 1. Reset dependency counters and clear chain buffers
-        // 2. Distribute saved input to chains (chains intercept specific channels)
-        // 3. Process all chains level-by-level (parallel within each level)
-        // 4. Collect chain outputs to host output buffer
-        // 5. Process OBS Output nodes (read from saved input + chain buffers)
-        // 6. Add passthrough audio (channels not intercepted by chains)
-        //
-        // Thread safety: Each chain has isolated buffers, no shared mutable state
-        // ========================================================================
-
-        // Step 1: Reset all dependency counters
         for (auto& chain : chains)
             chain->pendingDependencies.store(chain->initialDependencyCount, std::memory_order_relaxed);
 
-        // Step 2: Ensure chain buffers are correctly sized, then clear them
         for (auto& chain : chains)
         {
             auto& chainBuffer = chain->getAudioBuffer();
 
-            // Resize if necessary (rare - only when host changes buffer size)
             if (chainBuffer.getNumSamples() < numSamples)
-            {
                 chainBuffer.setSize(chainBuffer.getNumChannels(), numSamples, false, false, true);
-                // Note: This invalidates cached pointers in RenderOps, but perform()
-                // calls prepare() which refreshes them before processing
-            }
 
-            // Clear to remove old data from pooled buffer reuse
             chainBuffer.clear();
             chain->getMidiBuffer().clear();
         }
 
-        // Step 3: Distribute input to chains that connect to Audio Input (SERIAL - main thread only)
-        // Chains intercept audio from the saved input buffer
         for (auto& chain : chains)
         {
-            // Copy channels according to Audio Input node → chain connections
             for (const auto& mapping : inputChannelMap)
             {
-                if (mapping.first.first == chain->subgraphIndex) // This chain
+                if (mapping.first.first == chain->subgraphIndex)
                 {
-                    int destChannel = mapping.first.second; // Chain's input channel
-                    int sourceChannel = mapping.second;     // Host's input channel
+                    int destChannel = mapping.first.second;
+                    int sourceChannel = mapping.second;
 
                     if (sourceChannel < savedInput->audioBuffer.getNumChannels()
                         && destChannel < chain->getAudioBuffer().getNumChannels())
                     {
                         const auto* src = savedInput->audioBuffer.getReadPointer(sourceChannel);
                         auto* dst = chain->getAudioBuffer().getWritePointer(destChannel);
-                        FloatVectorOperations::copy(dst, src, numSamples);
+                        chain->inputMixer.mixWithDelay(AUDIO_INPUT_SOURCE_ID, src, dst, numSamples, destChannel);
                     }
                 }
             }
 
-            // Copy MIDI if this chain has MIDI input connections
             bool chainReceivesMidi = (midiInputChains.count(chain->subgraphIndex) > 0);
             if (chainReceivesMidi)
                 chain->getMidiBuffer().addEvents(midi, 0, numSamples, 0);
         }
 
-        // Step 4: Process chains level by level with parallel execution within each level
-        // Get thread pool instance (may be null if not initialized)
         auto* pool = atk::AudioThreadPool::getInstance();
-
-        // Disable parallel processing if called from worker thread to avoid nested parallelization
-        // This prevents deadlock when PluginHost2s is nested (which uses same thread pool)
         const bool isWorkerThread = pool && pool->isCalledFromWorkerThread();
         const bool canUseThreadPool = pool && pool->isReady() && !isWorkerThread;
 
-        for (int level = 0; level <= maxTopologicalLevel; ++level)
+        if (useDependencyMode && canUseThreadPool)
         {
-            auto& chainsAtLevel = chainsByLevel[level];
-            const int numChainsAtLevel = static_cast<int>(chainsAtLevel.size());
+            // Dependency-based parallel execution:
+            // Each task routes its own inputs from source chains, then processes.
+            // This is safe because the dependency graph guarantees source chains
+            // complete before dependent chains start, and each chain's buffer is
+            // only written to by its own task.
 
-            if (numChainsAtLevel == 0)
-                continue; // No chains at this level
+            for (auto& chain : chains)
+                chain->cachedPlayHead = playHead;
 
-            if (numChainsAtLevel == 1 || !canUseThreadPool)
+            cachedNumSamples = numSamples;
+
+            // Execute all chains respecting dependencies
+            // Input routing happens inside each task before processing
+            pool->executeDependencyGraph(&taskGraph);
+        }
+        else
+        {
+            // Serial fallback: process chains level by level
+            for (int level = 0; level <= maxTopologicalLevel; ++level)
             {
-                // Single chain or no thread pool - process directly without parallelization overhead
+                auto& chainsAtLevel = chainsByLevel[level];
+                if (chainsAtLevel.empty())
+                    continue;
+
                 for (auto* chain : chainsAtLevel)
                 {
                     // The pooled buffer is always float, sized to maxBlockSize
@@ -3106,166 +3047,11 @@ public:
                     }
                 }
             }
-            else
-            {
-                // Multiple chains - parallel execution using thread pool
-                // Use pre-allocated barrier for this level (realtime-safe - no allocation)
-                auto& barrier = barriers[level];
-                if (!barrier)
-                {
-                    // Fallback to serial processing if barrier wasn't created
-                    for (auto* chain : chainsAtLevel)
-                        chain->sequence->process(chain->getAudioBuffer(), chain->getMidiBuffer(), playHead);
-                    continue;
-                }
-
-                // Prepare jobs for parallel processing
-                pool->prepareJobs(barrier);
-
-                // Use pre-allocated job contexts and buffer views (realtime-safe - no allocation)
-                // Just update the existing slots with new data - no push_back, no reallocation
-                auto& jobs = jobsPerLevel[level];
-                auto& bufferViews = bufferViewsPerLevel[level];
-
-                // Fill in job data for this frame (directly into pre-allocated slots)
-                for (size_t i = 0; i < chainsAtLevel.size(); ++i)
-                {
-                    auto* chain = chainsAtLevel[i];
-
-                    // Update buffer view with current chain's buffer (in-place, no allocation)
-                    auto& bufferView = bufferViews[i];
-                    bufferView = AudioBuffer<float>(
-                        chain->getAudioBuffer().getArrayOfWritePointers(),
-                        chain->getAudioBuffer().getNumChannels(),
-                        numSamples
-                    );
-
-                    // Update job context (in-place, no allocation)
-                    auto& job = jobs[i];
-                    job.chain = chain;
-                    job.audioBufferView = &bufferViews[i];
-                    job.playHead = playHead;
-
-                    // Add job to thread pool
-                    pool->addJob(&ChainProcessingJob::execute, &jobs[i]);
-                }
-
-                // Wake up worker threads to start processing
-                pool->kickWorkers();
-
-                // Main thread participates in work stealing
-                while (pool->tryStealAndExecuteJob())
-                {
-                    // Keep stealing and executing jobs until none remain
-                }
-
-                // Wait for all worker threads to complete (barrier synchronization)
-                // Each worker arrives once after processing all its jobs
-                barrier->arrive_and_wait();
-
-                // All chains at this level have completed - now route outputs to dependents
-                // This must be done serially after the barrier to ensure all processing is complete
-                for (auto* chain : chainsAtLevel)
-                {
-                    for (auto* dependent : chain->dependentChains)
-                    {
-                        // Find which specific channels are connected between these chains
-                        // Only mix the channels that have explicit connections
-                        for (const auto& conn : connectionsVec)
-                        {
-                            // Skip MIDI connections
-                            if (conn.source.isMIDI() || conn.destination.isMIDI())
-                                continue;
-
-                            // Check if this connection goes from a node in source chain to a node in dest chain
-                            bool sourceInChain = contains(subgraphs[chain->subgraphIndex].nodeIDs, conn.source.nodeID);
-                            bool destInDependent =
-                                contains(subgraphs[dependent->subgraphIndex].nodeIDs, conn.destination.nodeID);
-
-                            if (sourceInChain && destInDependent)
-                            {
-                                // Valid connection from this chain to dependent chain
-                                int srcChannel = conn.source.channelIndex;
-                                int dstChannel = conn.destination.channelIndex;
-
-                                if (srcChannel < chain->getAudioBuffer().getNumChannels()
-                                    && dstChannel < dependent->getAudioBuffer().getNumChannels())
-                                {
-                                    const auto* src = chain->getAudioBuffer().getReadPointer(srcChannel);
-                                    auto* dst = dependent->getAudioBuffer().getWritePointer(dstChannel);
-                                    dependent->inputMixer.mixWithDelay(
-                                        static_cast<int>(chain->subgraphIndex),
-                                        src,
-                                        dst,
-                                        numSamples,
-                                        dstChannel
-                                    );
-                                }
-                            }
-                        }
-
-                        // Copy MIDI only if there's an explicit MIDI connection between these chains
-                        if (midiChainConnections.count({chain->subgraphIndex, dependent->subgraphIndex}) > 0)
-                            dependent->getMidiBuffer().addEvents(chain->getMidiBuffer(), 0, numSamples, 0);
-
-                        // Decrement dependency counter (atomic - thread-safe)
-                        dependent->pendingDependencies.fetch_sub(1, std::memory_order_release);
-                    }
-                }
-            }
         }
 
-        // Step 5: Collect outputs from chains and combine with passthrough
-        // Clear output buffer, then mix in chain outputs and passthrough audio
-        audio.clear();
-        midi.clear();
-
-        for (auto& chain : chains)
-        {
-            // Process output mappings for this chain
-            for (const auto& mapping : outputChannelMap)
-            {
-                if (mapping.first.first == chain->subgraphIndex) // This chain
-                {
-                    int sourceChannel = mapping.first.second; // Chain's output channel
-                    int destChannel = mapping.second;         // Host's output channel
-
-                    if (sourceChannel < chain->getAudioBuffer().getNumChannels()
-                        && destChannel < audio.getNumChannels())
-                    {
-                        const auto* src = chain->getAudioBuffer().getReadPointer(sourceChannel);
-                        auto* dst = audio.getWritePointer(destChannel);
-
-                        // Create unique source ID by combining chain index and channel
-                        uint32 sourceId = (uint32(chain->subgraphIndex) << 16) | uint32(sourceChannel);
-
-                        // Use output mixer for delay-compensated mixing
-                        outputMixer.mixWithDelay(sourceId, src, dst, numSamples);
-                    }
-                }
-            }
-
-            // Collect MIDI from chains connected to MIDI output
-            if (chain->connectsToMidiOutput)
-                midi.addEvents(chain->getMidiBuffer(), 0, numSamples, 0);
-        }
-
-        // Step 5.5: Process OBS Output nodes (excluded from chains to avoid nested MT deadlock)
-        processObsOutputNodes(audio, numSamples, savedInput);
-
-        // Step 6: Add passthrough audio (direct Input → Output connections)
-        for (const auto& mapping : passthroughChannelMap)
-        {
-            int inputChannel = mapping.first;
-            int outputChannel = mapping.second;
-
-            if (inputChannel < savedInput->audioBuffer.getNumChannels() && outputChannel < audio.getNumChannels())
-            {
-                const auto* src = savedInput->audioBuffer.getReadPointer(inputChannel);
-                auto* dst = audio.getWritePointer(outputChannel);
-                FloatVectorOperations::add(dst, src, numSamples);
-            }
-        }
+        // Step 5: Route all outputs through unified OutputRouter
+        // Handles chains → Audio Output, passthrough → Audio Output, and OBS Output nodes
+        outputRouter.routeAllOutputs(audio, midi, savedInput->audioBuffer, chains, nodeToChainMap, numSamples);
     }
 
     int getLatencySamples() const
@@ -3346,21 +3132,23 @@ private:
     // Store subgraphs for channel routing lookup during process()
     std::vector<SubgraphExtractor::Subgraph> subgraphs;
 
-    // Pre-allocated resources for realtime-safe parallel processing
-    // These are allocated during graph rebuild (message thread) and reused during process() (audio thread)
-    std::vector<atk::ThreadBarrier> barriers;                         // One barrier per topological level
-    std::vector<std::vector<ChainProcessingJob>> jobsPerLevel;        // Pre-allocated job contexts per level
-    std::vector<std::vector<AudioBuffer<float>>> bufferViewsPerLevel; // Pre-allocated buffer views per level
+    // ========================================================================
+    // DEPENDENCY-BASED EXECUTION MODE (preferred for realtime)
+    // ========================================================================
+    // Task graph is owned by this sequence, not by the global thread pool.
+    // This allows safe graph rebuilds without affecting in-flight execution.
+    DependencyTaskGraph taskGraph;
+    bool useDependencyMode = false;
+    std::vector<size_t> chainToTaskIndex; // Maps chain index -> task graph task index
+    int cachedNumSamples = 0;             // Cached for dependency mode routing
 
     // I/O node connection mappings (built during construction, read-only during process)
     // Input: map of (chainIndex, destChannel) -> sourceChannel
-    // Output: map of (chainIndex, sourceChannel) -> destChannel
     std::map<std::pair<size_t, int>, int> inputChannelMap;
-    std::map<std::pair<size_t, int>, int> outputChannelMap;
 
     // Direct passthrough connections (Audio Input -> Audio Output with no processors)
-    // Maps input channel -> output channel
-    std::map<int, int> passthroughChannelMap;
+    // Supports 1-to-many and many-to-1 routing: vector of (inputChannel, outputChannel) pairs
+    std::vector<std::pair<int, int>> passthroughConnections;
 
     // Store connections vector for channel routing during process()
     std::vector<Connection> connectionsVec;
@@ -3379,29 +3167,14 @@ private:
     ChainBufferPool& bufferPool;
     DelayLinePool& delayLinePool;
 
-    // Output delay compensation mixer for final mixing to host
-    // Handles delay compensation when multiple chains output to the same host output channel
-    DelayCompensatingMixer outputMixer;
-
-    // Global node latencies (nodeID.uid -> accumulated latency samples)
-    std::unordered_map<uint32, int> nodeLatencies;
+    // Unified output router: handles all output routing with delay compensation
+    // - Chains → Audio Output (1-to-1, 1-to-many)
+    // - Passthrough → Audio Output
+    // - Chains/Input → OBS Output nodes
+    OutputRouter outputRouter;
 
     // Map from NodeID to chain pointer for efficient OBS Output routing
     std::unordered_map<uint32, ChainRenderSequence*> nodeToChainMap;
-
-    // OBS Output nodes: processed sequentially on main thread AFTER all parallel chains complete
-    // These nodes are excluded from parallel chains to avoid deadlock with nested PluginHost2 MT
-    struct ObsOutputNode
-    {
-        Node::Ptr node;
-        // Connections from chains: (sourceNodeID, sourceChannel, destChannel)
-        std::vector<std::tuple<NodeID, int, int>> chainInputConnections;
-        // Direct connections from Audio Input: (hostInputChannel, nodeInputChannel)
-        std::vector<std::pair<int, int>> directInputConnections;
-        std::shared_ptr<ChainBufferPool::PooledBuffer> buffer; // Pooled buffer for this node
-    };
-
-    std::vector<ObsOutputNode> obsOutputNodes;
 };
 
 //==============================================================================
@@ -3694,23 +3467,7 @@ public:
         // This happens lazily on first prepareToPlay call
         auto* pool = atk::AudioThreadPool::getInstance();
         if (pool && !pool->isReady())
-        {
-            // Auto-detect optimal worker count (reserve 1 core for main audio thread, 1 for system)
-            const int physicalCores = juce::SystemStats::getNumPhysicalCpus();
-            const int numWorkers = juce::jmax(1, physicalCores - 2);
-
-            pool->initialize(numWorkers, 8); // Priority 8 for realtime audio
-
-            DBG("AudioProcessorGraphMT: Initialized thread pool with "
-                << numWorkers
-                << " workers (CPU cores: "
-                << physicalCores
-                << ")");
-        }
-
-        // Configure thread pool with buffer size and sample rate for adaptive backoff
-        if (pool)
-            pool->configure(estimatedSamplesPerBlock, sampleRate);
+            pool->initialize();
 
         topologyChanged(UpdateKind::sync);
     }

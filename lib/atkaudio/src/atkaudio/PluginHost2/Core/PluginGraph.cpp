@@ -92,6 +92,9 @@ void PluginGraph::addPluginCallback(
             instance = std::make_unique<ARAPluginInstanceWrapper>(std::move(instance));
 #endif
 
+        // Set parent source UUID on internal plugins that need it (e.g., ObsSourceAudioProcessor)
+        setParentSourceUuidOnInternalPlugin(instance.get(), mainHostWindow.getParentSourceUuid());
+
         instance->enableAllBuses();
 
         if (auto node = graph.addNode(std::move(instance)))
@@ -489,6 +492,9 @@ void PluginGraph::createNodeFromXml(const XmlElement& xml)
 
     if (auto instance = createInstanceWithFallback())
     {
+        // Set parent source UUID on internal plugins that need it (e.g., ObsSourceAudioProcessor)
+        setParentSourceUuidOnInternalPlugin(instance.get(), mainHostWindow.getParentSourceUuid());
+
         if (auto* layoutEntity = xml.getChildByName("LAYOUT"))
         {
             auto layout = instance->getBusesLayout();

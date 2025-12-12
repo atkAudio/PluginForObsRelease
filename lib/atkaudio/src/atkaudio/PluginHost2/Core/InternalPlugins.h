@@ -102,3 +102,6 @@ private:
 
     InternalPluginFactory factory;
 };
+
+// Helper to set parent source UUID on internal plugins that need it (e.g., ObsSourceAudioProcessor)
+void setParentSourceUuidOnInternalPlugin(AudioPluginInstance* plugin, const std::string& parentUuid);

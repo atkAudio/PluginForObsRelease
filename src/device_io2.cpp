@@ -34,7 +34,7 @@ struct adio2_data
 
     atk::DeviceIo2 deviceIo2;
 
-    bool hasInitUpdateLoad = false;
+    bool hasLoadedState = false;
 };
 
 static const char* deviceio2_name(void* unused)
@@ -53,10 +53,13 @@ static void deviceio2_destroy(void* data)
 static void load(void* data, obs_data_t* settings)
 {
     auto* adio = (struct adio2_data*)data;
-    std::string s;
+    if (adio->hasLoadedState)
+        return;
+    adio->hasLoadedState = true;
+
     const char* chunkData = obs_data_get_string(settings, FILTER_ID);
-    s = chunkData;
-    adio->deviceIo2.setState(s);
+    std::string stateStr = chunkData ? chunkData : "";
+    adio->deviceIo2.setState(stateStr);
 }
 
 static void deviceio2_update(void* data, obs_data_t* s)
@@ -78,11 +81,6 @@ static void deviceio2_update(void* data, obs_data_t* s)
     // auto outputGain = (float)obs_data_get_double(s, OG_ID);
     // outputGain = obs_db_to_mul(outputGain);
     // adio->outputGain.store(outputGain, std::memory_order_release);
-    if (!adio->hasInitUpdateLoad)
-    {
-        adio->hasInitUpdateLoad = true;
-        load(data, s);
-    }
 }
 
 static void* deviceio2_create(obs_data_t* settings, obs_source_t* filter)
@@ -97,6 +95,15 @@ static void* deviceio2_create(obs_data_t* settings, obs_source_t* filter)
     adio->sampleRate = sampleRate;
 
     deviceio2_update(adio, settings);
+
+    // Load state from settings if present (OBS load callback may not be called for all source types)
+    const char* chunkData = obs_data_get_string(settings, FILTER_ID);
+    if (chunkData && strlen(chunkData) > 0)
+    {
+        std::string stateStr = chunkData;
+        adio->deviceIo2.setState(stateStr);
+        adio->hasLoadedState = true;
+    }
 
     return adio;
 }

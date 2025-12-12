@@ -3,6 +3,7 @@
 #include "UI/MainHostWindow.h"
 #include <atkaudio/atkAudioModule.h>
 #include <atkaudio/ModuleInfrastructure/Bridge/ModuleBridge.h>
+#include <obs-module.h>
 
 struct atk::PluginHost2::Impl : public juce::AsyncUpdater
 {
@@ -263,4 +264,14 @@ atk::PluginHost2::PluginHost2()
 atk::PluginHost2::~PluginHost2()
 {
     delete pImpl;
+}
+
+void atk::PluginHost2::setParentSource(void* parentSource)
+{
+    auto* source = static_cast<obs_source_t*>(parentSource);
+    if (pImpl->mainHostWindow && source)
+    {
+        const char* uuid = obs_source_get_uuid(source);
+        pImpl->mainHostWindow->setParentSourceUuid(uuid ? uuid : "");
+    }
 }

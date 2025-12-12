@@ -170,6 +170,10 @@ void HostAudioProcessorImpl::reset()
 
 void HostAudioProcessorImpl::processBlock(AudioBuffer<float>& buffer, MidiBuffer& midiBuffer)
 {
+    const ScopedTryLock sl(innerMutex);
+    if (!sl.isLocked())
+        return;
+
     jassert(!isUsingDoublePrecision());
     if (inner == nullptr)
         return;
@@ -225,7 +229,11 @@ void HostAudioProcessorImpl::processBlock(AudioBuffer<float>& buffer, MidiBuffer
         internalBuffer.getNumChannels(),
         buffer.getNumSamples()
     );
-    inner->processBlock(tempBuffer, midiBuffer);
+
+    if (inner->isSuspended())
+        tempBuffer.clear();
+    else
+        inner->processBlock(tempBuffer, midiBuffer);
 
     routingMatrix.applyOutputRouting(
         internalBuffer,
@@ -328,8 +336,6 @@ std::vector<std::vector<bool>> HostAudioProcessorImpl::getOutputChannelMapping()
 
 void HostAudioProcessorImpl::getStateInformation(MemoryBlock& destData)
 {
-    const ScopedLock sl(innerMutex);
-
     XmlElement xml("state");
 
     auto audioState = audioClient.getSubscriptions();
@@ -535,6 +541,7 @@ void HostAudioProcessorImpl::setNewPlugin(const PluginDescription& pd, EditorSty
 
     const auto callback = [this, where, mb](std::unique_ptr<AudioPluginInstance> instance, const String& error)
     {
+        const ScopedLock sl(innerMutex);
         if (error.isNotEmpty())
         {
             auto options =

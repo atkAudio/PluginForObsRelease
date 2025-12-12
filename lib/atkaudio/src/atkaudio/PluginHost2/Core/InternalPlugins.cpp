@@ -234,6 +234,11 @@ public:
         description = getPluginDescription(*inner);
     }
 
+    AudioProcessor* getInnerProcessor() const
+    {
+        return inner.get();
+    }
+
 private:
     static PluginDescription getPluginDescription(const AudioProcessor& proc)
     {
@@ -717,6 +722,19 @@ void InternalPluginFormat::createPluginInstance(
 bool InternalPluginFormat::requiresUnblockedMessageThreadDuringCreation(const PluginDescription&) const
 {
     return false;
+}
+
+void setParentSourceUuidOnInternalPlugin(AudioPluginInstance* plugin, const std::string& parentUuid)
+{
+    if (!plugin || parentUuid.empty())
+        return;
+
+    // Check if this is an InternalPlugin wrapping ObsSourceAudioProcessor
+    if (auto* internalPlugin = dynamic_cast<InternalPlugin*>(plugin))
+    {
+        if (auto* obsSource = dynamic_cast<ObsSourceAudioProcessor*>(internalPlugin->getInnerProcessor()))
+            obsSource->setParentSourceUuid(parentUuid);
+    }
 }
 
 const std::vector<PluginDescription>& InternalPluginFormat::getAllTypes() const

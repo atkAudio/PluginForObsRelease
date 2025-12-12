@@ -372,6 +372,8 @@ public:
         removeFromDesktop();
     }
 
+    ~AudioAppMainWindow() override = default;
+
     void closeButtonPressed() override
     {
         setVisible(false);

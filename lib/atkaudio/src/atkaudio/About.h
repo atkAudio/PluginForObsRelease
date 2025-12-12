@@ -19,10 +19,7 @@ static inline void showAboutDialog()
         << " "
         << PLUGIN_AUTHOR
         << "\n"
-        << "Licensed under AGPL3\n"
-        << "\n"
-        << "ASIO and VST are registered\n"
-        << "trademarks of Steinberg GmbH";
+        << "Licensed under AGPL3";
     auto* label = new Label({}, aboutText);
     label->setColour(Label::backgroundColourId, lookAndFeel.findColour(ResizableWindow::backgroundColourId));
     label->setColour(Label::textColourId, lookAndFeel.findColour(Label::textColourId));

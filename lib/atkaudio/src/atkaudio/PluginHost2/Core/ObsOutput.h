@@ -21,17 +21,13 @@ public:
           )
         , apvts(*this, nullptr, "Parameters", {})
     {
-        // Pairing with helper source is now done in setStateInformation
-        // to support UUID-based tracking
+        obs_frontend_add_event_callback(frontendEventCallback, this);
     }
 
     ~ObsOutputAudioProcessor() override
     {
-        if (privateSource)
-        {
-            obs_source_release(privateSource);
-            privateSource = nullptr;
-        }
+        obs_frontend_remove_event_callback(frontendEventCallback, this);
+        releaseHelperSource();
     }
 
     const juce::String getName() const override
@@ -45,18 +41,11 @@ public:
 
     void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
     {
-        // Ensure we have a helper source before processing
-        if (!privateSource && !sourceCreationScheduled)
-        {
-#ifdef ATK_DEBUG
-            DBG("ObsOutput: Creating helper source (first processBlock)");
-#endif
-            sourceCreationScheduled = true;
-            createNewHelperSource();
-        }
+        if (!sourceConnected.load(std::memory_order_acquire))
+            scheduleHelperSourceConnection();
 
         if (!privateSource)
-            return; // No source available yet
+            return;
 
         for (int i = 0; i < MAX_AUDIO_CHANNELS; ++i)
             if (i < buffer.getNumChannels())
@@ -76,6 +65,7 @@ public:
 
     void releaseResources() override
     {
+        releaseHelperSource();
     }
 
     juce::AudioProcessorEditor* createEditor() override;
@@ -118,14 +108,6 @@ public:
         auto state = apvts.copyState();
         std::unique_ptr<juce::XmlElement> xml(state.createXml());
 
-        // Add helper source UUID to state
-        if (privateSource)
-        {
-            const char* uuid = obs_source_get_uuid(privateSource);
-            if (uuid && uuid[0] != '\0')
-                xml->setAttribute("helperSourceUuid", juce::String(uuid));
-        }
-
         copyXmlToBinary(*xml, destData);
     }
 
@@ -137,26 +119,14 @@ public:
             if (xmlState->hasTagName(apvts.state.getType()))
                 apvts.replaceState(juce::ValueTree::fromXml(*xmlState));
 
-            // Look for helper source by UUID
             if (xmlState->hasAttribute("helperSourceUuid"))
             {
-                juce::String uuidStr = xmlState->getStringAttribute("helperSourceUuid");
-                if (uuidStr.isNotEmpty())
-                    pairWithHelperByUuid(uuidStr.toStdString());
-            }
-            else if (!privateSource && !sourceCreationScheduled)
-            {
-                DBG("ObsOutput: Creating helper source (no UUID in state)");
-                sourceCreationScheduled = true;
-                createNewHelperSource();
+                originalStateUuid = xmlState->getStringAttribute("helperSourceUuid");
+                apvts.state.setProperty("helperSourceUuid", originalStateUuid, nullptr);
             }
         }
-        else if (!privateSource && !sourceCreationScheduled)
-        {
-            DBG("ObsOutput: Creating helper source (no state)");
-            sourceCreationScheduled = true;
-            createNewHelperSource();
-        }
+
+        scheduleHelperSourceConnection();
     }
 
     bool acceptsMidi() const override
@@ -179,18 +149,105 @@ private:
 
     obs_source_t* privateSource = nullptr;
     obs_source_audio audioSourceData;
-    bool sourceCreationScheduled = false; // Prevent duplicate scheduling
+    std::atomic<bool> connectionScheduled{false};
+    std::atomic<bool> sourceConnected{false};
+    bool usingFallbackSource = false;
+    juce::String originalStateUuid;
 
-    void pairWithHelperByUuid(const std::string& uuid)
+    static void frontendEventCallback(enum obs_frontend_event event, void* private_data)
     {
-        // Release any existing source
-        if (privateSource)
+        auto* self = static_cast<ObsOutputAudioProcessor*>(private_data);
+
+        if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING)
         {
-            obs_source_release(privateSource);
-            privateSource = nullptr;
+            self->connectionScheduled.store(false, std::memory_order_release);
+            self->releaseHelperSource();
         }
 
-        // Search for source with matching UUID
+        if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED)
+        {
+            if (!self->usingFallbackSource || !self->privateSource)
+                return;
+
+            auto fallBackUuid = juce::String(obs_source_get_uuid(self->privateSource));
+            if (fallBackUuid.isEmpty() || fallBackUuid == self->originalStateUuid)
+                return;
+
+            obs_source_t* originalObsSource = self->findSourceByUuid(self->originalStateUuid.toStdString());
+            if (!originalObsSource)
+                return;
+
+            obs_source_release(originalObsSource);
+
+            self->apvts.state.setProperty("helperSourceUuid", self->originalStateUuid, nullptr);
+            self->destroyFallbackSource();
+            self->pairWithHelperByUuid(self->originalStateUuid.toStdString());
+        }
+    }
+
+    void scheduleHelperSourceConnection()
+    {
+        if (connectionScheduled.exchange(true, std::memory_order_acq_rel))
+            return;
+
+        juce::Timer::callAfterDelay(
+            2000,
+            [this]()
+            {
+                juce::MessageManager::callAsync(
+                    [this]()
+                    {
+                        if (sourceConnected.load(std::memory_order_acquire))
+                        {
+                            connectionScheduled.store(false, std::memory_order_release);
+                            return;
+                        }
+
+                        std::unique_ptr<juce::XmlElement> xml(apvts.state.createXml());
+                        juce::String uuidValue;
+                        if (xml && xml->hasAttribute("helperSourceUuid"))
+                            uuidValue = xml->getStringAttribute("helperSourceUuid");
+
+                        if (uuidValue.isNotEmpty())
+                        {
+                            pairWithHelperByUuid(uuidValue.toStdString());
+                            connectionScheduled.store(false, std::memory_order_release);
+                            return;
+                        }
+
+                        createNewHelperSource();
+                        connectionScheduled.store(false, std::memory_order_release);
+                    }
+                );
+            }
+        );
+    }
+
+    void releaseHelperSource()
+    {
+        if (!privateSource)
+            return;
+
+        obs_source_release(privateSource);
+        privateSource = nullptr;
+        sourceConnected.store(false, std::memory_order_release);
+        usingFallbackSource = false;
+    }
+
+    void destroyFallbackSource()
+    {
+        if (!privateSource)
+            return;
+
+        obs_source_remove(privateSource);
+        obs_source_release(privateSource);
+        privateSource = nullptr;
+        sourceConnected.store(false, std::memory_order_release);
+        usingFallbackSource = false;
+    }
+
+    obs_source_t* findSourceByUuid(const std::string& uuid)
+    {
         struct FindContext
         {
             const std::string* targetUuid;
@@ -205,24 +262,31 @@ private:
 
                 if (sourceUuid && *ctx->targetUuid == sourceUuid)
                 {
-                    // Get a new reference to the source (obs_enum_sources doesn't add a ref)
                     ctx->foundSource = obs_source_get_ref(source);
-                    return false; // stop enumeration
+                    return false;
                 }
-                return true; // continue enumeration
+                return true;
             },
             &context
         );
 
-        if (context.foundSource)
+        return context.foundSource;
+    }
+
+    void pairWithHelperByUuid(const std::string& uuid)
+    {
+        releaseHelperSource();
+
+        obs_source_t* foundSource = findSourceByUuid(uuid);
+
+        if (foundSource)
         {
-            privateSource = context.foundSource;
-            DBG("ObsOutput: Paired with existing helper source via UUID");
+            privateSource = foundSource;
+            usingFallbackSource = false;
+            sourceConnected.store(true, std::memory_order_release);
         }
-        else if (!sourceCreationScheduled)
+        else
         {
-            DBG("ObsOutput: Creating helper source (UUID not found)");
-            sourceCreationScheduled = true;
             createNewHelperSource();
         }
     }
@@ -235,26 +299,22 @@ private:
         {
             obs_source_set_audio_active(privateSource, true);
             obs_source_set_enabled(privateSource, true);
+            usingFallbackSource = true;
+            sourceConnected.store(true, std::memory_order_release);
 
-            // Add to current scene
             auto* currentScene = obs_frontend_get_current_scene();
             if (currentScene)
             {
                 auto* sceneSource = obs_scene_from_source(currentScene);
                 if (sceneSource)
-                {
-                    if (obs_scene_add(sceneSource, privateSource))
-                        DBG("ObsOutput: Helper source created and added to scene");
-                }
+                    obs_scene_add(sceneSource, privateSource);
                 obs_source_release(currentScene);
             }
-        }
-        else
-        {
-            DBG("ObsOutput: Failed to create helper source!");
-        }
 
-        sourceCreationScheduled = false;
+            const char* uuid = obs_source_get_uuid(privateSource);
+            if (uuid && uuid[0] != '\0')
+                apvts.state.setProperty("helperSourceUuid", juce::String(uuid), nullptr);
+        }
     }
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ObsOutputAudioProcessor)
 };

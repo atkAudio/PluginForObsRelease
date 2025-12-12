@@ -6,7 +6,6 @@
 #include "MessagePump.h"
 #include "ModuleInfrastructure/AudioServer/AudioServer.h"
 #include "ModuleInfrastructure/MidiServer/MidiServer.h"
-#include "PluginHost/SecondaryThreadPool.h"
 #include "UpdateCheck.h"
 
 #include <juce_audio_utils/juce_audio_utils.h>
@@ -14,6 +13,7 @@
 #ifdef ENABLE_QT
 #include <QColor>
 #include <QPalette>
+#include <QScreen>
 #include <QWidget>
 #include <QWindow>
 #endif
@@ -29,8 +29,10 @@ static bool g_qtMainWindowInitialized = false;
 
 void atk::create()
 {
-#if JUCE_LINUX
-    juce::JUCEApplicationBase::createInstance = []() -> juce::JUCEApplicationBase* { return new Application(); };
+// Set createInstance to make JUCE think this is a standalone app.
+// This enables per-monitor DPI awareness on Windows via setDPIAwareness().
+#ifndef JUCE_MAC
+    juce::JUCEApplicationBase::createInstance = []() -> juce::JUCEApplicationBase* { return nullptr; };
 #endif
     juce::initialiseJuce_GUI();
 
@@ -52,7 +54,7 @@ void atk::create()
 
     // Initialize AudioThreadPool synchronously so it's ready when filters are created
     if (auto* threadPool = atk::AudioThreadPool::getInstance())
-        threadPool->initialize(0, 8); // 0 = auto-detect cores, priority 8
+        threadPool->initialize();
 }
 
 void atk::pump()
@@ -113,12 +115,6 @@ void atk::destroy()
     {
         threadPool->shutdown();
         atk::AudioThreadPool::deleteInstance();
-    }
-
-    if (auto* secondaryPool = atk::SecondaryThreadPool::getInstance())
-    {
-        secondaryPool->shutdown();
-        atk::SecondaryThreadPool::deleteInstance();
     }
 
     juce::shutdownJuce_GUI();

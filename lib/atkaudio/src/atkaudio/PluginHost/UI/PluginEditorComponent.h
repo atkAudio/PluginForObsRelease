@@ -6,8 +6,10 @@
 
 #include <atkaudio/ModuleInfrastructure/AudioServer/AudioServerSettingsComponent.h>
 #include <atkaudio/ModuleInfrastructure/MidiServer/MidiServerSettingsComponent.h>
+#include <cmath>
 #include <functional>
 #include <juce_audio_processors/juce_audio_processors.h>
+#include <juce_gui_basics/juce_gui_basics.h>
 
 class PluginEditorComponent final : public juce::Component
 {
@@ -86,12 +88,15 @@ public:
                 }
             );
         }
+
+        // Initialize cached scale factor for DPI change detection
+        if (auto* peer = getPeer())
+            cachedScaleFactor = (float)peer->getPlatformScaleFactor();
     }
 
-    void setScaleFactor(float scale)
+    juce::AudioProcessorEditor* getEditor() const
     {
-        if (editor != nullptr)
-            editor->setScaleFactor(scale);
+        return editor.get();
     }
 
     void setFooterVisible(bool visible)
@@ -147,6 +152,14 @@ public:
 
         if (editor != nullptr && !resizingFromChild)
             editor->setBounds(editorBounds);
+
+        checkScaleFactorChanged();
+    }
+
+    void moved() override
+    {
+        juce::Component::moved();
+        checkScaleFactorChanged();
     }
 
     void childBoundsChanged(juce::Component* child) override
@@ -396,6 +409,68 @@ private:
     std::unique_ptr<juce::DocumentWindow> audioWindow;
     std::unique_ptr<juce::DocumentWindow> midiWindow;
     bool resizingFromChild = false;
+    float cachedScaleFactor = 0.0f;
+
+    // Detect DPI changes when the component is moved or resized.
+    // Child windows don't receive WM_DPICHANGED, so we check on movement.
+    // When scale changes, we recreate the plugin editor to render at the new DPI.
+    void checkScaleFactorChanged()
+    {
+        if (editor == nullptr || processor == nullptr)
+            return;
+
+        if (auto* peer = getPeer())
+        {
+            float currentScale = (float)peer->getPlatformScaleFactor();
+            if (std::abs(currentScale - cachedScaleFactor) > 0.01f)
+            {
+                DBG("PluginEditorComponent: Scale factor changed from " << cachedScaleFactor << " to " << currentScale);
+
+                // Defer editor recreation to avoid re-entrancy during resize callbacks
+                juce::MessageManager::callAsync(
+                    [safeThis = juce::Component::SafePointer<PluginEditorComponent>(this)]
+                    {
+                        if (safeThis != nullptr)
+                            safeThis->recreateEditor();
+                    }
+                );
+            }
+        }
+    }
+
+    void recreateEditor()
+    {
+        if (processor == nullptr)
+            return;
+
+        // Verify scale actually changed (prevents unnecessary recreation from stale/duplicate async calls)
+        float newScale = 0.0f;
+        if (auto* peer = getPeer())
+        {
+            newScale = (float)peer->getPlatformScaleFactor();
+            if (std::abs(newScale - cachedScaleFactor) < 0.01f)
+                return; // Scale hasn't changed, skip recreation
+        }
+
+        cachedScaleFactor = newScale;
+
+        // Remove old editor
+        if (editor != nullptr)
+        {
+            removeChildComponent(editor.get());
+            if (auto* audioProc = editor->getAudioProcessor())
+                audioProc->editorBeingDeleted(editor.get());
+            editor.reset();
+        }
+
+        // Create new editor
+        editor = processor->createInnerEditor();
+        if (editor != nullptr)
+        {
+            addAndMakeVisible(editor.get());
+            childBoundsChanged(editor.get());
+        }
+    }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginEditorComponent)
 };

@@ -19,7 +19,6 @@ public:
     void paint(juce::Graphics& g) override;
     void resized() override;
     void childBoundsChanged(juce::Component* child) override;
-    void setScaleFactor(float scale) override;
 
     void setFooterVisible(bool visible);
 
@@ -29,23 +28,14 @@ private:
     void pluginChanged();
     void clearPlugin();
 
-    class ScaledDocumentWindow final : public juce::DocumentWindow
+    class SimpleDocumentWindow final : public juce::DocumentWindow
     {
     public:
-        ScaledDocumentWindow(juce::Colour bg, float scale)
+        SimpleDocumentWindow(juce::Colour bg)
             : juce::DocumentWindow("Editor", bg, juce::DocumentWindow::allButtons)
-            , desktopScale(scale)
         {
             setTitleBarButtonsRequired(juce::DocumentWindow::closeButton, false);
         }
-
-        float getDesktopScaleFactor() const override
-        {
-            return juce::Desktop::getInstance().getGlobalScaleFactor() * desktopScale;
-        }
-
-    private:
-        float desktopScale = 1.0f;
     };
 
     HostAudioProcessorImpl& hostProcessor;
@@ -53,7 +43,6 @@ private:
     std::unique_ptr<juce::Component> editor;
     PluginEditorComponent* currentEditorComponent = nullptr;
     juce::ScopedValueSetter<std::function<void()>> scopedCallback;
-    float currentScaleFactor = 1.0f;
     bool resizingFromChild = false;
     bool pendingFooterVisible = true; // Footer visibility to apply when plugin loads
     juce::SharedResourcePointer<atk::LookAndFeel> lookAndFeel;

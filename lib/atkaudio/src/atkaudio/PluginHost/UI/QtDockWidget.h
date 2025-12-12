@@ -197,8 +197,12 @@ public:
 
     bool event(QEvent* event) override
     {
+        if (event->type() == QEvent::ScreenChangeInternal)
+            resetConstraints();
+
         if (event->type() == QEvent::ParentChange)
             connectToParentDock();
+
         return QWidget::event(event);
     }
 
@@ -257,35 +261,40 @@ private:
     {
         if (onDockStateChanged)
             onDockStateChanged(!floating);
-
-        if (component)
-        {
-            updateConstraintsFromJuce();
-            if (!useWaylandMode)
-                updateJuceComponentBounds();
-        }
     }
 
     void performDeferredShow()
     {
+        resetConstraints();
+
         notifyDockState();
 
         if (!component)
             return;
 
-        // Embed first to ensure proper parenting before UI creation
         if (useWaylandMode)
             setupWaylandWindow();
         else
             embedJuceComponent();
 
-        // Now create/recreate the UI with proper parent
         if (onShow)
             onShow();
 
         component->setVisible(true);
-        updateConstraintsFromJuce();
         component->repaint();
+    }
+
+    void resetConstraints()
+    {
+        // Reset to permissive defaults before applying new constraints
+        setMinimumSize(50, 50);
+        setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+
+        if (QWidget* parentDock = parentWidget())
+        {
+            parentDock->setMinimumSize(50, 50);
+            parentDock->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+        }
     }
 
     void setupWaylandWindow()
@@ -323,7 +332,6 @@ private:
 
         component->addToDesktop(0, parentHandle);
 
-        updateJuceComponentBounds();
         component->setVisible(true);
         component->toFront(false);
         component->repaint();
@@ -341,25 +349,14 @@ private:
 
         if (newW > 0 && newH > 0)
         {
-            if (newW < minimumWidth())
-                setMinimumWidth(newW);
-            if (newH < minimumHeight())
-                setMinimumHeight(newH);
-            if (newW > maximumWidth())
-                setMaximumWidth(newW);
-            if (newH > maximumHeight())
-                setMaximumHeight(newH);
+            resetConstraints();
 
             if (newW != width() || newH != height())
             {
                 resize(newW, newH);
 
                 if (QWidget* parentDock = parentWidget())
-                {
-                    parentDock->setMinimumSize(minimumSize());
-                    parentDock->setMaximumSize(maximumSize());
                     parentDock->resize(newW, newH);
-                }
             }
         }
 
@@ -403,45 +400,6 @@ private:
         {
             parentDock->setMinimumSize(minimumSize());
             parentDock->setMaximumSize(maximumSize());
-        }
-    }
-
-    void updateConstraintsFromJuce()
-    {
-        if (!component || useWaylandMode)
-            return;
-
-        int minW = 50;
-        int minH = 50;
-        int maxW = QWIDGETSIZE_MAX;
-        int maxH = QWIDGETSIZE_MAX;
-
-        if (getConstrainer)
-        {
-            if (auto* constrainer = getConstrainer())
-            {
-                int cMinW = constrainer->getMinimumWidth();
-                int cMinH = constrainer->getMinimumHeight();
-                int cMaxW = constrainer->getMaximumWidth();
-                int cMaxH = constrainer->getMaximumHeight();
-
-                if (cMinW > 0)
-                    minW = cMinW;
-                if (cMinH > 0)
-                    minH = cMinH;
-                if (cMaxW > 0 && cMaxW < 16384)
-                    maxW = cMaxW;
-                if (cMaxH > 0 && cMaxH < 16384)
-                    maxH = cMaxH;
-            }
-        }
-
-        // setMinimumSize(minW, minH);
-        setMaximumSize(maxW, maxH);
-        if (QWidget* parentDock = parentWidget())
-        {
-            // parentDock->setMinimumSize(minW, minH);
-            parentDock->setMaximumSize(maxW, maxH);
         }
     }
 
