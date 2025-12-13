@@ -1,7 +1,7 @@
 #include "AudioProcessorGraphMT.h"
 
 #include "SubgraphExtractor.h"
-#include "AudioThreadPool.h"
+#include "RealtimeThreadPool.h"
 #include "DependencyTaskGraph.h"
 
 #include <juce_dsp/juce_dsp.h>
@@ -10,38 +10,10 @@
 #define CHAIN_MAX_CHANNELS 64 // Maximum audio channels per chain
 
 #define AUDIO_INPUT_SOURCE_ID (UINT32_MAX - 1)
+using namespace juce;
 
 namespace atk
 {
-
-// Import JUCE types into atk namespace for convenience
-using atk::SubgraphExtractor;
-using juce::approximatelyEqual;
-using juce::Array;
-using juce::AudioBuffer;
-using juce::AudioPlayHead;
-using juce::AudioProcessor;
-using juce::AudioProcessorEditor;
-using juce::ChangeBroadcaster;
-using juce::FloatVectorOperations;
-using juce::jmax;
-using juce::jmin;
-using juce::LockingAsyncUpdater;
-using juce::Logger;
-using juce::MemoryBlock;
-using juce::MessageManager;
-using juce::MidiBuffer;
-using juce::nullopt;
-using juce::PluginDescription;
-using juce::ReferenceCountedArray;
-using juce::ReferenceCountedObjectPtr;
-using juce::ScopedLock;
-using juce::SpinLock;
-using juce::String;
-using juce::Thread;
-using juce::Timer;
-using juce::uint32;
-using juce::uint64;
 
 /*  Provides a comparison function for various types that have an associated NodeID,
     for use with equal_range, lower_bound etc.
@@ -1714,8 +1686,8 @@ private:
         sequence.numMidiBuffersNeeded = midiBuffers.size();
     }
 
-    // Filtered constructor for linear chains - simplified buffer management
-    // Linear chains don't need complex buffer allocation: each node uses direct channel mapping (0→0, 1→1, etc.)
+    // Filtered constructor for chains - handles proper channel routing between nodes
+    // Supports 1-to-1, 1-to-many, and many-to-1 channel mappings via copy/add ops
     RenderSequenceBuilder(
         const Nodes& n,
         const Connections& c,
@@ -1725,9 +1697,6 @@ private:
     )
         : orderedNodes(createOrderedNodeList(n, c, &nodeFilter))
     {
-        // For linear chains, use simple sequential buffer allocation
-        // No need for complex buffer reuse logic - each node uses its own channels
-
         // For cross-subgraph delay compensation:
         // - Use globalDelays to initialize delays map with accumulated latencies from OTHER subgraphs
         // - Within the subgraph, delays accumulate naturally as we process nodes in order
@@ -1746,9 +1715,18 @@ private:
             );
         }
 
-        // Second pass: create rendering ops with direct channel mapping
+        // Reserve one extra channel as temp buffer for routing operations
+        // This avoids overwriting source data when dest channel == source channel of another connection
+        const int tempBufferChannel = maxChannelsNeeded;
+        maxChannelsNeeded += 1;
+
+        // Track which channel holds output from each node's output channel
+        // Key: {nodeID, channelIndex}, Value: buffer channel index
+        std::map<std::pair<uint32, int>, int> outputChannelMap;
+
+        // Second pass: create rendering ops with proper channel routing
         int midiBufferIndex = 0;
-        // Add process ops for each node, with clear ops BEFORE each node to clear unconnected inputs
+
         for (int i = 0; i < orderedNodes.size(); ++i)
         {
             auto* node = orderedNodes.getUnchecked(i);
@@ -1757,17 +1735,137 @@ private:
             auto numOuts = processor.getTotalNumOutputChannels();
             auto totalChans = jmax(numIns, numOuts);
 
-            // Clear any input channels with no incoming connection
-            for (int ch = 0; ch < numIns; ++ch)
+            // Build routing plan for this node's inputs
+            // For each input channel, collect sources and determine routing ops needed
+            struct InputRouting
             {
-                NodeAndChannel destPin{node->nodeID, ch};
+                int destChannel;
+                std::vector<std::pair<int, int>> internalSources; // (sourceNodeID, bufferChannel)
+                bool hasExternalSource = false;                   // From other chains or audio input
+            };
+
+            std::vector<InputRouting> routingPlan;
+
+            for (int destCh = 0; destCh < numIns; ++destCh)
+            {
+                NodeAndChannel destPin{node->nodeID, destCh};
                 auto sources = c.getSourcesForDestination(destPin);
 
-                if (sources.empty())
-                    sequence.addClearChannelOp(ch);
+                InputRouting routing;
+                routing.destChannel = destCh;
+
+                for (const auto& src : sources)
+                {
+                    // Check if source is from a node in our chain
+                    bool isInternalSource = std::find_if(
+                                                orderedNodes.begin(),
+                                                orderedNodes.end(),
+                                                [&](const Node* n) { return n->nodeID == src.nodeID; }
+                                            )
+                                         != orderedNodes.end();
+
+                    if (isInternalSource)
+                    {
+                        auto key = std::make_pair(src.nodeID.uid, src.channelIndex);
+                        auto it = outputChannelMap.find(key);
+                        if (it != outputChannelMap.end())
+                            routing.internalSources.push_back({src.nodeID.uid, it->second});
+                    }
+                    else
+                    {
+                        // External source (from other chains, audio input, etc.)
+                        // These are handled by DelayCompensatingMixer which puts data in the buffer
+                        routing.hasExternalSource = true;
+                    }
+                }
+
+                routingPlan.push_back(routing);
             }
 
-            // Direct channel mapping: channel 0→0, 1→1, 2→2, etc.
+            // Execute routing: handle copy/add operations
+            // We need to be careful about order to avoid overwriting sources
+            // Strategy: first copy to temp buffer if needed, then do final routing
+
+            // Identify channels that are both source and dest (need temp buffer)
+            std::set<int> sourceChannels;
+            std::set<int> destChannels;
+            for (const auto& routing : routingPlan)
+            {
+                destChannels.insert(routing.destChannel);
+                for (const auto& [nodeId, srcCh] : routing.internalSources)
+                    sourceChannels.insert(srcCh);
+            }
+
+            // Find conflicts: dest channels that are also sources for OTHER dest channels
+            std::map<int, int> channelRemapping; // original channel -> temp channel
+
+            for (const auto& routing : routingPlan)
+            {
+                for (const auto& [nodeId, srcCh] : routing.internalSources)
+                {
+                    // If source channel will be overwritten by a different dest channel
+                    if (destChannels.count(srcCh) && srcCh != routing.destChannel)
+                    {
+                        // Check if any earlier routing overwrites this source
+                        for (const auto& otherRouting : routingPlan)
+                        {
+                            if (otherRouting.destChannel == srcCh && otherRouting.destChannel != routing.destChannel)
+                            {
+                                // Need to save this source to temp buffer first
+                                if (channelRemapping.find(srcCh) == channelRemapping.end())
+                                {
+                                    sequence.addCopyChannelOp(srcCh, tempBufferChannel);
+                                    channelRemapping[srcCh] = tempBufferChannel;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Now execute the routing
+            for (const auto& routing : routingPlan)
+            {
+                int destCh = routing.destChannel;
+
+                if (routing.internalSources.empty() && !routing.hasExternalSource)
+                {
+                    // No sources at all (neither internal nor external) - clear the channel
+                    sequence.addClearChannelOp(destCh);
+                }
+                else if (!routing.internalSources.empty())
+                {
+                    // Has internal sources - need to route them
+                    bool first = true;
+                    bool needToPreserveExternal = routing.hasExternalSource;
+
+                    for (const auto& [nodeId, srcCh] : routing.internalSources)
+                    {
+                        // Use remapped channel if source was saved to temp
+                        int actualSrcCh = srcCh;
+                        auto remapIt = channelRemapping.find(srcCh);
+                        if (remapIt != channelRemapping.end())
+                            actualSrcCh = remapIt->second;
+
+                        if (first && !needToPreserveExternal)
+                        {
+                            // First source and no external: copy (or skip if same channel)
+                            if (actualSrcCh != destCh)
+                                sequence.addCopyChannelOp(actualSrcCh, destCh);
+                            first = false;
+                        }
+                        else
+                        {
+                            // Additional sources OR has external: add to mix
+                            sequence.addAddChannelOp(actualSrcCh, destCh);
+                        }
+                    }
+                }
+                // else: only external sources - buffer already has data from mixer, don't touch
+            }
+
+            // Direct channel mapping for processOp: channel 0→0, 1→1, 2→2, etc.
             Array<int> audioChannelsToUse;
             for (int ch = 0; ch < totalChans; ++ch)
                 audioChannelsToUse.add(ch);
@@ -1777,6 +1875,10 @@ private:
             totalLatency = jmax(totalLatency, thisNodeLatency);
 
             sequence.addProcessOp(node, audioChannelsToUse, totalChans, midiBufferIndex);
+
+            // Update output channel map: this node's outputs are now in their respective channels
+            for (int outCh = 0; outCh < numOuts; ++outCh)
+                outputChannelMap[{node->nodeID.uid, outCh}] = outCh;
         }
 
         sequence.numBuffersNeeded = maxChannelsNeeded;
@@ -1837,6 +1939,11 @@ public:
         return sequence.latencySamples;
     }
 
+    int getNumChannelsNeeded() const
+    {
+        return sequence.sequence.numBuffersNeeded;
+    }
+
     PrepareSettings getSettings() const
     {
         return settings;
@@ -1866,13 +1973,7 @@ private:
 };
 
 //==============================================================================
-/*  Thread-safe buffer pool for reusing chain buffers across graph rebuilds.
-    Buffers are reference-counted to handle the race condition where:
-    - Audio thread is using buffers from current ParallelRenderSequence
-    - Message thread is building new ParallelRenderSequence
-
-    Buffers are sized dynamically based on the blockSize from prepareToPlay.
-*/
+// Buffer pool for reusing chain buffers across graph rebuilds.
 class ChainBufferPool
 {
 public:
@@ -1880,7 +1981,6 @@ public:
     {
         AudioBuffer<float> audioBuffer;
         MidiBuffer midiBuffer;
-        std::atomic<int> refCount{0};
 
         PooledBuffer(int blockSize)
         {
@@ -1898,87 +1998,56 @@ public:
 
     std::shared_ptr<PooledBuffer> acquireBuffer(int blockSize)
     {
-        std::lock_guard<std::mutex> lock(mutex);
-
-        // Find a free buffer (refCount == 0) and resize if needed
         for (auto& buffer : buffers)
         {
-            int expected = 0;
-            if (buffer->refCount.compare_exchange_strong(expected, 1))
+            if (buffer.use_count() == 1)
             {
-                // Resize buffer if blockSize changed
                 if (buffer->audioBuffer.getNumSamples() != blockSize)
                     buffer->resize(blockSize);
-
-                // Return with custom deleter that resets refCount when shared_ptr is destroyed
-                return std::shared_ptr<PooledBuffer>(
-                    buffer.get(),
-                    [buffer](PooledBuffer*) mutable { buffer->refCount.store(0); }
-                );
+                return buffer;
             }
         }
 
-        // No free buffer found, allocate a new one with the correct size
         auto newBuffer = std::make_shared<PooledBuffer>(blockSize);
-        newBuffer->refCount.store(1);
         buffers.push_back(newBuffer);
-
-        // Return with custom deleter
-        return std::shared_ptr<PooledBuffer>(
-            newBuffer.get(),
-            [newBuffer](PooledBuffer*) mutable { newBuffer->refCount.store(0); }
-        );
-    }
-
-    void releaseBuffer(std::shared_ptr<PooledBuffer> buffer)
-    {
-        if (buffer)
-            buffer->refCount.store(0);
+        return newBuffer;
     }
 
     size_t getPoolSize() const
     {
-        std::lock_guard<std::mutex> lock(mutex);
         return buffers.size();
     }
 
-    // Pre-allocate buffers to avoid allocation in audio thread
     void preallocate(size_t count, int blockSize)
     {
-        std::lock_guard<std::mutex> lock(mutex);
         buffers.reserve(count);
-
         for (size_t i = 0; i < count; ++i)
-        {
-            auto buffer = std::make_shared<PooledBuffer>(blockSize);
-            buffer->refCount.store(0); // Initially free
-            buffers.push_back(buffer);
-        }
+            buffers.push_back(std::make_shared<PooledBuffer>(blockSize));
+    }
+
+    void cleanupUnused()
+    {
+        buffers.erase(
+            std::remove_if(
+                buffers.begin(),
+                buffers.end(),
+                [](const std::shared_ptr<PooledBuffer>& buf) { return buf.use_count() == 1; }
+            ),
+            buffers.end()
+        );
     }
 
 private:
     std::vector<std::shared_ptr<PooledBuffer>> buffers;
-    // Mutex protects vector access for theoretical multi-threaded acquireBuffer() calls
-    // In practice, acquireBuffer() is called serially from audio thread during graph construction
-    // With pre-allocation, acquireBuffer() never allocates - just finds and marks a free buffer
-    mutable std::mutex mutex;
 };
 
 //==============================================================================
-/*  Pool for persistent delay lines that survive graph rebuilds.
-    Delay lines are keyed by connection (source chain/node → dest chain/node).
-    This preserves delay state during graph reconfiguration, preventing clicks/glitches.
-
-    Delay lines are preallocated to MAX_DELAY_SAMPLES for realtime safety since they
-    are always in use by the audio thread when the graph is processing.
-*/
+// Pool for persistent delay lines that survive graph rebuilds.
 class DelayLinePool
 {
 public:
-    // Maximum delay line size: ~21 seconds at 48kHz, ~23 seconds at 44.1kHz
     static constexpr int MAX_DELAY_SAMPLES = 1024 * 1024;
 
-    // Key identifies a specific delay line by source and destination
     struct DelayLineKey
     {
         uint32 sourceId;
@@ -2002,61 +2071,33 @@ public:
     {
         juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear> delayLine;
         std::atomic_int delayAmount{0};
-        std::atomic<bool> inUse{false};
-        std::chrono::steady_clock::time_point lastUsed;
     };
 
-    // Acquire or create a delay line for a specific connection
     std::shared_ptr<PooledDelayLine>
     acquireDelayLine(const DelayLineKey& key, int delayNeeded, double sampleRate, uint32 blockSize, int numChannels)
     {
-        std::lock_guard<std::mutex> lock(mutex);
         jassert(delayNeeded <= MAX_DELAY_SAMPLES);
 
         auto it = delayLines.find(key);
         if (it != delayLines.end())
         {
-            // Reuse existing delay line
-            auto& pooledLine = it->second;
-            pooledLine->inUse.store(true);
-            pooledLine->lastUsed = std::chrono::steady_clock::now();
-            pooledLine->delayAmount.store(delayNeeded);
-            return pooledLine;
+            it->second->delayAmount.store(delayNeeded);
+            return it->second;
         }
 
-        // Create new delay line preallocated to maximum size
         auto pooledLine = std::make_shared<PooledDelayLine>();
         pooledLine->delayLine.prepare(juce::dsp::ProcessSpec{sampleRate, blockSize, static_cast<uint32>(numChannels)});
         pooledLine->delayLine.reset();
         pooledLine->delayLine.setMaximumDelayInSamples(MAX_DELAY_SAMPLES);
         pooledLine->delayAmount.store(delayNeeded);
-        pooledLine->inUse.store(true);
-        pooledLine->lastUsed = std::chrono::steady_clock::now();
-
         delayLines[key] = pooledLine;
         return pooledLine;
     }
 
-    // Mark delay line as no longer in use
-    void releaseDelayLine(const DelayLineKey& key)
+    void cleanupUnused()
     {
-        std::lock_guard<std::mutex> lock(mutex);
-        auto it = delayLines.find(key);
-        if (it != delayLines.end())
-        {
-            it->second->inUse.store(false);
-            it->second->lastUsed = std::chrono::steady_clock::now();
-        }
-    }
-
-    // Clean up delay lines that haven't been used for a while (called periodically)
-    void cleanupUnused(std::chrono::seconds maxAge = std::chrono::seconds(5))
-    {
-        std::lock_guard<std::mutex> lock(mutex);
-        auto now = std::chrono::steady_clock::now();
-
         for (auto it = delayLines.begin(); it != delayLines.end();)
-            if (!it->second->inUse && (now - it->second->lastUsed) > maxAge)
+            if (it->second.use_count() == 1)
                 it = delayLines.erase(it);
             else
                 ++it;
@@ -2064,24 +2105,15 @@ public:
 
     size_t getPoolSize() const
     {
-        std::lock_guard<std::mutex> lock(mutex);
         return delayLines.size();
     }
 
 private:
     std::unordered_map<DelayLineKey, std::shared_ptr<PooledDelayLine>, DelayLineKeyHash> delayLines;
-    mutable std::mutex mutex;
 };
 
 //==============================================================================
-/*  Parallel-ready render sequence that partitions the graph into independent chains
-    that can be executed concurrently. Each chain has its own RenderSequence and buffers.
-
-    Chains are executed in parallel within each topological level using a thread pool:
-    - Each chain has isolated buffers (no shared mutable state)
-    - Dependency tracking uses atomics for thread-safe coordination
-    - Execution respects topological order (level-by-level barrier synchronization)
-*/
+// Parallel render sequence that partitions the graph into independent chains.
 class ParallelRenderSequence
 {
 public:
@@ -2089,11 +2121,9 @@ public:
     using Node = AudioProcessorGraphMT::Node;
     using Connection = AudioProcessorGraphMT::Connection;
 
-    // Forward declaration for job context
     struct ChainRenderSequence;
 
-    // Applies delay to individual sources before mixing them into destination
-    // Uses pooled delay lines that persist across graph rebuilds
+    // Applies delay compensation when mixing sources into a destination.
     class DelayCompensatingMixer
     {
     public:
@@ -2102,6 +2132,11 @@ public:
             , pool(pool_)
         {
         }
+
+        DelayCompensatingMixer(const DelayCompensatingMixer&) = delete;
+        DelayCompensatingMixer& operator=(const DelayCompensatingMixer&) = delete;
+        DelayCompensatingMixer(DelayCompensatingMixer&&) = delete;
+        DelayCompensatingMixer& operator=(DelayCompensatingMixer&&) = delete;
 
         void registerSource(
             uint32 sourceId,
@@ -2113,8 +2148,8 @@ public:
         )
         {
             int delayNeeded = totalLatency - sourceLatency;
-            DelayLinePool::DelayLineKey key{sourceId, destId};
-            delayLines[sourceId] = pool->acquireDelayLine(key, delayNeeded, sampleRate, blockSize, numChannels);
+            delayLines[sourceId] =
+                pool->acquireDelayLine({sourceId, destId}, delayNeeded, sampleRate, blockSize, numChannels);
         }
 
         void mixWithDelay(uint32 sourceId, const float* src, float* dst, int numSamples, int channel = 0)
@@ -2137,13 +2172,6 @@ public:
             }
         }
 
-        void clearSources()
-        {
-            for (auto& [sourceId, pooledLine] : delayLines)
-                pool->releaseDelayLine({sourceId, destId});
-            delayLines.clear();
-        }
-
     private:
         uint32 destId;
         DelayLinePool* pool;
@@ -2151,7 +2179,7 @@ public:
     };
 
     //==========================================================================
-    // Unified output routing with delay compensation
+    // Routes chain outputs to host output and OBS nodes with delay compensation.
     class OutputRouter
     {
     public:
@@ -2177,7 +2205,6 @@ public:
 
         void clear()
         {
-            mixer.clearSources();
             hostOutputRoutes.clear();
             obsNodes.clear();
         }
@@ -2440,11 +2467,7 @@ public:
         {
         }
 
-        ~ChainRenderSequence()
-        {
-            if (pooledBuffer)
-                pooledBuffer->refCount.store(0, std::memory_order_release);
-        }
+        ~ChainRenderSequence() = default;
 
         ChainRenderSequence(const ChainRenderSequence&) = delete;
         ChainRenderSequence& operator=(const ChainRenderSequence&) = delete;
@@ -2477,7 +2500,7 @@ public:
 
         // Get worker count for load-balanced level assignment
         // Use numWorkers + 1 because the main thread also processes jobs
-        auto* audioPool = atk::AudioThreadPool::getInstance();
+        auto* audioPool = atk::RealtimeThreadPool::getInstance();
         const size_t totalWorkers = audioPool ? static_cast<size_t>(audioPool->getNumWorkers() + 1) : SIZE_MAX;
         extractor.buildSubgraphDependencies(subgraphs, connectionsVec, totalWorkers);
 
@@ -2544,6 +2567,9 @@ public:
         // Add extra margin for safety
         const size_t numBuffersNeeded = 1 + subgraphs.size() + outputRouter.getObsNodeCount() + 2;
         bufferPool.preallocate(numBuffersNeeded, s.blockSize);
+
+        // Pre-allocate savedInput buffer for process() - must be done after preallocate
+        savedInputBuffer = bufferPool.acquireBuffer(s.blockSize);
 
         if (subgraphs.empty())
         {
@@ -2710,7 +2736,7 @@ public:
                     maxInputLatency,
                     s.sampleRate,
                     s.blockSize,
-                    CHAIN_MAX_CHANNELS
+                    chain->sequence->getNumChannelsNeeded()
                 );
             }
 
@@ -2722,7 +2748,7 @@ public:
                     maxInputLatency,
                     s.sampleRate,
                     s.blockSize,
-                    sourceChain->getAudioBuffer().getNumChannels()
+                    chain->sequence->getNumChannelsNeeded()
                 );
             }
         }
@@ -2800,7 +2826,7 @@ public:
             outputRouter.addPassthroughRoute(i, inputCh, outputCh, totalLatency, s.sampleRate, s.blockSize);
         }
 
-        auto* threadPool = atk::AudioThreadPool::getInstance();
+        auto* threadPool = atk::RealtimeThreadPool::getInstance();
         const int numWorkers = threadPool ? threadPool->getNumWorkers() : 0;
 
         useDependencyMode = false;
@@ -2900,14 +2926,16 @@ public:
 
         const int numSamples = audio.getNumSamples();
 
-        auto savedInput = bufferPool.acquireBuffer(numSamples);
-        savedInput->audioBuffer.setSize(savedInput->audioBuffer.getNumChannels(), numSamples, false, false, true);
+        // Use pre-allocated buffer for saving input
+        auto& savedInput = savedInputBuffer->audioBuffer;
+        if (savedInput.getNumSamples() < numSamples)
+            savedInput.setSize(savedInput.getNumChannels(), numSamples, false, false, true);
 
-        const int numInputChannels = std::min(audio.getNumChannels(), savedInput->audioBuffer.getNumChannels());
+        const int numInputChannels = std::min(audio.getNumChannels(), savedInput.getNumChannels());
         for (int ch = 0; ch < numInputChannels; ++ch)
         {
             const auto* src = audio.getReadPointer(ch);
-            auto* dst = savedInput->audioBuffer.getWritePointer(ch);
+            auto* dst = savedInput.getWritePointer(ch);
             FloatVectorOperations::copy(dst, src, numSamples);
         }
 
@@ -2915,7 +2943,7 @@ public:
         {
             midi.clear();
             // No chains = no latency, use simplified passthrough-only routing
-            outputRouter.routePassthroughOnly(audio, savedInput->audioBuffer, numSamples);
+            outputRouter.routePassthroughOnly(audio, savedInput, numSamples);
             return;
         }
 
@@ -2942,10 +2970,10 @@ public:
                     int destChannel = mapping.first.second;
                     int sourceChannel = mapping.second;
 
-                    if (sourceChannel < savedInput->audioBuffer.getNumChannels()
+                    if (sourceChannel < savedInput.getNumChannels()
                         && destChannel < chain->getAudioBuffer().getNumChannels())
                     {
-                        const auto* src = savedInput->audioBuffer.getReadPointer(sourceChannel);
+                        const auto* src = savedInput.getReadPointer(sourceChannel);
                         auto* dst = chain->getAudioBuffer().getWritePointer(destChannel);
                         chain->inputMixer.mixWithDelay(AUDIO_INPUT_SOURCE_ID, src, dst, numSamples, destChannel);
                     }
@@ -2957,7 +2985,7 @@ public:
                 chain->getMidiBuffer().addEvents(midi, 0, numSamples, 0);
         }
 
-        auto* pool = atk::AudioThreadPool::getInstance();
+        auto* pool = atk::RealtimeThreadPool::getInstance();
         const bool isWorkerThread = pool && pool->isCalledFromWorkerThread();
         const bool canUseThreadPool = pool && pool->isReady() && !isWorkerThread;
 
@@ -3051,7 +3079,7 @@ public:
 
         // Step 5: Route all outputs through unified OutputRouter
         // Handles chains → Audio Output, passthrough → Audio Output, and OBS Output nodes
-        outputRouter.routeAllOutputs(audio, midi, savedInput->audioBuffer, chains, nodeToChainMap, numSamples);
+        outputRouter.routeAllOutputs(audio, midi, savedInput, chains, nodeToChainMap, numSamples);
     }
 
     int getLatencySamples() const
@@ -3173,6 +3201,9 @@ private:
     // - Chains/Input → OBS Output nodes
     OutputRouter outputRouter;
 
+    // Pre-allocated buffer for saving input audio (avoids allocation in audio thread)
+    std::shared_ptr<ChainBufferPool::PooledBuffer> savedInputBuffer;
+
     // Map from NodeID to chain pointer for efficient OBS Output routing
     std::unordered_map<uint32, ChainRenderSequence*> nodeToChainMap;
 };
@@ -3269,21 +3300,33 @@ private:
 class RenderSequenceExchange final : private Timer
 {
 public:
-    RenderSequenceExchange()
-    {
-        startTimer(500);
-    }
+    RenderSequenceExchange() = default;
 
     ~RenderSequenceExchange() override
     {
         stopTimer();
     }
 
+    void setCleanupCallback(std::function<void()> callback)
+    {
+        cleanupCallback = std::move(callback);
+        startTimer(500);
+    }
+
     void set(std::unique_ptr<ParallelRenderSequence>&& next)
     {
-        const SpinLock::ScopedLockType lock(mutex);
-        mainThreadState = std::move(next);
-        isNew = true;
+        // Move old state out while holding lock, destroy outside to avoid blocking audio thread
+        std::unique_ptr<ParallelRenderSequence> toDestroy;
+
+        {
+            const SpinLock::ScopedLockType lock(mutex);
+            toDestroy = std::move(mainThreadState);
+            mainThreadState = std::move(next);
+            isNew = true;
+        }
+
+        // Destroy outside lock - this releases resources back to pools
+        toDestroy.reset();
     }
 
     /*  Call from the audio thread only. */
@@ -3308,14 +3351,24 @@ public:
 private:
     void timerCallback() override
     {
-        const SpinLock::ScopedLockType lock(mutex);
+        // Move the old sequence out while holding the lock, then destroy outside lock
+        std::unique_ptr<ParallelRenderSequence> toDestroy;
 
-        if (!isNew)
-            mainThreadState.reset();
+        {
+            const SpinLock::ScopedLockType lock(mutex);
+            if (!isNew)
+                toDestroy = std::move(mainThreadState);
+        }
+
+        toDestroy.reset();
+
+        if (cleanupCallback)
+            cleanupCallback();
     }
 
     SpinLock mutex;
     std::unique_ptr<ParallelRenderSequence> mainThreadState, audioThreadState;
+    std::function<void()> cleanupCallback;
     bool isNew = false;
 };
 
@@ -3326,6 +3379,13 @@ public:
     explicit Pimpl(AudioProcessorGraphMT& o)
         : owner(&o)
     {
+        renderSequenceExchange.setCleanupCallback(
+            [this]
+            {
+                bufferPool.cleanupUnused();
+                delayLinePool.cleanupUnused();
+            }
+        );
     }
 
     const auto& getNodes() const
@@ -3465,7 +3525,7 @@ public:
 
         // Initialize and configure thread pool for parallel processing
         // This happens lazily on first prepareToPlay call
-        auto* pool = atk::AudioThreadPool::getInstance();
+        auto* pool = atk::RealtimeThreadPool::getInstance();
         if (pool && !pool->isReady())
             pool->initialize();
 
@@ -3556,6 +3616,11 @@ private:
 
     void handleAsyncUpdate()
     {
+        // Clean up unused resources before building new sequence.
+        // This happens on message thread during graph rebuild, not during audio processing.
+        bufferPool.cleanupUnused();
+        delayLinePool.cleanupUnused();
+
         if (const auto newSettings = nodeStates.applySettings(nodes))
         {
             for (const auto node : nodes.getNodes())
@@ -3588,9 +3653,11 @@ private:
     Nodes nodes;
     Connections connections;
     NodeStates nodeStates;
-    RenderSequenceExchange renderSequenceExchange;
     ChainBufferPool bufferPool;  // Persistent buffer pool for reusing chain buffers across rebuilds
     DelayLinePool delayLinePool; // Persistent delay line pool for delay compensation across rebuilds
+    // renderSequenceExchange must be declared AFTER pools so it's destroyed FIRST,
+    // ensuring pools are still valid when timer callback accesses them during shutdown
+    RenderSequenceExchange renderSequenceExchange;
     NodeID lastNodeID;
     std::optional<RenderSequenceSignature> lastBuiltSequence;
     LockingAsyncUpdater updater{[this] { handleAsyncUpdate(); }};

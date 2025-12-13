@@ -190,6 +190,12 @@ private:
         if (connectionScheduled.exchange(true, std::memory_order_acq_rel))
             return;
 
+        if (sourceConnected.load(std::memory_order_acquire))
+        {
+            connectionScheduled.store(false, std::memory_order_release);
+            return;
+        }
+
         juce::Timer::callAfterDelay(
             2000,
             [this]()

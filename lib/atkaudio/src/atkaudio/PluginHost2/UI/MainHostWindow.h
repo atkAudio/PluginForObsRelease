@@ -211,5 +211,5 @@ private:
     // Parent OBS source UUID (not ref-counted, just the UUID string)
     std::string parentSourceUuid;
 
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainHostWindow)
+    JUCE_DECLARE_NON_COPYABLE(MainHostWindow)
 };

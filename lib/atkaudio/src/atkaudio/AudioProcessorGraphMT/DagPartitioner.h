@@ -600,8 +600,16 @@ private:
         const Node& node = nodeIt->second;
         size_t numInputs = node.inputsFrom.size();
 
-        // Rule 8: numInputs != 1 means new subgraph starts here
-        if (numInputs != 1)
+        // Count non-excluded outputs for split point detection
+        size_t nonExcludedOutputs = 0;
+        for (const auto& outputId : node.outputsTo)
+            if (!isExcluded(outputId))
+                ++nonExcludedOutputs;
+
+        // Rule 7 & 8: Split points (>1 outputs) and join points (!=1 inputs) create subgraph boundaries
+        // This ensures nodes with multiple outputs become their own subgraph so parallel
+        // downstream paths can be scheduled independently
+        if (numInputs != 1 || nonExcludedOutputs > 1)
         {
             // Finalize previous subgraph
             if (!localSubgraph.empty())
@@ -703,7 +711,8 @@ private:
      * @brief Trace backwards from an endpoint, collecting nodes into subgraphs.
      *
      * Creates new subgraph when:
-     * - Current node has != 1 input (join point or start)
+     * - Current node has != 1 input (join point or source)
+     * - Current node has > 1 non-excluded outputs (split point)
      * - Hit an excluded node
      * - Hit already visited node
      */
@@ -730,8 +739,16 @@ private:
         const Node& node = nodeIt->second;
         size_t numInputs = node.inputsFrom.size();
 
-        // Rule 8: numInputs != 1 means new subgraph starts here
-        if (numInputs != 1)
+        // Count non-excluded outputs for split point detection
+        size_t nonExcludedOutputs = 0;
+        for (const auto& outputId : node.outputsTo)
+            if (!isExcluded(outputId))
+                ++nonExcludedOutputs;
+
+        // Rule 7 & 8: Split points (>1 outputs) and join points (!=1 inputs) create subgraph boundaries
+        // This ensures nodes with multiple outputs become their own subgraph so parallel
+        // downstream paths can be scheduled independently
+        if (numInputs != 1 || nonExcludedOutputs > 1)
         {
             // Finalize previous subgraph
             finalizeSubgraph();
@@ -751,20 +768,11 @@ private:
             return;
         }
 
-        // Simple linear node - add to current subgraph and continue
+        // Simple linear node (exactly 1 input, exactly 1 non-excluded output)
+        // Add to current subgraph and continue upstream
         currentSubgraph.push_back(nodeId);
         visited.push_back(nodeId);
-
-        if (numInputs == 1)
-        {
-            // Continue upstream
-            traceBackwards(node.inputsFrom[0], nodes);
-        }
-        else // numInputs == 0
-        {
-            // Reached input - finalize
-            finalizeSubgraph();
-        }
+        traceBackwards(node.inputsFrom[0], nodes);
     }
 
     /**

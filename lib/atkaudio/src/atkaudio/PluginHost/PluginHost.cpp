@@ -3,7 +3,7 @@
 #include "Core/HostAudioProcessor.h"
 #include "Core/PluginHolder.h"
 #include "UI/HostEditorWindow.h"
-#include "../AudioProcessorGraphMT/AudioThreadPool.h"
+#include "../AudioProcessorGraphMT/RealtimeThreadPool.h"
 #include <atkaudio/FifoBuffer.h>
 #include <chrono>
 
@@ -329,7 +329,7 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
         if (!isPrepared)
             return;
 
-        auto* pool = atk::AudioThreadPool::getInstance();
+        auto* pool = atk::RealtimeThreadPool::getInstance();
         const bool canUseThreading = useThreadPool.load(std::memory_order_acquire) && pool && pool->isReady();
 
         if (canUseThreading)
@@ -772,7 +772,7 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
 
         if (enabled && !wasEnabled)
         {
-            auto* pool = atk::AudioThreadPool::getInstance();
+            auto* pool = atk::RealtimeThreadPool::getInstance();
             if (pool && !pool->isReady())
                 pool->initialize();
         }

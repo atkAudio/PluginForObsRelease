@@ -144,20 +144,24 @@ void SandboxedScanner::offerFallbackScan()
     if (numFailed > 5)
         failedList += "...and " + juce::String(numFailed - 5) + " more\n";
 
-    juce::String message =
-        juce::String(numFailed) + " plugin(s) failed to scan:\n\n" + failedList + "\nRetry with in-process scanner?";
+    juce::String message = juce::String(numFailed)
+                         + " plugin(s) failed scan:\n\n"
+                         + failedList
+                         + "\nRetry scan in-process? May succeed or crash/hang.";
 
     auto failedScansCopy = failedScans;
     auto* fmCopy = formatManager;
     auto* listCopy = knownPluginList;
     failedScans.clear();
 
-    juce::MessageManager::callAsync(
+    // Delay showing dialog by 1 second to ensure JUCE's dialog appears first
+    juce::Timer::callAfterDelay(
+        1000,
         [message, failedScansCopy, fmCopy, listCopy]()
         {
             auto options = juce::MessageBoxOptions()
                                .withIconType(juce::MessageBoxIconType::QuestionIcon)
-                               .withTitle("Scan Failed")
+                               .withTitle("Out-of-process scan failed")
                                .withMessage(message)
                                .withButton("Retry")
                                .withButton("Skip");
@@ -168,6 +172,19 @@ void SandboxedScanner::offerFallbackScan()
                 {
                     if (result != 1 || !fmCopy || !listCopy)
                         return;
+
+                    // Dismiss JUCE's "Scan complete" dialog before starting fallback scan
+                    for (int i = juce::ModalComponentManager::getInstance()->getNumModalComponents(); --i >= 0;)
+                    {
+                        if (auto* alert = dynamic_cast<juce::AlertWindow*>(
+                                juce::ModalComponentManager::getInstance()->getModalComponent(i)
+                            ))
+                        {
+                            // JUCE's PluginListComponent shows dialog with title "Scan complete"
+                            if (alert->getName() == "Scan complete" || alert->getName() == TRANS("Scan complete"))
+                                alert->exitModalState(0);
+                        }
+                    }
 
                     for (const auto& failed : failedScansCopy)
                     {

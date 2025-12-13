@@ -1,4 +1,4 @@
-// Copyright (c) 2024 atkAudio
+// Copyright (c) 2025 atkAudio
 
 #pragma once
 
@@ -10,9 +10,7 @@
 
 #include <algorithm>
 #include <atomic>
-#include <condition_variable>
 #include <memory>
-#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -21,7 +19,7 @@ namespace atk
 
 //==============================================================================
 /**
-    Lock-free MPMC task queue for parallel audio processing.
+    Lock-free MPMC task queue for fire-and-forget tasks.
 */
 class RealtimeTaskQueue
 {
@@ -69,7 +67,7 @@ public:
                 }
             }
             else if (diff < 0)
-                return false; // Queue full
+                return false;
             else
                 pos = head.load(std::memory_order_relaxed);
         }
@@ -94,7 +92,7 @@ public:
                 }
             }
             else if (diff < 0)
-                return false; // Queue empty
+                return false;
             else
                 pos = tail.load(std::memory_order_relaxed);
         }
@@ -124,16 +122,18 @@ private:
 
 //==============================================================================
 /**
-    Global realtime thread pool singleton.
-    Workers pull tasks from queue and execute them. That's it.
+    Realtime thread pool for parallel task execution.
+    Supports both fire-and-forget tasks and dependency graph execution.
 */
-class AudioThreadPool
+class RealtimeThreadPool
 {
 public:
-    static AudioThreadPool* getInstance()
+    static constexpr int kMaxWorkers = 32;
+
+    static RealtimeThreadPool* getInstance()
     {
         if (!instance)
-            instance = new AudioThreadPool();
+            instance = new RealtimeThreadPool();
         return instance;
     }
 
@@ -145,54 +145,45 @@ public:
 
     void initialize(int numWorkers = 0)
     {
-        std::lock_guard<std::mutex> lock(poolMutex);
-
         if (initialized.load(std::memory_order_acquire))
             return;
 
         if (numWorkers <= 0)
             numWorkers = (std::max)(1, getNumPhysicalCpus() - 2);
 
-        // Get physical core mapping - pin workers to physical cores
-        // Reserve first 2 physical cores for main thread and OS (if available)
         auto physicalCores = getPhysicalCoreMapping();
         const int numPhysical = static_cast<int>(physicalCores.size());
 
-        DBG("[AudioThreadPool] Initializing with "
-            << numWorkers
-            << " workers, "
-            << numPhysical
-            << " physical cores detected");
+        DBG("[RealtimeThreadPool] Initializing with " << numWorkers << " workers");
 
         for (int i = 0; i < numWorkers; ++i)
         {
             int coreId = -1;
             if (numPhysical > 2)
-            {
-                int physicalIndex = 2 + (i % (numPhysical - 2));
-                coreId = physicalCores[physicalIndex];
-            }
+                coreId = physicalCores[2 + (i % (numPhysical - 2))];
             else if (numPhysical > 0)
-            {
                 coreId = physicalCores[i % numPhysical];
-            }
-            workers.push_back(std::make_unique<Worker>(*this, coreId));
+
+            workers.push_back(std::make_unique<Worker>(*this, i, coreId));
         }
 
-        DBG("[AudioThreadPool] All workers started");
+        for (auto& w : workers)
+            w->waitUntilStarted();
 
         initialized.store(true, std::memory_order_release);
     }
 
     void shutdown()
     {
-        std::lock_guard<std::mutex> lock(poolMutex);
-
         if (!initialized.load(std::memory_order_acquire))
             return;
 
-        workers.clear();
         initialized.store(false, std::memory_order_release);
+
+        // Workers handle their own cleanup in destructor
+        workers.clear();
+
+        currentGraph.store(nullptr, std::memory_order_release);
     }
 
     bool isReady() const
@@ -205,30 +196,49 @@ public:
         return static_cast<int>(workers.size());
     }
 
-    /** Submit a task for execution. Returns true if queued successfully. */
+    // Submit a fire-and-forget task (wakes all workers to compete)
     bool submitTask(void (*execute)(void*), void* userData)
     {
         if (!initialized.load(std::memory_order_acquire) || execute == nullptr)
             return false;
 
-        if (!taskQueue.tryPush(execute, userData))
-            return false;
-
-        // Wake one worker
-        cv.notify_one();
-        return true;
-    }
-
-    /** Try to steal and execute one task (for caller participation). Returns true if executed. */
-    bool tryExecuteTask()
-    {
-        RealtimeTaskQueue::Task task;
-        if (taskQueue.tryPop(task) && task.execute != nullptr)
+        if (taskQueue.tryPush(execute, userData))
         {
-            task.execute(task.userData);
+            // wakeAllWorkers();
+            wakeFirstWorker();
             return true;
         }
         return false;
+    }
+
+    // Execute a dependency graph - blocks until complete
+    void executeDependencyGraph(DependencyTaskGraph* graph)
+    {
+        if (!initialized.load(std::memory_order_acquire))
+            return;
+
+        if (!graph || graph->empty())
+            return;
+
+        graph->setWakeCallback(
+            []()
+            {
+                if (instance)
+                    instance->wakeAllWorkers();
+            }
+        );
+
+        graph->prepare();
+        currentGraph.store(graph, std::memory_order_release);
+
+        // // Wake first worker (cascades to wake others)
+        // wakeFirstWorker();
+        wakeAllWorkers();
+
+        graph->waitUntilDone();
+
+        currentGraph.store(nullptr, std::memory_order_release);
+        graph->setWakeCallback(nullptr);
     }
 
     bool isCalledFromWorkerThread() const
@@ -240,64 +250,48 @@ public:
         return false;
     }
 
-    void executeDependencyGraph(DependencyTaskGraph* graph)
+    // Wake all workers to check for work
+    void wakeAllWorkers()
     {
-        if (!graph || graph->empty())
-            return;
+        for (const auto& worker : workers)
+            if (worker)
+                worker->signal();
+    }
 
-        const int numWorkerThreads = getNumWorkers();
-        graph->setNumWorkers(numWorkerThreads);
-        graph->prepare();
-
-        for (int i = 0; i < numWorkerThreads; ++i)
-        {
-            workerContexts[i].graph = graph;
-            workerContexts[i].workerId = i;
-            submitTask(&executeGraphHelperWithAffinity, &workerContexts[i]);
-        }
-
-        graph->executeUntilDone();
+    // Wake first worker (cascades to others via wakeNextWorker)
+    void wakeFirstWorker()
+    {
+        if (!workers.empty() && workers[0])
+            workers[0]->signal();
     }
 
 private:
-    struct WorkerContext
-    {
-        DependencyTaskGraph* graph = nullptr;
-        int workerId = -1;
-    };
-
-    // Pre-allocated to avoid allocation during audio callback
-    WorkerContext workerContexts[32];
-
-    static void executeGraphHelperWithAffinity(void* userData)
-    {
-        auto* ctx = static_cast<WorkerContext*>(userData);
-        if (ctx && ctx->graph)
-            ctx->graph->executeUntilDoneForWorker(ctx->workerId);
-    }
-
     class Worker
     {
     public:
-        explicit Worker(AudioThreadPool& p, int coreId = -1)
+        explicit Worker(RealtimeThreadPool& p, int workerIdx, int coreId = -1)
             : pool(p)
+            , workerIndex(workerIdx)
             , thread(&Worker::run, this)
         {
             trySetRealtimePriority(thread);
-
             if (coreId >= 0)
-            {
-                if (tryPinThreadToCore(thread, coreId))
-                    DBG("[AudioThreadPool] Worker pinned to core " << coreId);
-            }
+                tryPinThreadToCore(thread, coreId);
         }
 
         ~Worker()
         {
             shouldExit.store(true, std::memory_order_release);
-            pool.cv.notify_all();
+            wakeFlag.store(true, std::memory_order_release);
+            spinAtomicNotifyOne(wakeFlag);
             if (thread.joinable())
                 thread.join();
+        }
+
+        void waitUntilStarted()
+        {
+            while (!started.load(std::memory_order_acquire))
+                std::this_thread::yield();
         }
 
         std::thread::id getThreadId() const
@@ -305,54 +299,90 @@ private:
             return thread.get_id();
         }
 
+        void signal()
+        {
+            wakeFlag.store(true, std::memory_order_release);
+            spinAtomicNotifyOne(wakeFlag);
+        }
+
+        void wakeNextWorker()
+        {
+            // Don't wake next worker if pool is shutting down
+            if (!pool.initialized.load(std::memory_order_acquire))
+                return;
+
+            const int total = static_cast<int>(pool.workers.size());
+            if (total <= 1)
+                return;
+
+            int nextIndex = (workerIndex + 1) % total;
+            if (nextIndex == workerIndex)
+                return;
+
+            auto* nextWorker = pool.workers[nextIndex].get();
+            if (nextWorker)
+                nextWorker->signal();
+        }
+
     private:
         void run()
         {
+            started.store(true, std::memory_order_release);
+
             while (!shouldExit.load(std::memory_order_acquire))
             {
-                RealtimeTaskQueue::Task task;
-                if (pool.taskQueue.tryPop(task) && task.execute != nullptr)
+                spinAtomicWait(wakeFlag, false);
+                wakeFlag.store(false, std::memory_order_relaxed);
+
+                // Process tasks as long as there's work available
+                bool didWork;
+                do
                 {
-                    task.execute(task.userData);
-                }
-                else
-                {
-                    // No tasks - wait for notification
-                    std::unique_lock<std::mutex> lock(pool.mutex);
-                    pool.cv.wait(
-                        lock,
-                        [this] { return shouldExit.load(std::memory_order_acquire) || !pool.taskQueue.isEmpty(); }
-                    );
-                }
+                    didWork = false;
+
+                    // Check for dependency graph work
+                    if (auto* graph = pool.currentGraph.load(std::memory_order_acquire))
+                    {
+                        wakeNextWorker();
+                        if (graph->tryExecuteOneTask())
+                        {
+                            didWork = true;
+                            continue;
+                        }
+                    }
+
+                    // Check for fire-and-forget tasks
+                    RealtimeTaskQueue::Task task;
+                    if (pool.taskQueue.tryPop(task))
+                    {
+                        wakeNextWorker();
+                        if (task.execute)
+                            task.execute(task.userData);
+                        didWork = true;
+                    }
+                } while (didWork);
             }
         }
 
-        AudioThreadPool& pool;
+        RealtimeThreadPool& pool;
+        int workerIndex;
+        std::atomic<bool> wakeFlag{false};
         std::atomic<bool> shouldExit{false};
+        std::atomic<bool> started{false};
         std::thread thread;
     };
 
-    AudioThreadPool() = default;
+    RealtimeThreadPool() = default;
 
-public:
-    ~AudioThreadPool()
-    {
-        shutdown();
-    }
-
-private:
-    inline static AudioThreadPool* instance = nullptr;
+    inline static RealtimeThreadPool* instance = nullptr;
 
     std::vector<std::unique_ptr<Worker>> workers;
     RealtimeTaskQueue taskQueue;
-    std::mutex poolMutex;
+    std::atomic<DependencyTaskGraph*> currentGraph{nullptr};
     std::atomic<bool> initialized{false};
 
-    std::mutex mutex;
-    std::condition_variable cv;
-
-    AudioThreadPool(const AudioThreadPool&) = delete;
-    AudioThreadPool& operator=(const AudioThreadPool&) = delete;
+    RealtimeThreadPool(const RealtimeThreadPool&) = delete;
+    RealtimeThreadPool& operator=(const RealtimeThreadPool&) = delete;
 };
 
 } // namespace atk

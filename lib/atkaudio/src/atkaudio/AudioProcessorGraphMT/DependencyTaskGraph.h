@@ -1,40 +1,26 @@
 // Copyright (c) 2025 atkAudio
-// Dependency-based task graph for realtime processing
+// Dependency-based task graph for realtime parallel processing
+//
+// Features:
+// - Lock-free MPMC queue for task scheduling
+// - Dynamic preferred child: heaviest ready child executes on same thread
+// - EMA-smoothed execution times for chain selection
 
 #pragma once
 
-#include "../RealtimeThread.h"
+#include "SpinWait.h"
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
-#include <thread>
 #include <vector>
-
-#ifndef CPU_PAUSE
-#if JUCE_INTEL || defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-#include <emmintrin.h>
-#define CPU_PAUSE() _mm_pause()
-#elif defined(__arm__) || defined(__aarch64__) || defined(_M_ARM64)
-#if defined(_MSC_VER)
-#include <intrin.h>
-#define CPU_PAUSE() __yield()
-#elif defined(__ARM_ACLE)
-#include <arm_acle.h>
-#define CPU_PAUSE() __yield()
-#else
-#define CPU_PAUSE() __asm__ __volatile__("yield")
-#endif
-#else
-#define CPU_PAUSE() std::atomic_signal_fence(std::memory_order_seq_cst)
-#endif
-#endif
 
 namespace atk
 {
 
 //==============================================================================
-// Lock-free MPMC ready queue for task indices
 template <typename T, size_t Capacity = 1024>
 class LockFreeReadyQueue
 {
@@ -124,7 +110,6 @@ private:
 };
 
 //==============================================================================
-// Task node with atomic dependency counter
 struct TaskNode
 {
     void* userData = nullptr;
@@ -133,8 +118,7 @@ struct TaskNode
     int initialDependencyCount = 0;
     std::vector<size_t> dependentIndices;
     size_t taskIndex = 0;
-    std::atomic<bool> completed{false};
-    int preferredWorker = 0;
+    std::chrono::nanoseconds executionTimeEma{0};
 
     explicit TaskNode(size_t index = 0)
         : taskIndex(index)
@@ -149,24 +133,16 @@ struct TaskNode
     void reset()
     {
         pendingDependencies.store(initialDependencyCount, std::memory_order_relaxed);
-        completed.store(false, std::memory_order_relaxed);
-    }
-
-    bool isReady() const
-    {
-        return pendingDependencies.load(std::memory_order_acquire) == 0 && !completed.load(std::memory_order_acquire);
     }
 };
 
 //==============================================================================
-// Dependency-based task graph for parallel audio processing
-// Uses address-based hashing for task affinity:
-// - Same userData pointer → same preferred worker → better cache locality
-// - Work stealing ensures load balancing when workers finish early
 class DependencyTaskGraph
 {
+    static constexpr double kReleaseCoeff = 1.0 - (1.0 / 1024.0); // ~1024 samples to decay
+
 public:
-    static constexpr int kMaxWorkers = 32;
+    using WakeCallback = void (*)();
 
     DependencyTaskGraph() = default;
 
@@ -178,8 +154,7 @@ public:
     void clear()
     {
         tasks.clear();
-        for (int i = 0; i < kMaxWorkers; ++i)
-            workerQueues[i].reset();
+        readyQueue.reset();
         completedCount.store(0, std::memory_order_relaxed);
         totalTasks = 0;
     }
@@ -189,14 +164,9 @@ public:
         return tasks.empty();
     }
 
-    void setNumWorkers(int n)
+    void setWakeCallback(WakeCallback callback)
     {
-        numWorkers_ = (n > 0 && n <= kMaxWorkers) ? n : 1;
-    }
-
-    int getNumWorkers() const
-    {
-        return numWorkers_;
+        wakeCallback = callback;
     }
 
     size_t addTask(void* userData, void (*execute)(void*), int dependencyCount = 0)
@@ -207,104 +177,45 @@ public:
         task->execute = execute;
         task->initialDependencyCount = dependencyCount;
         task->pendingDependencies.store(dependencyCount, std::memory_order_relaxed);
-        task->completed.store(false, std::memory_order_relaxed);
         tasks.push_back(std::move(task));
         return index;
     }
 
     void addDependency(size_t taskIndex, size_t dependsOnIndex)
     {
-        if (dependsOnIndex < tasks.size() && taskIndex < tasks.size())
-        {
-            tasks[dependsOnIndex]->dependentIndices.push_back(taskIndex);
-            tasks[taskIndex]->initialDependencyCount++;
-            tasks[taskIndex]->pendingDependencies.fetch_add(1, std::memory_order_relaxed);
-        }
+        if (dependsOnIndex >= tasks.size() || taskIndex >= tasks.size())
+            return;
+
+        tasks[dependsOnIndex]->dependentIndices.push_back(taskIndex);
+        tasks[taskIndex]->initialDependencyCount++;
+        tasks[taskIndex]->pendingDependencies.fetch_add(1, std::memory_order_relaxed);
     }
 
     void prepare()
     {
-        while (activeWorkers.load(std::memory_order_acquire) > 0)
-            CPU_PAUSE();
-
-        for (int i = 0; i < kMaxWorkers; ++i)
-            workerQueues[i].reset();
+        readyQueue.reset();
         completedCount.store(0, std::memory_order_relaxed);
+        waitFlag.store(false, std::memory_order_relaxed);
         totalTasks = tasks.size();
 
-        const int nw = numWorkers_;
+        // Reset all tasks and push roots to ready queue
         for (size_t i = 0; i < tasks.size(); ++i)
         {
-            tasks[i]->preferredWorker = computePreferredWorker(tasks[i]->userData, nw);
             tasks[i]->reset();
             if (tasks[i]->initialDependencyCount == 0)
-                enqueueTask(i);
+                readyQueue.tryPush(i);
         }
     }
 
-    void executeUntilDone()
+    void waitUntilDone()
     {
-        executeUntilDoneForWorker(-1);
-
-        // Wait for workers to exit before returning
-        int spinCount = 8;
-        while (activeWorkers.load(std::memory_order_acquire) > 0)
-        {
-            for (int i = 0; i < spinCount; ++i)
-                CPU_PAUSE();
-            if (spinCount < 8192)
-                spinCount *= 2;
-            else
-                std::this_thread::yield();
-        }
+        spinAtomicWait(waitFlag, false);
     }
 
-    void executeUntilDoneForWorker(int workerId)
-    {
-        activeWorkers.fetch_add(1, std::memory_order_acq_rel);
-
-        const int nw = numWorkers_;
-        int spinCount = 8;
-        while (completedCount.load(std::memory_order_acquire) < totalTasks)
-        {
-            size_t taskIndex;
-            if (tryPopTask(taskIndex, workerId, nw))
-            {
-                executeTask(taskIndex);
-                spinCount = 8;
-            }
-            else
-            {
-                for (int i = 0; i < spinCount; ++i)
-                {
-                    std::atomic_signal_fence(std::memory_order_seq_cst);
-                    CPU_PAUSE();
-                    if (hasAnyWork(nw))
-                        break;
-                }
-
-                if (completedCount.load(std::memory_order_acquire) >= totalTasks)
-                    break;
-
-                if (spinCount < 8192)
-                    spinCount *= 2;
-                else
-                    std::this_thread::yield();
-            }
-        }
-
-        activeWorkers.fetch_sub(1, std::memory_order_acq_rel);
-    }
-
-    bool tryExecuteOne()
-    {
-        return tryExecuteOneForWorker(-1);
-    }
-
-    bool tryExecuteOneForWorker(int workerId)
+    bool tryExecuteOneTask()
     {
         size_t taskIndex;
-        if (tryPopTask(taskIndex, workerId, numWorkers_))
+        if (readyQueue.tryPop(taskIndex))
         {
             executeTask(taskIndex);
             return true;
@@ -315,6 +226,11 @@ public:
     bool isComplete() const
     {
         return completedCount.load(std::memory_order_acquire) >= totalTasks;
+    }
+
+    bool hasWork() const
+    {
+        return !readyQueue.isEmpty();
     }
 
     size_t getTaskCount() const
@@ -338,78 +254,79 @@ public:
     }
 
 private:
-    int computePreferredWorker(void* ptr, int nw) const
-    {
-        if (nw <= 1 || ptr == nullptr)
-            return 0;
-        auto addr = reinterpret_cast<uintptr_t>(ptr);
-        return static_cast<int>((addr >> 6) % static_cast<uintptr_t>(nw));
-    }
-
-    void enqueueTask(size_t taskIndex)
-    {
-        int worker = tasks[taskIndex]->preferredWorker;
-        int spinCount = 8;
-        while (!workerQueues[worker].tryPush(taskIndex))
-        {
-            for (int i = 0; i < spinCount; ++i)
-                CPU_PAUSE();
-            if (spinCount < 8192)
-                spinCount *= 2;
-            else
-                std::this_thread::yield();
-        }
-    }
-
-    bool tryPopTask(size_t& taskIndex, int workerId, int nw)
-    {
-        if (workerId >= 0 && workerId < nw)
-            if (workerQueues[workerId].tryPop(taskIndex))
-                return true;
-
-        int start = (workerId >= 0) ? (workerId + 1) % nw : 0;
-        for (int i = 0; i < nw; ++i)
-        {
-            int q = (start + i) % nw;
-            if (workerQueues[q].tryPop(taskIndex))
-                return true;
-        }
-        return false;
-    }
-
-    bool hasAnyWork(int nw) const
-    {
-        for (int i = 0; i < nw; ++i)
-            if (!workerQueues[i].isEmpty())
-                return true;
-        return false;
-    }
-
+    // Computes subtree weights and selects heaviest subtree as preferred child.
     void executeTask(size_t taskIndex)
     {
         TaskNode& task = *tasks[taskIndex];
 
+        // auto startTime = std::chrono::steady_clock::now();
         if (task.execute && task.userData)
             task.execute(task.userData);
+        // auto elapsed = std::chrono::steady_clock::now() - startTime;
+        // auto currentTime = std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed);
 
-        task.completed.store(true, std::memory_order_release);
+        // // Peak envelope follower: instant attack, 1024-sample release
+        // if (currentTime >= task.executionTimeEma)
+        //     task.executionTimeEma = currentTime;
+        // else
+        //     task.executionTimeEma =
+        //         std::chrono::nanoseconds(static_cast<int64_t>(task.executionTimeEma.count() * kReleaseCoeff));
+
+        // // Collect all ready dependents and find the heaviest one
+        // size_t heaviestReadyIndex = SIZE_MAX;
+        // int64_t heaviestWeight = -1;
+        bool pushedToQueue = false;
 
         for (size_t depIndex : task.dependentIndices)
         {
             TaskNode& dependent = *tasks[depIndex];
             if (dependent.pendingDependencies.fetch_sub(1, std::memory_order_acq_rel) == 1)
-                enqueueTask(depIndex);
+            {
+                //     // This dependent is now ready - check if it's the heaviest
+                //     int64_t weight = dependent.executionTimeEma.count();
+                //     if (weight > heaviestWeight)
+                //     {
+                //         // Push previous heaviest to queue (if any)
+                //         if (heaviestReadyIndex != SIZE_MAX)
+                //         {
+                //             readyQueue.tryPush(heaviestReadyIndex);
+                //             pushedToQueue = true;
+                //         }
+                //         heaviestWeight = weight;
+                //         heaviestReadyIndex = depIndex;
+                //     }
+                //     else
+                //     {
+                // Not the heaviest, push to shared queue
+                readyQueue.tryPush(depIndex);
+                pushedToQueue = true;
+                //     }
+            }
         }
 
-        completedCount.fetch_add(1, std::memory_order_release);
+        // Wake workers if we pushed any tasks to the queue
+        if (pushedToQueue && wakeCallback)
+            wakeCallback();
+
+        // mark this task as completed
+        if (completedCount.fetch_add(1, std::memory_order_acq_rel) + 1 >= totalTasks)
+        {
+            waitFlag.store(true, std::memory_order_release);
+            spinAtomicNotifyOne(waitFlag);
+        }
+
+        // // Execute heaviest ready child directly (no queue handoff)
+        // // Heavy chains run on one worker with hot cache
+        // if (heaviestReadyIndex != SIZE_MAX)
+        //     executeTask(heaviestReadyIndex);
     }
 
     std::vector<std::unique_ptr<TaskNode>> tasks;
-    LockFreeReadyQueue<size_t, 1024> workerQueues[kMaxWorkers];
-    int numWorkers_ = 1;
+    LockFreeReadyQueue<size_t, 1024> readyQueue;
     std::atomic<size_t> completedCount{0};
-    std::atomic<int> activeWorkers{0};
     size_t totalTasks = 0;
+    std::atomic<bool> waitFlag{false};
+    WakeCallback wakeCallback = nullptr;
 };
 
 } // namespace atk

@@ -1,6 +1,6 @@
 #include "atkaudio.h"
 
-#include "AudioProcessorGraphMT/AudioThreadPool.h"
+#include "AudioProcessorGraphMT/RealtimeThreadPool.h"
 #include "JuceApp.h"
 #include "LookAndFeel.h"
 #include "MessagePump.h"
@@ -52,8 +52,8 @@ void atk::create()
     if (auto* audioServer = atk::AudioServer::getInstance())
         audioServer->initialize();
 
-    // Initialize AudioThreadPool synchronously so it's ready when filters are created
-    if (auto* threadPool = atk::AudioThreadPool::getInstance())
+    // Initialize RealtimeThreadPool synchronously so it's ready when filters are created
+    if (auto* threadPool = atk::RealtimeThreadPool::getInstance())
         threadPool->initialize();
 }
 
@@ -111,10 +111,10 @@ void atk::destroy()
         atk::AudioServer::deleteInstance();
     }
 
-    if (auto* threadPool = atk::AudioThreadPool::getInstance())
+    if (auto* threadPool = atk::RealtimeThreadPool::getInstance())
     {
         threadPool->shutdown();
-        atk::AudioThreadPool::deleteInstance();
+        atk::RealtimeThreadPool::deleteInstance();
     }
 
     juce::shutdownJuce_GUI();

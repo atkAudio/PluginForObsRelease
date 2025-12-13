@@ -80,16 +80,25 @@ public:
         }
 
         // Build DAG node connectivity from JUCE connections
+        // Only add unique node connections (not per-channel duplicates)
         for (const auto& conn : connections)
         {
             auto srcIt = dagNodes.find(conn.source.nodeID);
             auto dstIt = dagNodes.find(conn.destination.nodeID);
 
             if (srcIt != dagNodes.end())
-                srcIt->second.outputsTo.push_back(conn.destination.nodeID);
+            {
+                auto& outputs = srcIt->second.outputsTo;
+                if (std::find(outputs.begin(), outputs.end(), conn.destination.nodeID) == outputs.end())
+                    outputs.push_back(conn.destination.nodeID);
+            }
 
             if (dstIt != dagNodes.end())
-                dstIt->second.inputsFrom.push_back(conn.source.nodeID);
+            {
+                auto& inputs = dstIt->second.inputsFrom;
+                if (std::find(inputs.begin(), inputs.end(), conn.source.nodeID) == inputs.end())
+                    inputs.push_back(conn.source.nodeID);
+            }
         }
 
         // Use DagPartitioner to extract subgraphs (exclude I/O nodes)
@@ -151,6 +160,7 @@ public:
             return;
 
         // Build DAG nodes from connections (if not already built)
+        // Only add unique node connections (not per-channel duplicates)
         dagNodes.clear();
         for (const auto& conn : connections)
         {
@@ -158,9 +168,14 @@ public:
             dagNodes.try_emplace(conn.source.nodeID, conn.source.nodeID);
             dagNodes.try_emplace(conn.destination.nodeID, conn.destination.nodeID);
 
-            // Build connectivity
-            dagNodes[conn.source.nodeID].outputsTo.push_back(conn.destination.nodeID);
-            dagNodes[conn.destination.nodeID].inputsFrom.push_back(conn.source.nodeID);
+            // Build connectivity (deduplicated)
+            auto& outputs = dagNodes[conn.source.nodeID].outputsTo;
+            if (std::find(outputs.begin(), outputs.end(), conn.destination.nodeID) == outputs.end())
+                outputs.push_back(conn.destination.nodeID);
+
+            auto& inputs = dagNodes[conn.destination.nodeID].inputsFrom;
+            if (std::find(inputs.begin(), inputs.end(), conn.source.nodeID) == inputs.end())
+                inputs.push_back(conn.source.nodeID);
         }
 
         // Convert audio subgraphs to DAG subgraphs (reuse container)
