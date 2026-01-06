@@ -146,6 +146,7 @@ public:
 
     void pullSubscribedInputs(juce::AudioBuffer<float>& deviceBuffer, int numSamples, double sampleRate);
     void pushSubscribedOutputs(const juce::AudioBuffer<float>& deviceBuffer, int numSamples, double sampleRate);
+    void clearBuffers();
     void setSubscriptions(const AudioClientState& state);
     AudioClientState getSubscriptions() const;
 

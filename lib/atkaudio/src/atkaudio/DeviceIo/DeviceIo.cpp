@@ -29,6 +29,21 @@ struct atk::DeviceIo::Impl
 
     void process(float** buffer, int numChannels, int numSamples, double sampleRate)
     {
+        bool currentBypass = bypass.load(std::memory_order_acquire);
+        bool wasJustBypassed = wasBypassed.exchange(currentBypass, std::memory_order_acq_rel);
+
+        if (currentBypass)
+            return;
+
+        // Clear stale data from buffers when transitioning from bypassed to active
+        if (wasJustBypassed)
+        {
+            auto& toObsBuffer = deviceIoApp->getToObsBuffer();
+            auto& fromObsBuffer = deviceIoApp->getFromObsBuffer();
+            toObsBuffer.reset();
+            fromObsBuffer.reset();
+        }
+
         if (tempBuffer.getNumChannels() < numChannels || tempBuffer.getNumSamples() < numSamples)
             tempBuffer.setSize(numChannels, numSamples, false, false, true);
 
@@ -207,11 +222,35 @@ private:
     bool delayPrepared = false;
 
     bool mixInput = false;
+    std::atomic<bool> bypass{false};
+    std::atomic<bool> wasBypassed{false};
+
+public:
+    void setBypass(bool v)
+    {
+        bypass.store(v, std::memory_order_release);
+    }
+
+    bool isBypassed() const
+    {
+        return bypass.load(std::memory_order_acquire);
+    }
 };
 
 void atk::DeviceIo::process(float** buffer, int numChannels, int numSamples, double sampleRate)
 {
     pImpl->process(buffer, numChannels, numSamples, sampleRate);
+}
+
+void atk::DeviceIo::setBypass(bool shouldBypass)
+{
+    if (pImpl)
+        pImpl->setBypass(shouldBypass);
+}
+
+bool atk::DeviceIo::isBypassed() const
+{
+    return pImpl ? pImpl->isBypassed() : false;
 }
 
 void atk::DeviceIo::setMixInput(bool mixInput)

@@ -31,6 +31,8 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
     std::vector<juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear>> outputDelayLines;
     std::vector<juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>> outputDelaySmooth;
     bool delayPrepared = false;
+    std::atomic<bool> bypass{false};
+    std::atomic<bool> wasBypassed{false};
 
     enum class UpdateType
     {
@@ -194,6 +196,16 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
 
     void process(float** buffer, int numChannels, int numSamples, double sampleRate)
     {
+        bool currentBypass = bypass.load(std::memory_order_acquire);
+        bool wasJustBypassed = wasBypassed.exchange(currentBypass, std::memory_order_acq_rel);
+
+        // When bypassed, leave buffer as-is and skip IO routing
+        if (currentBypass)
+            return;
+
+        // Clear stale data from AudioClient buffers when transitioning from bypassed to active
+        if (wasJustBypassed)
+            audioClient.clearBuffers();
         bool needsReconfiguration =
             preparedNumChannels != numChannels || preparedNumSamples < numSamples || preparedSampleRate != sampleRate;
 
@@ -541,6 +553,17 @@ void atk::DeviceIo2::process(float** buffer, int numChannels, int numSamples, do
 {
     if (pImpl)
         pImpl->process(buffer, numChannels, numSamples, sampleRate);
+}
+
+void atk::DeviceIo2::setBypass(bool shouldBypass)
+{
+    if (pImpl)
+        pImpl->bypass.store(shouldBypass, std::memory_order_release);
+}
+
+bool atk::DeviceIo2::isBypassed() const
+{
+    return pImpl ? pImpl->bypass.load(std::memory_order_acquire) : false;
 }
 
 void atk::DeviceIo2::setOutputDelay(float delayMs)

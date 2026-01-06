@@ -187,6 +187,9 @@ static struct obs_audio_data* deviceio2_filter(void* data, struct obs_audio_data
         for (size_t j = 0; j < frames; j++)
             adata[i][j] *= outputGain;
 
+    if (obs_source_t* parent = obs_filter_get_parent(adio->context))
+        adio->deviceIo2.setBypass(!obs_source_active(parent));
+
     adio->deviceIo2.process(adata, channels, frames, adio->sampleRate);
 
     auto inputGain = adio->inputGain.load(std::memory_order_acquire);

@@ -194,6 +194,9 @@ static struct obs_audio_data* devio_filter(void* data, struct obs_audio_data* au
         for (size_t j = 0; j < frames; j++)
             adata[i][j] *= outputGain;
 
+    if (obs_source_t* parent = obs_filter_get_parent(adio->context))
+        adio->deviceIo.setBypass(!obs_source_active(parent));
+
     adio->deviceIo.setMixInput(adio->mixInput.load(std::memory_order_acquire));
     adio->deviceIo.process(adata, channels, frames, adio->sampleRate);
 

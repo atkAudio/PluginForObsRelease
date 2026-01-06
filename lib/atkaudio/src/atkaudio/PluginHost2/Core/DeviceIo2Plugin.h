@@ -82,6 +82,9 @@ public:
         if (!deviceIo2)
             return;
 
+        if (deviceIo2->isBypassed())
+            return;
+
         // Convert JUCE buffer to raw pointer format expected by DeviceIo2
         const int numChannels = buffer.getNumChannels();
         const int numSamples = buffer.getNumSamples();

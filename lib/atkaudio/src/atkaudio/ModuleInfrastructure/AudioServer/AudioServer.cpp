@@ -419,6 +419,23 @@ void AudioClient::pushSubscribedOutputs(const juce::AudioBuffer<float>& deviceBu
     }
 }
 
+void AudioClient::clearBuffers()
+{
+    auto snapshot = bufferSnapshot.load(std::memory_order_acquire);
+    if (!snapshot)
+        return;
+
+    // Clear all input buffers
+    for (const auto& bufRef : snapshot->inputBuffers)
+        if (bufRef.buffer)
+            bufRef.buffer->reset();
+
+    // Clear all output buffers
+    for (const auto& bufRef : snapshot->outputBuffers)
+        if (bufRef.buffer)
+            bufRef.buffer->reset();
+}
+
 void AudioClient::setSubscriptions(const AudioClientState& state)
 {
     if (auto* server = AudioServer::getInstanceWithoutCreating())

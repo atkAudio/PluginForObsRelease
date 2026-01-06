@@ -15,6 +15,10 @@ public:
 
     void process(float** buffer, int numChannels, int numSamples, double sampleRate) override;
 
+    // When bypassed, DeviceIo2 does no processing and leaves the buffer untouched
+    void setBypass(bool shouldBypass);
+    bool isBypassed() const;
+
     void setOutputDelay(float delayMs);
     float getOutputDelay() const;
 

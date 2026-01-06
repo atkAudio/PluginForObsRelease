@@ -14,6 +14,10 @@ public:
 
     void process(float** buffer, int numChannels, int numSamples, double sampleRate) override;
 
+    // Bypass processing when filter should be inactive (e.g., not in scene)
+    void setBypass(bool shouldBypass);
+    bool isBypassed() const;
+
     void setMixInput(bool mixInput);
     void setOutputDelay(float delayMs);
     float getOutputDelay() const;
