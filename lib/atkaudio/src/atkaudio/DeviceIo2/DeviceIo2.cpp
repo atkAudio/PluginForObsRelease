@@ -33,6 +33,8 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
     bool delayPrepared = false;
     std::atomic<bool> bypass{false};
     std::atomic<bool> wasBypassed{false};
+    int fadeInSamplesRemaining{0};
+    int fadeInTotalSamples{0};
 
     enum class UpdateType
     {
@@ -205,7 +207,28 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
 
         // Clear stale data from AudioClient buffers when transitioning from bypassed to active
         if (wasJustBypassed)
+        {
             audioClient.clearBuffers();
+            // Start fade-in over one buffer
+            fadeInSamplesRemaining = numSamples;
+            fadeInTotalSamples = numSamples;
+        }
+
+        // Apply fade-in ramp if active
+        if (fadeInSamplesRemaining > 0)
+        {
+            for (int ch = 0; ch < numChannels; ++ch)
+            {
+                auto* channelData = buffer[ch];
+                int fadeStart = fadeInTotalSamples - fadeInSamplesRemaining;
+                for (int i = 0; i < numSamples && fadeInSamplesRemaining > 0; ++i)
+                {
+                    float gain = static_cast<float>(fadeStart + i + 1) / static_cast<float>(fadeInTotalSamples);
+                    channelData[i] *= gain;
+                }
+            }
+            fadeInSamplesRemaining = std::max(0, fadeInSamplesRemaining - numSamples);
+        }
         bool needsReconfiguration =
             preparedNumChannels != numChannels || preparedNumSamples < numSamples || preparedSampleRate != sampleRate;
 

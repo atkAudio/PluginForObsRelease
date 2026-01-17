@@ -191,7 +191,6 @@ private:
 
     // OLD: Keep for backward compatibility with VirtualAudioIODevice
     AudioDeviceManager deviceManager;
-    juce::String lastDeviceName; // Track device changes
 
     AudioPluginFormatManager formatManager;
 

@@ -150,11 +150,6 @@ MainHostWindow::MainHostWindow()
     );
 
     knownPluginList.addChangeListener(this);
-    deviceManager.addChangeListener(this);
-
-    // Track current device name
-    if (auto* device = deviceManager.getCurrentAudioDevice())
-        lastDeviceName = device->getName();
 
     if (auto* g = graphHolder->graph.get())
         g->addChangeListener(this);
@@ -188,7 +183,6 @@ MainHostWindow::~MainHostWindow()
 
     pluginListWindow = nullptr;
     knownPluginList.removeChangeListener(this);
-    deviceManager.removeChangeListener(this);
 
     if (auto* g = graphHolder->graph.get())
         g->removeChangeListener(this);
@@ -238,24 +232,6 @@ void MainHostWindow::changeListenerCallback(ChangeBroadcaster* changed)
     {
         menuItemsChanged();
         atk::SharedPluginList::getInstance()->savePluginList(knownPluginList);
-    }
-    else if (changed == &deviceManager)
-    {
-        auto* device = deviceManager.getCurrentAudioDevice();
-        juce::String currentDeviceName = device ? device->getName() : juce::String();
-
-        if (currentDeviceName != lastDeviceName)
-        {
-            lastDeviceName = currentDeviceName;
-
-            if (device != nullptr)
-            {
-                auto setup = deviceManager.getAudioDeviceSetup();
-                setup.useDefaultInputChannels = true;
-                setup.useDefaultOutputChannels = true;
-                deviceManager.setAudioDeviceSetup(setup, true);
-            }
-        }
     }
     else if (graphHolder != nullptr && changed == graphHolder->graph.get())
     {
