@@ -32,9 +32,8 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
     std::vector<juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>> outputDelaySmooth;
     bool delayPrepared = false;
     std::atomic<bool> bypass{false};
-    std::atomic<bool> wasBypassed{false};
-    int fadeInSamplesRemaining{0};
-    int fadeInTotalSamples{0};
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> fadeGain{1.0f};
+    static constexpr double fadeDurationSeconds = 0.5;
 
     enum class UpdateType
     {
@@ -199,35 +198,33 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
     void process(float** buffer, int numChannels, int numSamples, double sampleRate)
     {
         bool currentBypass = bypass.load(std::memory_order_acquire);
-        bool wasJustBypassed = wasBypassed.exchange(currentBypass, std::memory_order_acq_rel);
+        float targetGain = currentBypass ? 0.0f : 1.0f;
 
-        // When bypassed, leave buffer as-is and skip IO routing
-        if (currentBypass)
-            return;
-
-        // Clear stale data from AudioClient buffers when transitioning from bypassed to active
-        if (wasJustBypassed)
+        // Update smoother if target changed
+        if (fadeGain.getTargetValue() != targetGain)
         {
-            audioClient.clearBuffers();
-            // Start fade-in over one buffer
-            fadeInSamplesRemaining = numSamples;
-            fadeInTotalSamples = numSamples;
+            fadeGain.reset(sampleRate, fadeDurationSeconds);
+
+            // Clear buffers when transitioning from bypass to active
+            if (!currentBypass)
+                audioClient.clearBuffers();
+
+            fadeGain.setTargetValue(targetGain);
         }
 
-        // Apply fade-in ramp if active
-        if (fadeInSamplesRemaining > 0)
+        // Skip processing if fully bypassed
+        if (currentBypass && !fadeGain.isSmoothing())
+            return;
+
+        // Apply fade gain
+        if (fadeGain.isSmoothing())
         {
-            for (int ch = 0; ch < numChannels; ++ch)
+            for (int i = 0; i < numSamples; ++i)
             {
-                auto* channelData = buffer[ch];
-                int fadeStart = fadeInTotalSamples - fadeInSamplesRemaining;
-                for (int i = 0; i < numSamples && fadeInSamplesRemaining > 0; ++i)
-                {
-                    float gain = static_cast<float>(fadeStart + i + 1) / static_cast<float>(fadeInTotalSamples);
-                    channelData[i] *= gain;
-                }
+                float gain = fadeGain.getNextValue();
+                for (int ch = 0; ch < numChannels; ++ch)
+                    buffer[ch][i] *= gain;
             }
-            fadeInSamplesRemaining = std::max(0, fadeInSamplesRemaining - numSamples);
         }
         bool needsReconfiguration =
             preparedNumChannels != numChannels || preparedNumSamples < numSamples || preparedSampleRate != sampleRate;

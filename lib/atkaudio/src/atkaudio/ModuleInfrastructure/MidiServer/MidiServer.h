@@ -211,6 +211,7 @@ private:
     std::unordered_map<void*, ClientInfo> clients;
     AtomicSharedPtr<DeviceSnapshot> activeSnapshot{std::make_shared<DeviceSnapshot>()};
     juce::HashMap<juce::String, juce::MidiOutput*> outputDevices;
+    std::unordered_map<juce::String, juce::String> enabledInputDevices; // name -> identifier
     bool initialized = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MidiServer)

@@ -151,13 +151,8 @@ void MidiServer::initialize()
         return;
     }
 
-    auto midiInputs = juce::MidiInput::getAvailableDevices();
-    for (const auto& device : midiInputs)
-    {
-        deviceManager.setMidiInputDeviceEnabled(device.identifier, true);
-        deviceManager.addMidiInputDeviceCallback(device.identifier, this);
-        DBG("[MidiServer] Enabled MIDI input: " + device.name);
-    }
+    // MIDI inputs are now opened on-demand based on client subscriptions
+    // See updateMidiDeviceSubscriptions()
 
     startTimer(10);
     initialized = true;
@@ -179,14 +174,16 @@ void MidiServer::shutdown()
         for (juce::HashMap<juce::String, juce::MidiOutput*>::Iterator it(outputDevices); it.next();)
             delete it.getValue();
         outputDevices.clear();
-        clients.clear();
-    }
 
-    auto midiInputs = juce::MidiInput::getAvailableDevices();
-    for (const auto& device : midiInputs)
-    {
-        deviceManager.setMidiInputDeviceEnabled(device.identifier, false);
-        deviceManager.removeMidiInputDeviceCallback(device.identifier, this);
+        // Disable all enabled MIDI inputs
+        for (const auto& [name, identifier] : enabledInputDevices)
+        {
+            deviceManager.setMidiInputDeviceEnabled(identifier, false);
+            deviceManager.removeMidiInputDeviceCallback(identifier, this);
+        }
+        enabledInputDevices.clear();
+
+        clients.clear();
     }
 
     deviceManager.closeAudioDevice();
@@ -391,23 +388,58 @@ void MidiServer::rebuildClientSnapshot()
 
 void MidiServer::updateMidiDeviceSubscriptions()
 {
-    juce::StringArray neededOutputs;
-    for (auto& [clientPtr, info] : clients)
+    // Collect all needed devices from client subscriptions
+    juce::StringArray neededInputs, neededOutputs;
+    for (const auto& [clientPtr, info] : clients)
+    {
+        for (const auto& device : info.state.subscribedInputDevices)
+            neededInputs.addIfNotAlreadyThere(device);
         for (const auto& device : info.state.subscribedOutputDevices)
             neededOutputs.addIfNotAlreadyThere(device);
+    }
 
-    juce::Array<juce::String> devicesToRemove;
+    // Build name->identifier map for available inputs
+    std::unordered_map<juce::String, juce::String> availableInputMap;
+    for (const auto& device : juce::MidiInput::getAvailableDevices())
+        availableInputMap[device.name] = device.identifier;
+
+    // Enable newly needed input devices
+    for (const auto& name : neededInputs)
+    {
+        if (enabledInputDevices.count(name) == 0)
+        {
+            auto it = availableInputMap.find(name);
+            if (it != availableInputMap.end())
+            {
+                deviceManager.setMidiInputDeviceEnabled(it->second, true);
+                deviceManager.addMidiInputDeviceCallback(it->second, this);
+                enabledInputDevices[name] = it->second;
+                DBG("[MidiServer] Enabled MIDI input: " + name);
+            }
+        }
+    }
+
+    // Disable input devices no longer needed
+    for (auto it = enabledInputDevices.begin(); it != enabledInputDevices.end();)
+        if (!neededInputs.contains(it->first))
+        {
+            deviceManager.setMidiInputDeviceEnabled(it->second, false);
+            deviceManager.removeMidiInputDeviceCallback(it->second, this);
+            DBG("[MidiServer] Disabled MIDI input: " + it->first);
+            it = enabledInputDevices.erase(it);
+        }
+        else
+            ++it;
+
+    // Close output devices no longer needed (they're opened lazily in timerCallback)
     for (juce::HashMap<juce::String, juce::MidiOutput*>::Iterator it(outputDevices); it.next();)
     {
         if (!neededOutputs.contains(it.getKey()))
         {
             delete it.getValue();
-            devicesToRemove.add(it.getKey());
+            outputDevices.remove(it.getKey());
         }
     }
-
-    for (const auto& device : devicesToRemove)
-        outputDevices.remove(device);
 }
 
 } // namespace atk

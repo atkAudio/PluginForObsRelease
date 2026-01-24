@@ -3,6 +3,7 @@
 #include "../../FifoBuffer2.h"
 
 #include <juce_audio_utils/juce_audio_utils.h>
+#include <mutex>
 #include <obs-frontend-api.h>
 #include <obs-module.h>
 #include <string>
@@ -43,6 +44,8 @@ public:
     {
         if (!sourceConnected.load(std::memory_order_acquire))
             scheduleHelperSourceConnection();
+
+        std::lock_guard<std::mutex> lock(processingMutex);
 
         if (!privateSource)
             return;
@@ -151,12 +154,20 @@ private:
     obs_source_audio audioSourceData;
     std::atomic<bool> connectionScheduled{false};
     std::atomic<bool> sourceConnected{false};
+    mutable std::mutex processingMutex;
     bool usingFallbackSource = false;
     juce::String originalStateUuid;
 
     static void frontendEventCallback(enum obs_frontend_event event, void* private_data)
     {
         auto* self = static_cast<ObsOutputAudioProcessor*>(private_data);
+
+        if (event == OBS_FRONTEND_EVENT_EXIT || event == OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN)
+        {
+            self->connectionScheduled.store(false, std::memory_order_release);
+            self->releaseHelperSource();
+            return;
+        }
 
         if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING)
         {
@@ -180,7 +191,7 @@ private:
             obs_source_release(originalObsSource);
 
             self->apvts.state.setProperty("helperSourceUuid", self->originalStateUuid, nullptr);
-            self->destroyFallbackSource();
+            self->releaseHelperSource(true);
             self->pairWithHelperByUuid(self->originalStateUuid.toStdString());
         }
     }
@@ -229,23 +240,15 @@ private:
         );
     }
 
-    void releaseHelperSource()
+    void releaseHelperSource(bool removeFromScene = false)
     {
+        std::lock_guard<std::mutex> lock(processingMutex);
+
         if (!privateSource)
             return;
 
-        obs_source_release(privateSource);
-        privateSource = nullptr;
-        sourceConnected.store(false, std::memory_order_release);
-        usingFallbackSource = false;
-    }
-
-    void destroyFallbackSource()
-    {
-        if (!privateSource)
-            return;
-
-        obs_source_remove(privateSource);
+        if (removeFromScene)
+            obs_source_remove(privateSource);
         obs_source_release(privateSource);
         privateSource = nullptr;
         sourceConnected.store(false, std::memory_order_release);
@@ -281,47 +284,59 @@ private:
 
     void pairWithHelperByUuid(const std::string& uuid)
     {
-        releaseHelperSource();
-
         obs_source_t* foundSource = findSourceByUuid(uuid);
+
+        std::lock_guard<std::mutex> lock(processingMutex);
+
+        if (privateSource)
+        {
+            obs_source_release(privateSource);
+            privateSource = nullptr;
+        }
 
         if (foundSource)
         {
             privateSource = foundSource;
             usingFallbackSource = false;
             sourceConnected.store(true, std::memory_order_release);
+            return;
         }
-        else
-        {
-            createNewHelperSource();
-        }
+
+        createFallbackSourceLocked();
     }
 
     void createNewHelperSource()
     {
-        privateSource = obs_source_create("atkaudio_ph2helper", "Ph2Out", nullptr, nullptr);
-
-        if (privateSource)
-        {
-            obs_source_set_audio_active(privateSource, true);
-            obs_source_set_enabled(privateSource, true);
-            usingFallbackSource = true;
-            sourceConnected.store(true, std::memory_order_release);
-
-            auto* currentScene = obs_frontend_get_current_scene();
-            if (currentScene)
-            {
-                auto* sceneSource = obs_scene_from_source(currentScene);
-                if (sceneSource)
-                    obs_scene_add(sceneSource, privateSource);
-                obs_source_release(currentScene);
-            }
-
-            const char* uuid = obs_source_get_uuid(privateSource);
-            if (uuid && uuid[0] != '\0')
-                apvts.state.setProperty("helperSourceUuid", juce::String(uuid), nullptr);
-        }
+        std::lock_guard<std::mutex> lock(processingMutex);
+        createFallbackSourceLocked();
     }
+
+    // Must be called with processingMutex held
+    void createFallbackSourceLocked()
+    {
+        privateSource = obs_source_create("atkaudio_ph2helper", "Ph2Out", nullptr, nullptr);
+        if (!privateSource)
+            return;
+
+        obs_source_set_audio_active(privateSource, true);
+        obs_source_set_enabled(privateSource, true);
+        usingFallbackSource = true;
+        sourceConnected.store(true, std::memory_order_release);
+
+        auto* currentScene = obs_frontend_get_current_scene();
+        if (currentScene)
+        {
+            auto* sceneSource = obs_scene_from_source(currentScene);
+            if (sceneSource)
+                obs_scene_add(sceneSource, privateSource);
+            obs_source_release(currentScene);
+        }
+
+        const char* sourceUuid = obs_source_get_uuid(privateSource);
+        if (sourceUuid && sourceUuid[0] != '\0')
+            apvts.state.setProperty("helperSourceUuid", juce::String(sourceUuid), nullptr);
+    }
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ObsOutputAudioProcessor)
 };
 
