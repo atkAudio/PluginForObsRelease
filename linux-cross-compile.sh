@@ -51,6 +51,10 @@ git config --global --add safe.directory /workspace
 if [ "${CROSS_COMPILE}" = "true" ]; then
   echo "=== Setting up cross-compilation for ${TARGET_ARCH} ==="
   
+  # Detect Ubuntu codename dynamically
+  UBUNTU_CODENAME=$(. /etc/os-release && echo "$VERSION_CODENAME")
+  echo "Detected Ubuntu codename: ${UBUNTU_CODENAME}"
+  
   # Restrict default sources to amd64 (Ubuntu 24.04+ DEB822 format)
   for sources_file in /etc/apt/sources.list.d/*.sources; do
     [ -f "$sources_file" ] && sed -i '/^Types: deb$/a Architectures: amd64' "$sources_file"
@@ -62,7 +66,7 @@ if [ "${CROSS_COMPILE}" = "true" ]; then
 Types: deb
 Architectures: ${DEBIAN_ARCH}
 URIs: http://ports.ubuntu.com/ubuntu-ports
-Suites: noble noble-updates noble-backports noble-security
+Suites: ${UBUNTU_CODENAME} ${UBUNTU_CODENAME}-updates ${UBUNTU_CODENAME}-backports ${UBUNTU_CODENAME}-security
 Components: main restricted universe multiverse
 Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 EOF
@@ -133,6 +137,8 @@ if [ "${CROSS_COMPILE}" = "true" ]; then
   export PKG_CONFIG_LIBDIR="/usr/lib/${CROSS_TRIPLE}/pkgconfig:/usr/share/pkgconfig"
   
   # Create CMake toolchain file (based on ReaPack's approach)
+  # NOTE: CMAKE_SYSTEM_PROCESSOR is hardcoded to arm64 as that's currently the only
+  # cross-compile target. If adding other architectures, use ${CMAKE_SYSTEM_PROCESSOR} instead.
   cat > /tmp/toolchain.cmake <<EOF
 set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR arm64)

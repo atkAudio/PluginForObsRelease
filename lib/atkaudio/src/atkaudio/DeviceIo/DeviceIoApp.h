@@ -133,7 +133,13 @@ public:
             toObsBuffer.write(inputChannelData, numInputChannels, numSamples, currentSampleRate);
 
         if (numOutputChannels > 0 && outputChannelData != nullptr)
+        {
+            // Clear output first to ensure silence if read fails
+            for (int ch = 0; ch < numOutputChannels; ++ch)
+                juce::FloatVectorOperations::clear(outputChannelData[ch], numSamples);
+
             fromObsBuffer.read(outputChannelData, numOutputChannels, numSamples, currentSampleRate);
+        }
     }
 
     void audioDeviceAboutToStart(juce::AudioIODevice* device) override
