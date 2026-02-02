@@ -35,7 +35,7 @@ struct atk::DeviceIo::Impl
         // Update smoother if sample rate or target changed
         if (fadeGain.getTargetValue() != targetGain)
         {
-            fadeGain.reset(sampleRate, fadeDurationSeconds);
+            fadeGain.reset(sampleRate, fadeDurationSeconds.load(std::memory_order_acquire));
 
             // Clear buffers when transitioning from bypass to active
             if (!currentBypass)
@@ -138,9 +138,20 @@ struct atk::DeviceIo::Impl
         juce::XmlElement state("DEVICEIO_STATE");
         state.setAttribute("outputDelayMs", outputDelayMs.load(std::memory_order_acquire));
 
-        auto deviceState = deviceIoApp->getDeviceManager().createStateXml();
-        if (deviceState)
-            state.addChildElement(new juce::XmlElement(*deviceState));
+        // Use getAudioDeviceSetup() instead of createStateXml() to ensure
+        // channel configuration is always captured correctly
+        auto& dm = deviceIoApp->getDeviceManager();
+        auto setup = dm.getAudioDeviceSetup();
+
+        auto* deviceSetup = new juce::XmlElement("DEVICESETUP");
+        deviceSetup->setAttribute("deviceType", dm.getCurrentAudioDeviceType());
+        deviceSetup->setAttribute("audioOutputDeviceName", setup.outputDeviceName);
+        deviceSetup->setAttribute("audioInputDeviceName", setup.inputDeviceName);
+        deviceSetup->setAttribute("audioDeviceRate", setup.sampleRate);
+        deviceSetup->setAttribute("audioDeviceBufferSize", setup.bufferSize);
+        deviceSetup->setAttribute("audioDeviceInChans", setup.inputChannels.toString(2));
+        deviceSetup->setAttribute("audioDeviceOutChans", setup.outputChannels.toString(2));
+        state.addChildElement(deviceSetup);
 
         s = state.toString().toStdString();
     }
@@ -243,7 +254,7 @@ private:
     bool mixInput = false;
     std::atomic<bool> bypass{false};
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> fadeGain{1.0f};
-    static constexpr double fadeDurationSeconds = 0.5;
+    std::atomic<double> fadeDurationSeconds{0.5};
 
 public:
     void setBypass(bool v)
@@ -254,6 +265,11 @@ public:
     bool isBypassed() const
     {
         return bypass.load(std::memory_order_acquire);
+    }
+
+    void setFadeTime(double seconds)
+    {
+        fadeDurationSeconds.store(seconds, std::memory_order_release);
     }
 };
 
@@ -271,6 +287,12 @@ void atk::DeviceIo::setBypass(bool shouldBypass)
 bool atk::DeviceIo::isBypassed() const
 {
     return pImpl ? pImpl->isBypassed() : false;
+}
+
+void atk::DeviceIo::setFadeTime(double seconds)
+{
+    if (pImpl)
+        pImpl->setFadeTime(seconds);
 }
 
 void atk::DeviceIo::setMixInput(bool mixInput)

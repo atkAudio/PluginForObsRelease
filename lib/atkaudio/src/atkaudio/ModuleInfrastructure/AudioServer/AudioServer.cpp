@@ -1539,7 +1539,8 @@ void AudioServer::updateClientSubscriptions(void* clientId, const AudioClientSta
         std::vector<ChannelSubscription> newOutput =
             (newOutputIt != newOutputSubs.end()) ? newOutputIt->second : std::vector<ChannelSubscription>{};
 
-        // ATOMIC: Remove old + Add new in single locked operation
+        // ATOMIC: Update subscriptions in single locked operation
+        // IMPORTANT: Preserve existing SyncBuffers to avoid audio discontinuity
         {
             std::unique_lock<std::mutex> handlerLock(handler->clientBuffersMutex);
             bool snapshotDirty = false;
@@ -1547,20 +1548,33 @@ void AudioServer::updateClientSubscriptions(void* clientId, const AudioClientSta
             auto bufferIt = handler->clientBuffers.find(clientId);
             if (bufferIt != handler->clientBuffers.end())
             {
-                // Clear old subscriptions
-                bufferIt->second.inputBuffer.reset();
-                bufferIt->second.outputBuffer.reset();
-                bufferIt->second.inputMappings.clear();
-                bufferIt->second.outputMappings.clear();
-
-                snapshotDirty = true;
-
                 // If no new subscriptions for this device, remove client entry entirely
                 if (newInput.empty() && newOutput.empty())
                 {
+                    bufferIt->second.inputBuffer.reset();
+                    bufferIt->second.outputBuffer.reset();
+                    bufferIt->second.inputMappings.clear();
+                    bufferIt->second.outputMappings.clear();
                     handler->clientBuffers.erase(bufferIt);
                     handler->rebuildSnapshotLocked();
                     continue;
+                }
+
+                // Preserve existing SyncBuffers - only clear mappings
+                // This prevents audio discontinuity when adding/removing channels
+                bufferIt->second.inputMappings.clear();
+                bufferIt->second.outputMappings.clear();
+
+                // Only reset buffers if subscription type is being removed entirely
+                if (newInput.empty() && bufferIt->second.inputBuffer)
+                {
+                    bufferIt->second.inputBuffer.reset();
+                    snapshotDirty = true;
+                }
+                if (newOutput.empty() && bufferIt->second.outputBuffer)
+                {
+                    bufferIt->second.outputBuffer.reset();
+                    snapshotDirty = true;
                 }
             }
             else if (newInput.empty() && newOutput.empty())

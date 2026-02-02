@@ -1,5 +1,6 @@
 #include <atkaudio/DeviceIo2/DeviceIo2.h>
 #include <atomic>
+#include <obs-frontend-api.h>
 #include <obs-module.h>
 
 #define FILTER_NAME "atkAudio DeviceIo2"
@@ -16,6 +17,8 @@
 #define OG_NAME "Output Gain"
 #define FOLLOW_ID "follow_source_volume"
 #define FOLLOW_NAME "Follow Source Volume/Mute"
+#define FOLLOW_SCENE_ID "follow_scene"
+#define FOLLOW_SCENE_NAME "Follow Scene"
 #define OUTPUT_DELAY_ID "output_delay"
 #define OUTPUT_DELAY_NAME "Output Delay"
 
@@ -28,9 +31,12 @@ struct adio2_data
     double sampleRate = 0.0;
 
     std::atomic_bool followSourceVolume = false;
+    std::atomic_bool followScene = true;
     std::atomic<float> inputGain = 1.0f;
     std::atomic<float> outputGain = 1.0f;
     std::atomic<float> outputDelay = 0.0f;
+    std::atomic<double> fadeTimeSeconds = 0.5;
+    std::atomic_bool shouldBypass = false;
 
     atk::DeviceIo2 deviceIo2;
 
@@ -69,6 +75,7 @@ static void deviceio2_update(void* data, obs_data_t* s)
     adio->channels = (int)audio_output_get_channels(obs_get_audio());
 
     adio->followSourceVolume.store(obs_data_get_bool(s, FOLLOW_ID), std::memory_order_release);
+    adio->followScene.store(obs_data_get_bool(s, FOLLOW_SCENE_ID), std::memory_order_release);
 
     auto inputGain = (float)obs_data_get_double(s, IG_ID);
     inputGain = obs_db_to_mul(inputGain);
@@ -111,6 +118,7 @@ static void* deviceio2_create(obs_data_t* settings, obs_source_t* filter)
 static void deviceio2_defaults(obs_data_t* s)
 {
     obs_data_set_default_bool(s, FOLLOW_ID, false);
+    obs_data_set_default_bool(s, FOLLOW_SCENE_ID, true);
     obs_data_set_default_double(s, IG_ID, 0.0);
     obs_data_set_default_double(s, OG_ID, 0.0);
     obs_data_set_default_double(s, OUTPUT_DELAY_ID, 0.0);
@@ -156,6 +164,8 @@ static obs_properties_t* deviceio2_properties(void* data)
 
     obs_properties_add_bool(props, propText.c_str(), textLabel.c_str());
 
+    obs_properties_add_bool(props, FOLLOW_SCENE_ID, FOLLOW_SCENE_NAME);
+
     propText = IG_ID;
     textLabel = IG_NAME;
     obs_property_t* p = obs_properties_add_float_slider(props, propText.c_str(), textLabel.c_str(), -30.0, 30.0, 0.1);
@@ -187,8 +197,15 @@ static struct obs_audio_data* deviceio2_filter(void* data, struct obs_audio_data
         for (size_t j = 0; j < frames; j++)
             adata[i][j] *= outputGain;
 
-    if (obs_source_t* parent = obs_filter_get_parent(adio->context))
-        adio->deviceIo2.setBypass(!obs_source_active(parent));
+    if (adio->followScene.load(std::memory_order_acquire))
+    {
+        adio->deviceIo2.setFadeTime(adio->fadeTimeSeconds.load(std::memory_order_acquire));
+        adio->deviceIo2.setBypass(adio->shouldBypass.load(std::memory_order_acquire));
+    }
+    else
+    {
+        adio->deviceIo2.setBypass(false);
+    }
 
     adio->deviceIo2.process(adata, channels, frames, adio->sampleRate);
 
@@ -214,24 +231,63 @@ static void tick(void* data, float seconds)
     struct adio2_data* adio = (struct adio2_data*)data;
     auto* settings = adio->settings;
 
+    // Cache transition duration from frontend API (called on main thread)
+    if (adio->followScene.load(std::memory_order_acquire))
+    {
+        int transitionDurationMs = obs_frontend_get_transition_duration();
+        adio->fadeTimeSeconds.store(transitionDurationMs / 1000.0, std::memory_order_release);
+    }
+
+    // Compute bypass state on main thread for audio thread to read
+    obs_source_t* parent = obs_filter_get_parent(adio->context);
+
+    bool bypass = false;
+    if (adio->followScene.load(std::memory_order_acquire) && parent)
+    {
+        bypass = !obs_source_active(parent);
+
+        // Early fade-out: detect if parent is fading OUT during an active transition
+        constexpr float kTransitionEpsilon = 0.001f;
+        obs_source_t* transition = obs_frontend_get_current_transition();
+        if (transition != nullptr)
+        {
+            float transitionTime = obs_transition_get_time(transition);
+            if (transitionTime > kTransitionEpsilon)
+            {
+                // Transition is in progress - check if parent is in destination scene
+                obs_source_t* destSceneSrc = obs_transition_get_source(transition, OBS_TRANSITION_SOURCE_B);
+                if (destSceneSrc != nullptr)
+                {
+                    obs_scene_t* destScene = obs_scene_from_source(destSceneSrc);
+                    if (destScene != nullptr)
+                    {
+                        const char* parentName = obs_source_get_name(parent);
+                        obs_sceneitem_t* item = obs_scene_find_source(destScene, parentName);
+                        if (item == nullptr)
+                        {
+                            // Parent not in destination scene - fade out now
+                            bypass = true;
+                        }
+                    }
+                    obs_source_release(destSceneSrc);
+                }
+            }
+            obs_source_release(transition);
+        }
+    }
+    adio->shouldBypass.store(bypass, std::memory_order_release);
+
     auto outputGain = adio->outputGain.load(std::memory_order_acquire);
     if (settings)
         outputGain = (float)obs_data_get_double(settings, OG_ID);
     outputGain = obs_db_to_mul(outputGain);
 
-    if (adio->followSourceVolume.load(std::memory_order_acquire))
+    if (adio->followSourceVolume.load(std::memory_order_acquire) && parent)
     {
-        obs_source_t* parent = obs_filter_get_parent(adio->context);
-        if (parent)
-        {
-            auto fader = obs_source_get_volume(parent); // already in linear scale
-
-            auto isMuted = obs_source_muted(parent);
-            if (isMuted)
-                fader = 0.0f;
-
-            outputGain *= fader;
-        }
+        auto fader = obs_source_get_volume(parent);
+        if (obs_source_muted(parent))
+            fader = 0.0f;
+        outputGain *= fader;
     }
 
     adio->outputGain.store(outputGain, std::memory_order_release);

@@ -215,16 +215,9 @@ elseif(APPLE)
             COMPONENT plugin
     )
 
-    # Install scanner inside the bundle (for proper code signing)
-    if(TARGET atkaudio-pluginforobs_scanner)
-        install(
-            TARGETS
-                atkaudio-pluginforobs_scanner
-            RUNTIME
-                DESTINATION "${TARGET_NAME}.plugin/Contents/MacOS"
-                COMPONENT plugin
-        )
-    endif()
+    # Note: Scanner is copied into bundle during build (POST_BUILD in scanner/CMakeLists.txt)
+    # This ensures it's included in the bundle before CPack packages it.
+    # Do NOT install scanner separately here - it would be redundant and already in the bundle.
 
     # macOS: data files are installed inside bundle Resources/ via MACOSX_PACKAGE_LOCATION
     # No separate data directory needed (unlike Windows/Linux)

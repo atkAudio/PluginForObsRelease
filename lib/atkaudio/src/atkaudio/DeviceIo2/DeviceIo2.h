@@ -19,6 +19,9 @@ public:
     void setBypass(bool shouldBypass);
     bool isBypassed() const;
 
+    // Set the fade time for bypass transitions (in seconds)
+    void setFadeTime(double seconds);
+
     void setOutputDelay(float delayMs);
     float getOutputDelay() const;
 

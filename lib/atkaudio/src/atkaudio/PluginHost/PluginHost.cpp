@@ -59,19 +59,27 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
 
         void markCompleted()
         {
-            std::lock_guard<std::mutex> lock(mutex);
             completed.store(true, std::memory_order_release);
+            std::lock_guard<std::mutex> lock(mutex);
             cv.notify_one();
         }
 
         void waitForCompletion()
         {
+            // Fast path: already done
+            if (completed.load(std::memory_order_acquire))
+                return;
+
             std::unique_lock<std::mutex> lock(mutex);
             cv.wait(lock, [this] { return completed.load(std::memory_order_acquire); });
         }
 
         bool waitForCompletionWithTimeout(std::chrono::microseconds timeout)
         {
+            // Fast path: already done
+            if (completed.load(std::memory_order_acquire))
+                return true;
+
             std::unique_lock<std::mutex> lock(mutex);
             return cv.wait_for(lock, timeout, [this] { return completed.load(std::memory_order_acquire); });
         }
@@ -108,33 +116,38 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
             return;
         }
 
-        const int available = impl->inputFifo.getNumReady();
-        if (available > 0)
+        const int maxBlockSize = impl->numSamples;
+        if (maxBlockSize <= 0)
         {
-            auto& workBuffer = impl->workerBuffer;
-            auto& workMidi = impl->workerMidiBuffer;
+            processor->getCallbackLock().exit();
+            impl->mainComponent->getPluginHolderLock().exit();
+            context->markCompleted();
+            return;
+        }
 
-            workBuffer.setSize(workBuffer.getNumChannels(), available, false, false, true);
+        const int numChannels = impl->workerBuffer.getNumChannels();
+        auto& workBuffer = impl->workerBuffer;
+        auto& workMidi = impl->workerMidiBuffer;
 
-            for (int ch = 0; ch < workBuffer.getNumChannels(); ++ch)
-            {
-                bool isLastChannel = (ch == workBuffer.getNumChannels() - 1);
-                impl->inputFifo.read(workBuffer.getWritePointer(ch), ch, available, isLastChannel);
-            }
+        for (int available = impl->inputFifo.getNumReady(); available > 0; available -= maxBlockSize)
+        {
+            const int toProcess = juce::jmin(available, maxBlockSize);
+
+            workBuffer.setSize(numChannels, toProcess, false, false, true);
+
+            for (int ch = 0; ch < numChannels; ++ch)
+                impl->inputFifo.read(workBuffer.getWritePointer(ch), ch, toProcess, ch == numChannels - 1);
 
             workMidi.clear();
 
             if (!processor->isSuspended())
             {
-                juce::AudioProcessLoadMeasurer::ScopedTimer timer(impl->loadMeasurer, available);
+                juce::AudioProcessLoadMeasurer::ScopedTimer timer(impl->loadMeasurer, toProcess);
                 processor->processBlock(workBuffer, workMidi);
             }
 
-            for (int ch = 0; ch < workBuffer.getNumChannels(); ++ch)
-            {
-                bool isLastChannel = (ch == workBuffer.getNumChannels() - 1);
-                impl->outputFifo.write(workBuffer.getReadPointer(ch), ch, available, isLastChannel);
-            }
+            for (int ch = 0; ch < numChannels; ++ch)
+                impl->outputFifo.write(workBuffer.getReadPointer(ch), ch, toProcess, ch == numChannels - 1);
         }
 
         processor->getCallbackLock().exit();
@@ -213,11 +226,8 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
             }
         }
 
-        if (useThreadPool.load(std::memory_order_acquire) && !jobContext.isCompleted())
-        {
-            const auto timeout = std::chrono::milliseconds(100);
-            jobContext.waitForCompletionWithTimeout(timeout);
-        }
+        if (useThreadPool.load(std::memory_order_acquire))
+            jobContext.waitForCompletionWithTimeout(std::chrono::milliseconds(100));
 
         if (qtWidget)
             qtWidget->clearCallbacks();
@@ -266,8 +276,7 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
     void prepareProcessorOnMessageThread(int channels, int samples, double rate)
     {
         // Wait for any background processing job to complete first
-        if (!jobContext.isCompleted())
-            jobContext.waitForCompletion();
+        jobContext.waitForCompletion();
 
         // Acquire locks - audio callback uses tryEnter so it will bail out
         juce::ScopedLock lock(mainComponent->getPluginHolderLock());
@@ -334,8 +343,6 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
 
         if (canUseThreading)
         {
-            std::lock_guard<std::mutex> mtLock(mtProcessMutex);
-
             if (!wasUsingThreading)
             {
                 inputFifo.reset();
@@ -345,31 +352,21 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
                 wasUsingThreading = true;
             }
 
-            if (!jobContext.isCompleted())
+            jobContext.waitForCompletionWithTimeout(std::chrono::milliseconds(100));
+
+            jassert(newNumSamples <= numSamples);
+
+            const int totalChannels = newNumChannels * 2;
+
+            for (int ch = 0; ch < totalChannels; ++ch)
+                inputFifo.write(buffer[ch], ch, newNumSamples, ch == totalChannels - 1);
+
+            const int toRead = juce::jmin(outputFifo.getNumReady(), newNumSamples);
+
+            for (int ch = 0; ch < totalChannels; ++ch)
             {
-                const double frameTimeSeconds = newNumSamples / sampleRate;
-                const double halfFrameTimeUs = frameTimeSeconds * 1000000.0 / 2.0;
-                const auto timeout = std::chrono::microseconds(static_cast<long long>(halfFrameTimeUs));
-
-                std::unique_lock<std::mutex> lock(jobContext.mutex);
-                jobContext.cv
-                    .wait_for(lock, timeout, [this] { return jobContext.completed.load(std::memory_order_acquire); });
-            }
-
-            for (int ch = 0; ch < newNumChannels * 2; ++ch)
-            {
-                bool isLastChannel = (ch == newNumChannels * 2 - 1);
-                inputFifo.write(buffer[ch], ch, newNumSamples, isLastChannel);
-            }
-
-            const int available = outputFifo.getNumReady();
-            const int toRead = juce::jmin(available, newNumSamples);
-
-            for (int ch = 0; ch < newNumChannels * 2; ++ch)
-            {
-                bool isLastChannel = (ch == newNumChannels * 2 - 1);
                 if (toRead > 0)
-                    outputFifo.read(buffer[ch], ch, toRead, isLastChannel);
+                    outputFifo.read(buffer[ch], ch, toRead, ch == totalChannels - 1);
                 if (toRead < newNumSamples)
                     juce::FloatVectorOperations::clear(buffer[ch] + toRead, newNumSamples - toRead);
             }
@@ -385,8 +382,7 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
 
         if (wasUsingThreading)
         {
-            if (!jobContext.isCompleted())
-                jobContext.waitForCompletion();
+            jobContext.waitForCompletion();
             wasUsingThreading = false;
         }
 
@@ -583,11 +579,12 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
     {
         juce::MemoryBlock state;
 
-        {
-            // Wait for any background processing job first
-            if (!jobContext.isCompleted())
-                jobContext.waitForCompletion();
+        if (!jobContext.waitForCompletionWithTimeout(std::chrono::milliseconds(100)))
+            return;
 
+        s.clear();
+
+        {
             juce::ScopedLock lock(mainComponent->getPluginHolderLock());
             auto* processor = mainComponent->getAudioProcessor();
             juce::ScopedLock callbackLock(processor->getCallbackLock());
@@ -751,8 +748,8 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
         if (stateString.empty())
             return;
 
-        if (!jobContext.isCompleted())
-            jobContext.waitForCompletion();
+        if (!jobContext.waitForCompletionWithTimeout(std::chrono::milliseconds(100)))
+            return;
 
         juce::ScopedLock lock(mainComponent->getPluginHolderLock());
         auto* processor = mainComponent->getAudioProcessor();
@@ -778,11 +775,7 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
         }
         else if (!enabled && wasEnabled)
         {
-            if (!jobContext.isCompleted())
-            {
-                const auto timeout = std::chrono::milliseconds(100);
-                jobContext.waitForCompletionWithTimeout(timeout);
-            }
+            jobContext.waitForCompletionWithTimeout(std::chrono::milliseconds(100));
         }
     }
 

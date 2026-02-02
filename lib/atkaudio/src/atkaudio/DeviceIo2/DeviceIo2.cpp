@@ -33,7 +33,7 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
     bool delayPrepared = false;
     std::atomic<bool> bypass{false};
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> fadeGain{1.0f};
-    static constexpr double fadeDurationSeconds = 0.5;
+    std::atomic<double> fadeDurationSeconds{0.5};
 
     enum class UpdateType
     {
@@ -203,7 +203,7 @@ struct atk::DeviceIo2::Impl : public juce::AsyncUpdater
         // Update smoother if target changed
         if (fadeGain.getTargetValue() != targetGain)
         {
-            fadeGain.reset(sampleRate, fadeDurationSeconds);
+            fadeGain.reset(sampleRate, fadeDurationSeconds.load(std::memory_order_acquire));
 
             // Clear buffers when transitioning from bypass to active
             if (!currentBypass)
@@ -584,6 +584,12 @@ void atk::DeviceIo2::setBypass(bool shouldBypass)
 bool atk::DeviceIo2::isBypassed() const
 {
     return pImpl ? pImpl->bypass.load(std::memory_order_acquire) : false;
+}
+
+void atk::DeviceIo2::setFadeTime(double seconds)
+{
+    if (pImpl)
+        pImpl->fadeDurationSeconds.store(seconds, std::memory_order_release);
 }
 
 void atk::DeviceIo2::setOutputDelay(float delayMs)

@@ -99,9 +99,10 @@ void ChannelRoutingMatrix::applyInputRouting(
 
     int matrixRows = (int)state->inputMapping.size();
     int numTargetChannels = targetBuffer.getNumChannels();
-    int deviceStartRow = matrixRows - numDeviceInputSubs;
-    if (deviceStartRow < 0)
-        deviceStartRow = numObsChannels;
+
+    // deviceStartRow marks where device subscription rows begin in the matrix.
+    // OBS channels occupy rows [0, deviceStartRow), device subs occupy [deviceStartRow, matrixRows).
+    int deviceStartRow = std::max(0, matrixRows - numDeviceInputSubs);
 
     // Clear target buffer before routing
     targetBuffer.clear();
@@ -162,9 +163,10 @@ void ChannelRoutingMatrix::applyOutputRouting(
 
     int matrixRows = (int)state->outputMapping.size();
     int numSourceChannels = sourceBuffer.getNumChannels();
-    int deviceStartRow = matrixRows - numDeviceOutputSubs;
-    if (deviceStartRow < 0)
-        deviceStartRow = numObsChannels;
+
+    // deviceStartRow marks where device subscription rows begin in the matrix.
+    // OBS channels occupy rows [0, deviceStartRow), device subs occupy [deviceStartRow, matrixRows).
+    int deviceStartRow = std::max(0, matrixRows - numDeviceOutputSubs);
 
     // Route source buffer to device outputs
     for (int subIdx = 0; subIdx < numDeviceOutputSubs; ++subIdx)
@@ -182,17 +184,20 @@ void ChannelRoutingMatrix::applyOutputRouting(
         }
     }
 
-    // Route source buffer to OBS outputs
-    // Matrix logic: If Row (OBS channel) maps to Column (source channel), add/mix it
-    // Note: Output matrix rows are destinations (OBS), columns are sources (client/plugin)
+    // Route source buffer to OBS outputs.
+    // Output routing matrix semantics:
+    //   - Rows represent destination channels (OBS output channels)
+    //   - Columns represent source channels (plugin/client output channels)
+    //   - If outputMapping[destChannel][sourceChannel] is true, sourceChannel contributes to destChannel
+    // This differs from input routing where rows are sources. The asymmetry reflects the
+    // natural direction of data flow: inputs flow from sources to plugin, outputs flow from plugin to destinations.
     for (int obsChannel = 0; obsChannel < numObsChannels && obsChannel < deviceStartRow; ++obsChannel)
     {
-        bool hasRouting = false;
+        // Clear this output channel first
+        std::memset(obsBuffer[obsChannel], 0, numSamples * sizeof(float));
+
         if (obsChannel < matrixRows)
         {
-            // Clear this output channel first
-            std::memset(obsBuffer[obsChannel], 0, numSamples * sizeof(float));
-
             // Mix all source channels that map to this OBS output channel
             for (int sourceChannel = 0;
                  sourceChannel < numSourceChannels && sourceChannel < (int)state->outputMapping[obsChannel].size();
@@ -200,8 +205,6 @@ void ChannelRoutingMatrix::applyOutputRouting(
             {
                 if (state->outputMapping[obsChannel][sourceChannel])
                 {
-                    hasRouting = true;
-                    // Add/mix source channel into OBS output channel
                     const float* src = sourceBuffer.getReadPointer(sourceChannel);
                     float* dst = obsBuffer[obsChannel];
                     for (int i = 0; i < numSamples; ++i)
@@ -209,16 +212,25 @@ void ChannelRoutingMatrix::applyOutputRouting(
                 }
             }
         }
-        else
-        {
-            // No valid matrix row for this channel, zero it
-            std::memset(obsBuffer[obsChannel], 0, numSamples * sizeof(float));
-        }
     }
 }
 
 void ChannelRoutingMatrix::setInputMapping(const std::vector<std::vector<bool>>& mapping)
 {
+    // Validate that mapping is rectangular (all rows have same size)
+    if (!mapping.empty())
+    {
+        size_t expectedCols = mapping[0].size();
+        for (size_t i = 1; i < mapping.size(); ++i)
+        {
+            if (mapping[i].size() != expectedCols)
+            {
+                jassertfalse; // Non-rectangular mapping matrix
+                return;
+            }
+        }
+    }
+
     auto oldState = mappingState.load(std::memory_order_acquire);
     auto newState = std::make_shared<ChannelMappingState>();
 
@@ -238,6 +250,20 @@ std::vector<std::vector<bool>> ChannelRoutingMatrix::getInputMapping() const
 
 void ChannelRoutingMatrix::setOutputMapping(const std::vector<std::vector<bool>>& mapping)
 {
+    // Validate that mapping is rectangular (all rows have same size)
+    if (!mapping.empty())
+    {
+        size_t expectedCols = mapping[0].size();
+        for (size_t i = 1; i < mapping.size(); ++i)
+        {
+            if (mapping[i].size() != expectedCols)
+            {
+                jassertfalse; // Non-rectangular mapping matrix
+                return;
+            }
+        }
+    }
+
     auto oldState = mappingState.load(std::memory_order_acquire);
     auto newState = std::make_shared<ChannelMappingState>();
 

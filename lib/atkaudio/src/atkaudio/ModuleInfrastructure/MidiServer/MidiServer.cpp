@@ -432,13 +432,15 @@ void MidiServer::updateMidiDeviceSubscriptions()
             ++it;
 
     // Close output devices no longer needed (they're opened lazily in timerCallback)
+    // Collect keys to remove first to avoid iterator invalidation
+    juce::StringArray outputsToRemove;
     for (juce::HashMap<juce::String, juce::MidiOutput*>::Iterator it(outputDevices); it.next();)
-    {
         if (!neededOutputs.contains(it.getKey()))
-        {
-            delete it.getValue();
-            outputDevices.remove(it.getKey());
-        }
+            outputsToRemove.add(it.getKey());
+    for (const auto& key : outputsToRemove)
+    {
+        delete outputDevices[key];
+        outputDevices.remove(key);
     }
 }
 

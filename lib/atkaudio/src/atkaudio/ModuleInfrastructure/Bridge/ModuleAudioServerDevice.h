@@ -113,7 +113,8 @@ public:
             }
         }
 
-        if (!isOpen_ || !needsReopen)
+        // Always update channel configuration when open() is called, even if device is already open
+        // Channel changes don't require device reopen - the audio callback will use the new config
         {
             const juce::ScopedLock sl(lock);
 

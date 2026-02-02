@@ -655,8 +655,17 @@ bool HostAudioProcessorImpl::isPluginLoaded() const
 
 std::unique_ptr<AudioProcessorEditor> HostAudioProcessorImpl::createInnerEditor() const
 {
-    const ScopedLock sl(innerMutex);
-    return rawToUniquePtr(inner->hasEditor() ? inner->createEditorIfNeeded() : nullptr);
+    // TODO: Temporarily avoiding innerMutex lock during editor creation to prevent audio glitches.
+    // The lock was causing the audio thread's tryLock to fail while the UI thread held the mutex.
+    // This is safe as long as inner pointer doesn't change during normal operation.
+    AudioPluginInstance* pluginToUse = nullptr;
+    {
+        const ScopedLock sl(innerMutex);
+        pluginToUse = inner.get();
+    }
+    if (pluginToUse != nullptr && pluginToUse->hasEditor())
+        return rawToUniquePtr(pluginToUse->createEditorIfNeeded());
+    return nullptr;
 }
 
 EditorStyle HostAudioProcessorImpl::getEditorStyle() const noexcept
