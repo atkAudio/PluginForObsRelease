@@ -184,6 +184,33 @@ include(./lib/atkaudio/cmake/cpack.cmake)
 include(CTest)
 add_subdirectory(tests)
 
+# macOS: Copy scanner into bundle and re-sign after build
+if(APPLE)
+    # Use proper identity for CI, ad-hoc for local development
+    if(CODESIGN_IDENTITY)
+        set(_sign_identity "${CODESIGN_IDENTITY}")
+    else()
+        set(_sign_identity "-")
+    endif()
+
+    add_custom_command(
+        TARGET ${CMAKE_PROJECT_NAME}
+        POST_BUILD
+        COMMAND
+            ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:${CMAKE_PROJECT_NAME}_scanner>
+            "$<TARGET_BUNDLE_DIR:${CMAKE_PROJECT_NAME}>/Contents/MacOS/"
+        COMMAND
+            codesign --force --sign "${_sign_identity}" --deep
+            $<$<NOT:$<CONFIG:Debug>>:--timestamp>
+            $<$<NOT:$<CONFIG:Debug>>:-o>
+            $<$<NOT:$<CONFIG:Debug>>:runtime>
+            "$<TARGET_BUNDLE_DIR:${CMAKE_PROJECT_NAME}>"
+        VERBATIM
+        COMMENT "Adding scanner to bundle and re-signing"
+    )
+endif()
+
 # Automatically run install after build (skip in CI or when installing to system directories without permissions)
 if(NOT DEFINED ENV{CI} AND NOT DEFINED ENV{GITHUB_ACTIONS} AND NOT CMAKE_INSTALL_PREFIX MATCHES "^/usr")
     add_custom_command(

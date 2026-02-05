@@ -59,16 +59,16 @@ if(APPLE)
     set_target_properties(
         ${CMAKE_PROJECT_NAME}_scanner
         PROPERTIES
-            MACOSX_BUNDLE
-                FALSE
+            MACOSX_BUNDLE FALSE
     )
-    # Ensure scanner builds before main plugin (copy happens in root CMakeLists.txt)
+    # Ensure scanner builds before main plugin
     add_dependencies(${CMAKE_PROJECT_NAME} ${CMAKE_PROJECT_NAME}_scanner)
-endif()
-
-# Copy scanner next to plugin after build (for development/local testing)
-# Installation is handled by cpack.cmake for all platforms
-if(NOT APPLE)
+    
+    # Note: Scanner copy and bundle re-signing is handled in root CMakeLists.txt
+    # because add_custom_command(TARGET) requires the target be in the same directory.
+else()
+    # Copy scanner next to plugin after build (for development/local testing)
+    # Installation is handled by cpack.cmake for all platforms
     add_custom_command(
         TARGET ${CMAKE_PROJECT_NAME}_scanner
         POST_BUILD
