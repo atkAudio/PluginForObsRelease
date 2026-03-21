@@ -64,8 +64,7 @@ if(APPLE)
     # Ensure scanner builds before main plugin
     add_dependencies(${CMAKE_PROJECT_NAME} ${CMAKE_PROJECT_NAME}_scanner)
     
-    # Note: Scanner copy and bundle re-signing is handled in root CMakeLists.txt
-    # because add_custom_command(TARGET) requires the target be in the same directory.
+    # Note: Scanner copy and bundle re-signing is handled in lib/atkaudio/cmake/cpack.cmake
 else()
     # Copy scanner next to plugin after build (for development/local testing)
     # Installation is handled by cpack.cmake for all platforms

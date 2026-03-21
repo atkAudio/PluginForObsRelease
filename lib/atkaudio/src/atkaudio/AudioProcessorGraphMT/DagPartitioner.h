@@ -94,14 +94,17 @@ public:
                                 {
                                     task = std::move(tasks.front());
                                     tasks.pop_front();
+                                    ++activeTasks;
                                 }
                             }
 
                             if (task)
                             {
-                                ++activeTasks;
                                 task();
+                                std::unique_lock<std::mutex> lock(queueMutex);
                                 --activeTasks;
+                                if (tasks.empty() && activeTasks == 0)
+                                    completion.notify_all();
                             }
                         }
                     }
@@ -133,15 +136,9 @@ public:
 
         void wait()
         {
-            // Wait for all tasks to be consumed and completed
-            while (true)
-            {
-                std::unique_lock<std::mutex> lock(queueMutex);
-                if (tasks.empty() && activeTasks == 0)
-                    return;
-                lock.unlock();
-                std::this_thread::yield();
-            }
+            // Wait until no queued tasks remain and no worker is executing a task.
+            std::unique_lock<std::mutex> lock(queueMutex);
+            completion.wait(lock, [this] { return tasks.empty() && activeTasks == 0; });
         }
 
         size_t numThreads() const
@@ -154,8 +151,9 @@ public:
         std::deque<std::function<void()>> tasks;
         std::mutex queueMutex;
         std::condition_variable condition;
+        std::condition_variable completion;
         std::atomic<bool> stop{false};
-        std::atomic<int> activeTasks{0};
+        size_t activeTasks{0};
     };
 
     DagPartitioner()

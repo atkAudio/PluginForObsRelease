@@ -641,3 +641,27 @@ set(CMAKE_MESSAGE_LOG_LEVEL_BACKUP ${CMAKE_MESSAGE_LOG_LEVEL})
 set(CMAKE_MESSAGE_LOG_LEVEL ERROR)
 include(CPack)
 set(CMAKE_MESSAGE_LOG_LEVEL ${CMAKE_MESSAGE_LOG_LEVEL_BACKUP})
+
+# macOS: Copy scanner into bundle and re-sign after build
+if(APPLE AND TARGET ${TARGET_NAME}_scanner)
+    # Use proper identity for CI, ad-hoc for local development
+    if(CODESIGN_IDENTITY)
+        set(_sign_identity "${CODESIGN_IDENTITY}")
+    else()
+        set(_sign_identity "-")
+    endif()
+
+    add_custom_command(
+        TARGET ${TARGET_NAME}
+        POST_BUILD
+        COMMAND
+            ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:${TARGET_NAME}_scanner>
+            "$<TARGET_BUNDLE_DIR:${TARGET_NAME}>/Contents/MacOS/"
+        COMMAND
+            codesign --force --sign "${_sign_identity}" --deep --timestamp -o runtime
+            "$<TARGET_BUNDLE_DIR:${TARGET_NAME}>"
+        VERBATIM
+        COMMENT "Adding scanner to bundle and re-signing"
+    )
+endif()
