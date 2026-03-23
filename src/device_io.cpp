@@ -292,8 +292,12 @@ static void tick(void* data, float seconds)
 
     if (adio->followSourceVolume.load(std::memory_order_acquire) && parent)
     {
+        bool obsMuted = obs_source_muted(parent);
+        int monitoringType = (int)obs_source_get_monitoring_type(parent);
+        bool effectiveMuted = obsMuted || (monitoringType == OBS_MONITORING_TYPE_MONITOR_ONLY);
+
         auto fader = obs_source_get_volume(parent);
-        if (obs_source_muted(parent))
+        if (effectiveMuted)
             fader = 0.0f;
         outputGain *= fader;
     }

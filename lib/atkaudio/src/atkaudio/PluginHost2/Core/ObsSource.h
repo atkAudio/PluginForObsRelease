@@ -515,7 +515,9 @@ public:
         if (followMute && currentObsSource)
         {
             bool obsMuted = obs_source_muted(currentObsSource);
-            if (obsMuted)
+            int monitoringType = (int)obs_source_get_monitoring_type(currentObsSource);
+            bool effectiveMuted = obsMuted || (monitoringType == OBS_MONITORING_TYPE_MONITOR_ONLY);
+            if (effectiveMuted)
                 buffer.clear();
         }
     }
