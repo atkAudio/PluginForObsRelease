@@ -1,5 +1,5 @@
 #include <algorithm>
-#include <atkaudio/PluginHost2/API/PluginHost2.h>
+#include "core/atkaudio/PluginHost2/API/PluginHost2.h"
 #include <inttypes.h>
 #include <math.h>
 #include <media-io/audio-math.h>

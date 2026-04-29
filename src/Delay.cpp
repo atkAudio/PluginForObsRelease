@@ -1,4 +1,4 @@
-#include <atkaudio/Delay.h>
+#include "core/atkaudio/Delay.h"
 #include <obs-module.h>
 
 #define FILTER_NAME "atkAudio Delay"

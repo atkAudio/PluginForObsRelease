@@ -24,6 +24,7 @@
 !tests/**
 !docs/
 !docs/**
+!assets/
 
 !/lib
 !.vscode

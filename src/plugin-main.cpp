@@ -18,8 +18,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "CompareVersionStrings.h"
 #include "config.h"
+#include "core/atkaudio/atkaudio.h"
 
-#include <atkaudio/atkaudio.h>
 #include <chrono>
 #include <obs-module.h>
 #include <stdarg.h>

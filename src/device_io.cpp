@@ -1,4 +1,4 @@
-#include <atkaudio/DeviceIo/DeviceIo.h>
+#include "core/atkaudio/DeviceIo/DeviceIo.h"
 #include <atomic>
 #include <obs-frontend-api.h>
 #include <obs-module.h>

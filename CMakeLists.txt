@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.28...3.30)
 
-include(./lib/atkaudio/cmake/preconfig.cmake)
+include(./cmake/common/preconfig.cmake)
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/common/bootstrap.cmake")
 
 project(${_name} VERSION ${_version})
@@ -150,8 +150,7 @@ set_target_properties(
             ON
 )
 
-file(GLOB_RECURSE _sources CONFIGURE_DEPENDS src/*.cpp)
-target_sources(${CMAKE_PROJECT_NAME} PRIVATE ${_sources})
+add_subdirectory(src)
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
 
@@ -161,8 +160,6 @@ set_target_properties(
         CXX_STANDARD
             23
 )
-
-add_subdirectory(lib/atkaudio)
 
 string(JSON PLUGIN_DISPLAY_NAME GET ${buildspec} displayName)
 string(JSON PLUGIN_AUTHOR GET ${buildspec} author)
@@ -178,7 +175,7 @@ set(PLUGIN_AUTHOR "${PLUGIN_AUTHOR}")
 
 configure_file(src/config.h.in config.h @ONLY)
 
-include(./lib/atkaudio/cmake/cpack.cmake)
+include(./cmake/common/plugin-cpack.cmake)
 
 # Build tests
 include(CTest)
