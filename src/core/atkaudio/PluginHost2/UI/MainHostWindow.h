@@ -95,7 +95,7 @@ public:
     std::unique_ptr<GraphDocumentComponent> graphHolder;
 
     ApplicationCommandManager commandManager;
-    std::unique_ptr<ApplicationProperties> appProperties;
+    std::unique_ptr<PropertiesFile> appProperties;
 
     auto& getAppProperties()
     {
@@ -114,14 +114,9 @@ public:
         // initialise our settings file..
 
         PropertiesFile::Options options;
-        options.applicationName = "atkAudio PluginHost2";
-        options.filenameSuffix = "settings";
-        options.osxLibrarySubFolder = "Application Support";
-        options.folderName = "atkAudio Plugin";
         options.processLock = &interprocessLock;
-
-        appProperties.reset(new ApplicationProperties());
-        appProperties->setStorageParameters(options);
+        options.storageFormat = PropertiesFile::storeAsXML;
+        appProperties = std::make_unique<PropertiesFile>(atk::getSettingsFile("atkAudio PluginHost2"), options);
 
         commandManager.registerAllCommandsForTarget(this);
 

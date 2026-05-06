@@ -148,7 +148,7 @@ void AudioServerSettingsComponent::ChannelMappingMatrix::paintCell(
     bool rowIsSelected
 )
 {
-    int totalRows = numFixedTopRows + subscribedChannels.size();
+    int totalRows = numFixedTopRows + static_cast<int>(subscribedChannels.size());
     if (rowNumber >= totalRows)
         return;
 
@@ -203,7 +203,7 @@ void AudioServerSettingsComponent::ChannelMappingMatrix::cellClicked(
     if (columnId >= 2) // Only client channel cells are clickable
     {
         int clientChannel = columnId - 2;
-        int totalRows = numFixedTopRows + subscribedChannels.size();
+        int totalRows = numFixedTopRows + static_cast<int>(subscribedChannels.size());
 
         if (rowNumber >= 0 && rowNumber < totalRows && clientChannel >= 0 && clientChannel < numClientChannels)
         {
@@ -388,10 +388,10 @@ void AudioServerSettingsComponent::ChannelMappingMatrix::setFixedTopRows(
 )
 {
     fixedRowNames = names;
-    numFixedTopRows = names.size();
+    numFixedTopRows = static_cast<int>(names.size());
 
     // Resize grid to include fixed rows + existing subscribed rows
-    int totalRows = numFixedTopRows + subscribedChannels.size();
+    int totalRows = numFixedTopRows + static_cast<int>(subscribedChannels.size());
     mappingGrid.resize(totalRows);
     for (int row = 0; row < totalRows; ++row)
         mappingGrid[row].resize(numClientChannels, false);

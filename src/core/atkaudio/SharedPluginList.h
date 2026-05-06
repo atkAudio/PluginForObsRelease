@@ -1,5 +1,6 @@
 #pragma once
 
+#include "atkaudio.h"
 #include <juce_audio_processors/juce_audio_processors.h>
 
 namespace atk
@@ -12,12 +13,9 @@ public:
         : fileLock("atkAudioSharedPluginList")
     {
         juce::PropertiesFile::Options options;
-        options.applicationName = "atkAudio Shared";
-        options.filenameSuffix = "settings";
-        options.osxLibrarySubFolder = "Application Support";
-        options.folderName = "atkAudio Plugin";
         options.processLock = &fileLock;
-        appProperties.setStorageParameters(options);
+        options.storageFormat = juce::PropertiesFile::storeAsXML;
+        propertiesFile = std::make_unique<juce::PropertiesFile>(atk::getSettingsFile("atkAudio Shared"), options);
     }
 
     ~SharedPluginList() override
@@ -27,15 +25,15 @@ public:
 
     juce::PropertiesFile* getPropertiesFile()
     {
-        return appProperties.getUserSettings();
+        return propertiesFile.get();
     }
 
     void loadPluginList(juce::KnownPluginList& list, bool excludeInternalPlugins = false)
     {
         const juce::ScopedLock sl(lock);
-        appProperties.getUserSettings()->reload();
+        propertiesFile->reload();
 
-        auto saved = appProperties.getUserSettings()->getXmlValue("pluginList");
+        auto saved = propertiesFile->getXmlValue("pluginList");
         if (!saved)
             return;
 
@@ -57,8 +55,8 @@ public:
         const juce::ScopedLock sl(lock);
         if (auto xml = list.createXml())
         {
-            appProperties.getUserSettings()->setValue("pluginList", xml.get());
-            appProperties.saveIfNeeded();
+            propertiesFile->setValue("pluginList", xml.get());
+            propertiesFile->saveIfNeeded();
         }
     }
 
@@ -67,7 +65,7 @@ public:
 private:
     juce::InterProcessLock fileLock;
     juce::CriticalSection lock;
-    juce::ApplicationProperties appProperties;
+    std::unique_ptr<juce::PropertiesFile> propertiesFile;
 };
 
 } // namespace atk

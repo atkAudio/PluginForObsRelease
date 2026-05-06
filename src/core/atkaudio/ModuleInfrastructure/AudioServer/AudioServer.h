@@ -325,6 +325,8 @@ public:
 
     juce::StringArray getAvailableInputDevices() const;
     juce::StringArray getAvailableOutputDevices() const;
+    // Does not call scanForDevices(); safe to call on the OBS main thread.
+    juce::StringArray getOpenDeviceNames() const;
     std::map<juce::String, juce::StringArray> getInputDevicesByType() const;
     std::map<juce::String, juce::StringArray> getOutputDevicesByType() const;
 

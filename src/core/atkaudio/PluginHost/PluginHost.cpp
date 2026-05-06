@@ -245,10 +245,20 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
             );
 
             dockId = nullptr;
+            qtWidget = nullptr; // ownership transferred to Qt dock
+        }
+        else if (qtWidget)
+        {
+            // Never docked - Qt has no ownership, and the widget was never parented or added to
+            // a Qt dock, so there are no pending Qt events for it. Delete directly: ~Impl() runs
+            // on the JUCE message thread (via destroyOnMessageThread), which is also the Qt main
+            // thread, so direct deletion is safe. Avoid deleteLater() here - it would defer past
+            // shutdownJuce_GUI() and cause JuceQtWidget::~JuceQtWidget() to re-create Desktop.
+            delete qtWidget;
             qtWidget = nullptr;
         }
 
-        mainComponent = nullptr;
+        mainComponent = nullptr; // owned by qtWidget (already deleted above or by Qt dock)
     }
 
     void handleAsyncUpdate() override
@@ -353,8 +363,6 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
                 wasUsingThreading = true;
             }
 
-            jobContext.waitForCompletionWithTimeout(std::chrono::milliseconds(100));
-
             jassert(newNumSamples <= numSamples);
 
             const int totalChannels = newNumChannels * 2;
@@ -375,7 +383,8 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
             if (jobContext.isCompleted())
             {
                 jobContext.reset();
-                pool->submitTask(&Impl::executeProcessJob, &jobContext);
+                if (!pool->submitTask(&Impl::executeProcessJob, &jobContext))
+                    jobContext.markCompleted();
             }
 
             return;
@@ -986,8 +995,8 @@ bool atk::PluginHost::isDockVisible() const
 }
 
 atk::PluginHost::PluginHost()
-    : pImpl(std::make_unique<Impl>())
 {
+    pImpl = std::make_unique<Impl>();
 }
 
 atk::PluginHost::~PluginHost()

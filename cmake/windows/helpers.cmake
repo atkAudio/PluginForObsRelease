@@ -84,6 +84,23 @@ function(set_target_properties_plugin target)
         VERBATIM
     )
 
+    # Copy Qt6 debug DLLs next to the plugin for local MSVC x64 Debug builds.
+    # Skip this in CI environments where debug Qt runtime is not required.
+    if(MSVC AND CMAKE_VS_PLATFORM_NAME STREQUAL "x64" AND NOT (DEFINED ENV{CI} OR DEFINED ENV{GITHUB_ACTIONS}))
+        add_custom_command(
+            TARGET ${target}
+            POST_BUILD
+            COMMAND
+                "${CMAKE_COMMAND}"
+                "-DCONFIG=$<CONFIG>"
+                "-DSRC_DIR=${CMAKE_SOURCE_DIR}/_deps/x64/obs-deps-qt6-${QT6_VERSION}-x64/bin"
+                "-DDST_DIR=$<TARGET_FILE_DIR:${target}>"
+                -P "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/copy_qt_debug_dlls.cmake"
+            COMMENT "Copy Qt6 debug DLLs for Debug config"
+            VERBATIM
+        )
+    endif()
+
     target_install_resources(${target})
 
     get_target_property(target_sources ${target} SOURCES)

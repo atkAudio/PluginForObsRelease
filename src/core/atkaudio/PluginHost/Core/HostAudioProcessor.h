@@ -63,7 +63,7 @@ public:
     std::vector<std::vector<bool>> getOutputChannelMapping() const;
 
     // Public members for UI access
-    juce::ApplicationProperties appProperties;
+    std::unique_ptr<juce::PropertiesFile> appProperties;
     juce::AudioPluginFormatManager pluginFormatManager;
 
     // Own plugin list instance, loads from/saves to shared file

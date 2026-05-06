@@ -9,8 +9,11 @@ namespace atk
 {
 
 MessagePump::MessagePump(QObject* parent)
-    : QObject(parent)
+    : QObject(nullptr)
+    , timer(this)
 {
+    (void)parent;
+
     // Verify JUCE MessageManager is attached to the current (Qt main) thread
     if (!juce::MessageManager::getInstance()->isThisTheMessageThread())
     {
@@ -18,25 +21,23 @@ MessagePump::MessagePump(QObject* parent)
         juce::Logger::writeToLog("MessagePump: ERROR - JUCE MessageManager is NOT attached to Qt main thread!");
     }
 
-    // Create timer without parent so we control its lifetime
-    // This prevents crash if Qt parent is destroyed before we are
-    timer = new QTimer(nullptr);
-    connect(timer, &QTimer::timeout, this, &MessagePump::onTimeout);
-    timer->start(10);
+    connect(&timer, &QTimer::timeout, this, &MessagePump::onTimeout);
+    timer.start(10);
 }
 
 MessagePump::~MessagePump()
 {
-    // Don't touch timer in destructor - Qt may already be shutting down
-    // The needsToStop flag will prevent further callbacks
-    timer = nullptr;
+    stopPump();
 }
 
 void MessagePump::stopPump()
 {
-    // Just set the flag - don't touch Qt objects during shutdown
-    // The timer callback will see this and stop pumping
+    // Prevent future callbacks and synchronously stop the Qt timer while the
+    // message loop is still alive.
     needsToStop.store(true, std::memory_order_release);
+
+    if (timer.isActive())
+        timer.stop();
 }
 
 void MessagePump::onTimeout()

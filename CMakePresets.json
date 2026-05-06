@@ -173,6 +173,18 @@
       }
     },
     {
+      "name": "ubuntu-x86_64-debug",
+      "inherits": [
+        "ubuntu-x86_64"
+      ],
+      "displayName": "Ubuntu x86_64 Debug",
+      "description": "Local debug build for Ubuntu x86_64",
+      "binaryDir": "${sourceDir}/build_x86_64_debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
       "name": "ubuntu-ci-x86_64",
       "inherits": [
         "ubuntu-x86_64",
@@ -186,9 +198,16 @@
     {
       "name": "macos",
       "configurePreset": "macos",
-      "displayName": "macOS Universal",
+      "displayName": "macOS Universal Debug",
       "description": "macOS build for Universal architectures",
       "configuration": "Debug"
+    },
+    {
+      "name": "macos-relwithdebinfo",
+      "configurePreset": "macos",
+      "displayName": "macOS Universal RelWithDebInfo",
+      "description": "macOS build for Universal architectures (RelWithDebInfo configuration)",
+      "configuration": "RelWithDebInfo"
     },
     {
       "name": "macos-ci",
@@ -203,6 +222,13 @@
       "displayName": "Windows x64",
       "description": "Windows build for x64",
       "configuration": "RelWithDebInfo"
+    },
+    {
+      "name": "windows-x64-debug",
+      "configurePreset": "windows-x64",
+      "displayName": "Windows x64 Debug",
+      "description": "Windows build for x64 (Debug configuration)",
+      "configuration": "Debug"
     },
     {
       "name": "windows-x64-release",
@@ -238,6 +264,13 @@
       "displayName": "Ubuntu x86_64",
       "description": "Ubuntu build for x86_64",
       "configuration": "RelWithDebInfo"
+    },
+    {
+      "name": "ubuntu-x86_64-debug",
+      "configurePreset": "ubuntu-x86_64-debug",
+      "displayName": "Ubuntu x86_64 Debug",
+      "description": "Ubuntu local debug build for x86_64",
+      "configuration": "Debug"
     },
     {
       "name": "ubuntu-ci-x86_64",

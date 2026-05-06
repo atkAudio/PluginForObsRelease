@@ -62,11 +62,7 @@ public:
 
     void checkForUpdate()
     {
-        auto appDir =
-            juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory).getChildFile(PLUGIN_DISPLAY_NAME);
-        appDir.createDirectory();
-
-        juce::File lastVersionFile = appDir.getChildFile("version_check");
+        juce::File lastVersionFile = atk::getSettingsFile("version");
 
 #ifndef SIMULATE_UPDATE_CHECK
         if (lastVersionFile.existsAsFile())

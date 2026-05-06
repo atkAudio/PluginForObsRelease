@@ -2071,6 +2071,7 @@ public:
     {
         juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear> delayLine;
         std::atomic_int delayAmount{0};
+        int preparedChannels = 0;
     };
 
     std::shared_ptr<PooledDelayLine>
@@ -2081,6 +2082,18 @@ public:
         auto it = delayLines.find(key);
         if (it != delayLines.end())
         {
+            // Re-prepare if a graph rebuild now needs more channels than were originally prepared.
+            // Cached delay lines survive rebuilds to preserve delay state, but the prepared channel
+            // count must cover every destination channel index that will be routed through this line.
+            if (numChannels > it->second->preparedChannels)
+            {
+                it->second->delayLine.prepare(
+                    juce::dsp::ProcessSpec{sampleRate, blockSize, static_cast<uint32>(numChannels)}
+                );
+                it->second->delayLine.reset();
+                it->second->delayLine.setMaximumDelayInSamples(MAX_DELAY_SAMPLES);
+                it->second->preparedChannels = numChannels;
+            }
             it->second->delayAmount.store(delayNeeded);
             return it->second;
         }
@@ -2090,6 +2103,7 @@ public:
         pooledLine->delayLine.reset();
         pooledLine->delayLine.setMaximumDelayInSamples(MAX_DELAY_SAMPLES);
         pooledLine->delayAmount.store(delayNeeded);
+        pooledLine->preparedChannels = numChannels;
         delayLines[key] = pooledLine;
         return pooledLine;
     }
@@ -2163,6 +2177,16 @@ public:
 
             auto& pooledLine = it->second;
             auto& delayLine = pooledLine->delayLine;
+
+            // Safety: if the caller asks for a channel beyond what the delay line was prepared for,
+            // skip delay compensation for this sample rather than triggering an OOB in JUCE.
+            // registerSource() should prepare enough channels; this guards against stale pool entries.
+            if (channel < 0 || channel >= pooledLine->preparedChannels)
+            {
+                FloatVectorOperations::add(dst, src, numSamples);
+                return;
+            }
+
             int delay = pooledLine->delayAmount.load();
 
             for (int i = 0; i < numSamples; ++i)
@@ -2736,7 +2760,7 @@ public:
                     maxInputLatency,
                     s.sampleRate,
                     s.blockSize,
-                    chain->sequence->getNumChannelsNeeded()
+                    chain->getAudioBuffer().getNumChannels()
                 );
             }
 
@@ -2748,7 +2772,7 @@ public:
                     maxInputLatency,
                     s.sampleRate,
                     s.blockSize,
-                    chain->sequence->getNumChannelsNeeded()
+                    chain->getAudioBuffer().getNumChannels()
                 );
             }
         }

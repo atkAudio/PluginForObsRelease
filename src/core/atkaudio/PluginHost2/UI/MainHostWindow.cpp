@@ -70,7 +70,8 @@ MainHostWindow::MainHostWindow()
     : juce::DocumentWindow(
           "atkAudio PluginHost2",
           LookAndFeel::getDefaultLookAndFeel().findColour(ResizableWindow::backgroundColourId),
-          DocumentWindow::allButtons
+          DocumentWindow::allButtons,
+          false // don't add to desktop until explicitly shown
       )
 {
     // Initialize AudioServer and MidiServer
@@ -134,17 +135,31 @@ MainHostWindow::MainHostWindow()
     // Position title bar buttons on the right (Windows-style), like Plugin Host
     setTitleBarButtonsRequired(DocumentWindow::allButtons, false);
 
-    restoreWindowStateFromString(getAppProperties().getUserSettings()->getValue("mainWindowPos"));
+    restoreWindowStateFromString(getAppProperties().getValue("mainWindowPos"));
 
-    // Window starts hidden - AudioModule::setVisible() will show it and call toFront()
+    InternalPluginFormat* internalFormat = nullptr;
+    for (auto* format : formatManager.getFormats())
+    {
+        internalFormat = dynamic_cast<InternalPluginFormat*>(format);
+        if (internalFormat != nullptr)
+            break;
+    }
 
-    InternalPluginFormat internalFormat;
-    internalTypes = internalFormat.getAllTypes();
+    if (internalFormat != nullptr)
+    {
+        internalTypes = internalFormat->getAllTypes();
+    }
+    else
+    {
+        // Defensive fallback: keep behavior functional even if format registration order changes.
+        InternalPluginFormat fallbackInternalFormat;
+        internalTypes = fallbackInternalFormat.getAllTypes();
+    }
 
     for (auto& t : internalTypes)
         knownPluginList.addType(t);
 
-    pluginSortMethod = (KnownPluginList::SortMethod)getAppProperties().getUserSettings()->getIntValue(
+    pluginSortMethod = (KnownPluginList::SortMethod)getAppProperties().getIntValue(
         "pluginSortMethod",
         KnownPluginList::sortByManufacturer
     );
@@ -161,9 +176,6 @@ MainHostWindow::MainHostWindow()
     setMenuBar(this);
 
     getCommandManager().setFirstCommandTarget(this);
-
-    // Window starts off-desktop - AudioModule::setVisible() will add to desktop and show
-    removeFromDesktop();
 }
 
 MainHostWindow::~MainHostWindow()
@@ -187,7 +199,7 @@ MainHostWindow::~MainHostWindow()
     if (auto* g = graphHolder->graph.get())
         g->removeChangeListener(this);
 
-    getAppProperties().getUserSettings()->setValue("mainWindowPos", getWindowStateAsString());
+    getAppProperties().setValue("mainWindowPos", getWindowStateAsString());
     clearContentComponent();
 
     setMenuBar(nullptr);
@@ -265,7 +277,7 @@ PopupMenu MainHostWindow::getMenuForIndex(int topLevelMenuIndex, const String& /
         menu.addCommandItem(&getCommandManager(), CommandIDs::open);
 
         RecentlyOpenedFilesList recentFiles;
-        recentFiles.restoreFromString(getAppProperties().getUserSettings()->getValue("recentFilterGraphFiles"));
+        recentFiles.restoreFromString(getAppProperties().getValue("recentFilterGraphFiles"));
 
         PopupMenu recentFilesMenu;
         recentFiles.createPopupMenuItems(recentFilesMenu, 100, true, true);
@@ -346,7 +358,7 @@ void MainHostWindow::menuItemSelected(int menuItemID, int /*topLevelMenuIndex*/)
     else if (menuItemID >= 100 && menuItemID < 200)
     {
         RecentlyOpenedFilesList recentFiles;
-        recentFiles.restoreFromString(getAppProperties().getUserSettings()->getValue("recentFilterGraphFiles"));
+        recentFiles.restoreFromString(getAppProperties().getValue("recentFilterGraphFiles"));
 
         if (graphHolder != nullptr)
         {
@@ -379,7 +391,7 @@ void MainHostWindow::menuItemSelected(int menuItemID, int /*topLevelMenuIndex*/)
         else if (menuItemID == 204)
             pluginSortMethod = KnownPluginList::sortByFileSystemLocation;
 
-        getAppProperties().getUserSettings()->setValue("pluginSortMethod", (int)pluginSortMethod);
+        getAppProperties().setValue("pluginSortMethod", (int)pluginSortMethod);
 
         menuItemsChanged();
     }
@@ -648,16 +660,15 @@ bool MainHostWindow::perform(const InvocationInfo& info)
         break;
 
     case CommandIDs::autoScalePluginWindows:
-        if (auto* props = getAppProperties().getUserSettings())
-        {
-            auto newAutoScale = !isAutoScalePluginWindowsEnabled();
-            props->setValue("autoScalePluginWindows", var(newAutoScale));
+    {
+        auto newAutoScale = !isAutoScalePluginWindowsEnabled();
+        getAppProperties().setValue("autoScalePluginWindows", var(newAutoScale));
 
-            ApplicationCommandInfo cmdInfo(info.commandID);
-            updateAutoScaleMenuItem(cmdInfo);
-            menuItemsChanged();
-        }
-        break;
+        ApplicationCommandInfo cmdInfo(info.commandID);
+        updateAutoScaleMenuItem(cmdInfo);
+        menuItemsChanged();
+    }
+    break;
 
     case CommandIDs::aboutBox:
     {
@@ -818,10 +829,7 @@ void MainHostWindow::filesDropped(const StringArray& files, int x, int y)
 
 bool MainHostWindow::isAutoScalePluginWindowsEnabled()
 {
-    if (auto* props = getAppProperties().getUserSettings())
-        return props->getBoolValue("autoScalePluginWindows", false);
-
-    return false;
+    return getAppProperties().getBoolValue("autoScalePluginWindows", false);
 }
 
 void MainHostWindow::updateAutoScaleMenuItem(ApplicationCommandInfo& info)

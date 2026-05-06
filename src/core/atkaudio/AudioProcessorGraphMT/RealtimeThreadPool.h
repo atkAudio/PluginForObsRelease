@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -220,6 +221,11 @@ public:
         if (!graph || graph->empty())
             return;
 
+        // TODO(atk): taskQueue and executeDependencyGraph are separate paths, but graph submission
+        // still uses a single shared currentGraph slot; executeMutex serializes callers to prevent
+        // overwrite and waitUntilDone() stalls until a realtime-safe MPSC-style handoff replaces it.
+        std::lock_guard<std::mutex> lock(executeMutex);
+
         graph->setWakeCallback(
             []()
             {
@@ -380,6 +386,7 @@ private:
     RealtimeTaskQueue taskQueue;
     std::atomic<DependencyTaskGraph*> currentGraph{nullptr};
     std::atomic<bool> initialized{false};
+    std::mutex executeMutex;
 
     RealtimeThreadPool(const RealtimeThreadPool&) = delete;
     RealtimeThreadPool& operator=(const RealtimeThreadPool&) = delete;

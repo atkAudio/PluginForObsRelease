@@ -2,6 +2,7 @@
 
 #include <atkaudio/DeviceIo2/DeviceIo2.h>
 #include <juce_audio_utils/juce_audio_utils.h>
+#include <string>
 
 class DeviceIo2Plugin final : public juce::AudioProcessor
 {
@@ -13,9 +14,8 @@ public:
                   .withOutput("Output", juce::AudioChannelSet::stereo())
           )
     {
-        deviceIo2 = std::make_unique<atk::DeviceIo2>();
-        // Note: DeviceIo2 internal routing matrix is initialized with default diagonal routing
-        // It will auto-resize based on the actual OBS channel count during processing
+        // Lazy init: keep constructor cheap so internal plugin metadata enumeration
+        // does not instantiate DeviceIo2 and trigger device probing.
     }
 
     ~DeviceIo2Plugin() override
@@ -69,6 +69,8 @@ public:
     void prepareToPlay(double sampleRate, int samplesPerBlock) override
     {
         juce::ignoreUnused(sampleRate, samplesPerBlock);
+        ensureDeviceIo2Initialized();
+        applyPendingStateIfAny();
         // DeviceIo2 handles its own preparation internally during process()
     }
 
@@ -79,6 +81,8 @@ public:
 
     void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
     {
+        jassert(deviceIo2 != nullptr);
+
         if (!deviceIo2)
             return;
 
@@ -102,6 +106,9 @@ public:
 
     juce::AudioProcessorEditor* createEditor() override
     {
+        ensureDeviceIo2Initialized();
+        applyPendingStateIfAny();
+
         // DeviceIo2 provides a method to create an embeddable settings component
         if (deviceIo2)
         {
@@ -148,11 +155,21 @@ public:
 
     void getStateInformation(juce::MemoryBlock& destData) override
     {
-        if (!deviceIo2)
-            return;
+        destData.reset();
 
         std::string state;
-        deviceIo2->getState(state);
+        if (!pendingSerializedState.empty())
+            state = pendingSerializedState;
+
+        if (!state.empty())
+        {
+            // Authoritative until applied to DeviceIo2 instance.
+            destData.replaceAll(state.data(), state.size());
+            return;
+        }
+
+        if (deviceIo2)
+            deviceIo2->getState(state);
 
         if (!state.empty())
             destData.replaceAll(state.data(), state.size());
@@ -160,15 +177,41 @@ public:
 
     void setStateInformation(const void* data, int sizeInBytes) override
     {
-        if (!deviceIo2 || sizeInBytes <= 0)
+        if (sizeInBytes <= 0 || data == nullptr)
+        {
+            pendingSerializedState.clear();
             return;
+        }
 
-        std::string state(static_cast<const char*>(data), sizeInBytes);
-        deviceIo2->setState(state);
+        pendingSerializedState.assign(static_cast<const char*>(data), static_cast<size_t>(sizeInBytes));
+
+        if (deviceIo2)
+            applyPendingStateIfAny();
     }
 
 private:
+    void ensureDeviceIo2Initialized()
+    {
+        if (deviceIo2)
+            return;
+
+        deviceIo2 = std::make_unique<atk::DeviceIo2>();
+    }
+
+    void applyPendingStateIfAny()
+    {
+        std::string state;
+        if (!deviceIo2 || pendingSerializedState.empty())
+            return;
+
+        state = pendingSerializedState;
+        pendingSerializedState.clear();
+
+        deviceIo2->setState(state);
+    }
+
     std::unique_ptr<atk::DeviceIo2> deviceIo2;
+    std::string pendingSerializedState;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DeviceIo2Plugin)
 };

@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <atkaudio/FifoBuffer2.h>
+#include "core/atkaudio/atkaudio.h"
 #include "core/atkaudio/PluginHost/PluginHost.h"
 #include <inttypes.h>
 #include <math.h>
@@ -27,7 +28,7 @@ struct pluginhost_data
 {
     obs_source_t* context;
 
-    atk::PluginHost pluginHost;
+    std::unique_ptr<atk::PluginHost> pluginHost;
 
     std::vector<std::vector<float>> sidechainTempBuffer;
     std::vector<float*> pointersToProcess;
@@ -86,7 +87,7 @@ static void save(void* data, obs_data_t* settings)
 {
     auto* ph = (struct pluginhost_data*)data;
     std::string s;
-    ph->pluginHost.getState(s);
+    ph->pluginHost->getState(s);
 
     obs_source_t* parent = obs_filter_get_parent(ph->context);
     const char* parentName = parent ? obs_source_get_name(parent) : "(no parent)";
@@ -113,7 +114,7 @@ static void load(void* data, obs_data_t* settings)
     blog(LOG_INFO, "[PluginHost] load() - parent: %s, state size: %zu bytes", parentName, stateSize);
 
     std::string stateStr = chunkData ? chunkData : "";
-    ph->pluginHost.setState(stateStr);
+    ph->pluginHost->setState(stateStr);
 }
 
 static void pluginhost_update(void* data, obs_data_t* s)
@@ -174,6 +175,12 @@ static void pluginhost_update(void* data, obs_data_t* s)
 
 static void* pluginhost_create(obs_data_t* settings, obs_source_t* filter)
 {
+    if (!atk::isReady() || atk::isShuttingDown())
+    {
+        blog(LOG_WARNING, "[PluginHost] lifecycle not ready; skipping create");
+        return nullptr;
+    }
+
     struct pluginhost_data* ph = new pluginhost_data();
     ph->context = filter;
 
@@ -183,9 +190,11 @@ static void* pluginhost_create(obs_data_t* settings, obs_source_t* filter)
     size_t stateSize = chunkData ? strlen(chunkData) : 0;
     blog(LOG_INFO, "[PluginHost] create() - parent: %s, settings has state: %zu bytes", parentName, stateSize);
 
+    ph->pluginHost = std::make_unique<atk::PluginHost>();
+
     const char* filterUuid = obs_source_get_uuid(filter);
     if (filterUuid)
-        ph->pluginHost.setDockId(filterUuid);
+        ph->pluginHost->setDockId(filterUuid);
 
     pluginhost_update(ph, settings);
 
@@ -199,14 +208,14 @@ static void* pluginhost_create(obs_data_t* settings, obs_source_t* filter)
     ph->sidechain_sync.setHysteresis(0.25f);
 
     // Pre-prepare the plugin processor so setState works before first audio callback
-    ph->pluginHost.process(nullptr, (int)ph->num_channels, AUDIO_OUTPUT_FRAMES, (double)ph->sample_rate);
+    ph->pluginHost->process(nullptr, (int)ph->num_channels, AUDIO_OUTPUT_FRAMES, (double)ph->sample_rate);
 
     // Load state from settings if present (OBS load callback may not be called for all source types)
     if (stateSize > 0)
     {
         blog(LOG_INFO, "[PluginHost] create() - loading state from settings");
         std::string stateStr = chunkData;
-        ph->pluginHost.setState(stateStr);
+        ph->pluginHost->setState(stateStr);
         ph->hasLoadedState = true;
     }
 
@@ -325,7 +334,7 @@ static struct obs_audio_data* pluginhost_filter_audio(void* data, struct obs_aud
         ph->pointersToProcess[i + numChannels] = ph->sidechainTempBuffer[i].data();
     }
 
-    ph->pluginHost.process(ph->pointersToProcess.data(), numChannels, num_samples, sampleRate);
+    ph->pluginHost->process(ph->pointersToProcess.data(), numChannels, num_samples, sampleRate);
 
     return audio;
 }
@@ -362,7 +371,7 @@ static bool open_editor_button_clicked(obs_properties_t* props, obs_property_t* 
     obs_property_set_visible(obs_properties_get(props, CLOSE_PLUGIN_SETTINGS), true);
 
     pluginhost_data* ph = (pluginhost_data*)data;
-    ph->pluginHost.setVisible(true);
+    ph->pluginHost->setVisible(true);
 
     return true;
 }
@@ -373,7 +382,7 @@ static bool close_editor_button_clicked(obs_properties_t* props, obs_property_t*
     obs_property_set_visible(obs_properties_get(props, CLOSE_PLUGIN_SETTINGS), false);
 
     pluginhost_data* ph = (pluginhost_data*)data;
-    ph->pluginHost.setVisible(false);
+    ph->pluginHost->setVisible(false);
 
     return true;
 }

@@ -7,17 +7,17 @@
 
 atk::PluginHost2::PluginHost2()
     : mainHostWindow(std::make_unique<MainHostWindow>())
+    , moduleDeviceManager(
+          std::make_unique<atk::ModuleDeviceManager>(
+              std::make_unique<atk::ModuleAudioIODeviceType>("PluginHost2 Audio"),
+              mainHostWindow->getDeviceManager()
+          )
+      )
 {
-    moduleDeviceManager = std::make_unique<atk::ModuleDeviceManager>(
-        std::make_unique<atk::ModuleAudioIODeviceType>("PluginHost2 Audio"),
-        mainHostWindow->getDeviceManager()
-    );
-
     if (moduleDeviceManager->initialize())
         moduleDeviceManager->openOBSDevice();
 
     mainHostWindow->setExternalMidiClient(moduleDeviceManager->getMidiClient());
-    mainHostWindow->setVisible(false);
 }
 
 atk::PluginHost2::~PluginHost2()
@@ -40,7 +40,8 @@ atk::PluginHost2::~PluginHost2()
             }
 
             delete windowPtr;
-        }
+        },
+        0
     );
 }
 
@@ -134,16 +135,11 @@ void atk::PluginHost2::getState(std::string& s)
     auto* audioServerElement = new juce::XmlElement("AUDIOSERVER");
     if (auto* audioServer = atk::AudioServer::getInstance())
     {
-        auto inputDevices = audioServer->getAvailableInputDevices();
-        auto outputDevices = audioServer->getAvailableOutputDevices();
+        // Use only already-open devices to avoid triggering a full scanForDevices()
+        // on every save, which stalls the OBS main thread.
+        auto openDevices = audioServer->getOpenDeviceNames();
 
-        juce::StringArray allDevices;
-        allDevices.addArray(inputDevices);
-        for (const auto& dev : outputDevices)
-            if (!allDevices.contains(dev))
-                allDevices.add(dev);
-
-        for (const auto& deviceName : allDevices)
+        for (const auto& deviceName : openDevices)
         {
             double sampleRate = audioServer->getCurrentSampleRate(deviceName);
             int bufferSize = audioServer->getCurrentBufferSize(deviceName);

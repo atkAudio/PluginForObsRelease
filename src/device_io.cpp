@@ -41,7 +41,7 @@ struct adio_data
     std::atomic<double> fadeTimeSeconds = 0.5;
     std::atomic_bool shouldBypass = false;
 
-    atk::DeviceIo deviceIo;
+    std::unique_ptr<atk::DeviceIo> deviceIo;
 
     bool hasLoadedState = false;
 };
@@ -68,7 +68,7 @@ static void load(void* data, obs_data_t* settings)
 
     const char* chunkData = obs_data_get_string(settings, FILTER_ID);
     std::string stateStr = chunkData ? chunkData : "";
-    adio->deviceIo.setState(stateStr);
+    adio->deviceIo->setState(stateStr);
 }
 
 static void devio_update(void* data, obs_data_t* s)
@@ -87,7 +87,7 @@ static void devio_update(void* data, obs_data_t* s)
 
     auto outputDelay = (float)obs_data_get_double(s, OUTPUT_DELAY_ID);
     adio->outputDelay.store(outputDelay, std::memory_order_release);
-    adio->deviceIo.setOutputDelay(outputDelay);
+    adio->deviceIo->setOutputDelay(outputDelay);
 
     // auto outputGain = (float)obs_data_get_double(s, OG_ID);
     // outputGain = obs_db_to_mul(outputGain);
@@ -105,6 +105,8 @@ static void* devio_create(obs_data_t* settings, obs_source_t* filter)
     adio->channels = numChannels;
     adio->sampleRate = sampleRate;
 
+    adio->deviceIo = std::make_unique<atk::DeviceIo>();
+
     devio_update(adio, settings);
 
     // Load state from settings if present (OBS load callback may not be called for all source types)
@@ -112,7 +114,7 @@ static void* devio_create(obs_data_t* settings, obs_source_t* filter)
     if (chunkData && strlen(chunkData) > 0)
     {
         std::string stateStr = chunkData;
-        adio->deviceIo.setState(stateStr);
+        adio->deviceIo->setState(stateStr);
         adio->hasLoadedState = true;
     }
 
@@ -135,7 +137,7 @@ static bool open_editor_button_clicked(obs_properties_t* props, obs_property_t* 
     obs_property_set_visible(obs_properties_get(props, CLOSE_DEVICE_SETTINGS), true);
 
     adio_data* adio = (adio_data*)data;
-    adio->deviceIo.setVisible(true);
+    adio->deviceIo->setVisible(true);
 
     return true;
 }
@@ -146,7 +148,7 @@ static bool close_editor_button_clicked(obs_properties_t* props, obs_property_t*
     obs_property_set_visible(obs_properties_get(props, CLOSE_DEVICE_SETTINGS), false);
 
     adio_data* adio = (adio_data*)data;
-    adio->deviceIo.setVisible(false);
+    adio->deviceIo->setVisible(false);
 
     return true;
 }
@@ -206,16 +208,16 @@ static struct obs_audio_data* devio_filter(void* data, struct obs_audio_data* au
 
     if (adio->followScene.load(std::memory_order_acquire))
     {
-        adio->deviceIo.setFadeTime(adio->fadeTimeSeconds.load(std::memory_order_acquire));
-        adio->deviceIo.setBypass(adio->shouldBypass.load(std::memory_order_acquire));
+        adio->deviceIo->setFadeTime(adio->fadeTimeSeconds.load(std::memory_order_acquire));
+        adio->deviceIo->setBypass(adio->shouldBypass.load(std::memory_order_acquire));
     }
     else
     {
-        adio->deviceIo.setBypass(false);
+        adio->deviceIo->setBypass(false);
     }
 
-    adio->deviceIo.setMixInput(adio->mixInput.load(std::memory_order_acquire));
-    adio->deviceIo.process(adata, channels, frames, adio->sampleRate);
+    adio->deviceIo->setMixInput(adio->mixInput.load(std::memory_order_acquire));
+    adio->deviceIo->process(adata, channels, frames, adio->sampleRate);
 
     auto inputGain = adio->inputGain.load(std::memory_order_acquire);
     for (int i = 0; i < channels; i++)
@@ -229,7 +231,7 @@ static void save(void* data, obs_data_t* settings)
 {
     auto* adio = (struct adio_data*)data;
     std::string s;
-    adio->deviceIo.getState(s);
+    adio->deviceIo->getState(s);
 
     obs_data_set_string(settings, FILTER_ID, s.c_str());
 }

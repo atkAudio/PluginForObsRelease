@@ -332,21 +332,29 @@ public:
         if (connectionScheduled.exchange(true, std::memory_order_acq_rel))
             return;
 
+        juce::WeakReference<ObsSourceAudioProcessor> weakSelf(this);
         juce::Timer::callAfterDelay(
             2000,
-            [this]()
+            [weakSelf]()
             {
+                if (weakSelf == nullptr)
+                    return;
+
                 juce::MessageManager::callAsync(
-                    [this]()
+                    [weakSelf]()
                     {
+                        auto* self = weakSelf.get();
+                        if (self == nullptr)
+                            return;
+
                         // Check if connection already exists (acquire)
-                        if (sourceConnected.load(std::memory_order_acquire))
+                        if (self->sourceConnected.load(std::memory_order_acquire))
                         {
-                            connectionScheduled.store(false, std::memory_order_release);
+                            self->connectionScheduled.store(false, std::memory_order_release);
                             return;
                         }
-                        addObsAudioCaptureCallback();
-                        connectionScheduled.store(false, std::memory_order_release);
+                        self->addObsAudioCaptureCallback();
+                        self->connectionScheduled.store(false, std::memory_order_release);
                     }
                 );
             }
@@ -627,6 +635,7 @@ public:
     }
 
 private:
+    JUCE_DECLARE_WEAK_REFERENCEABLE(ObsSourceAudioProcessor)
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ObsSourceAudioProcessor)
 };
 

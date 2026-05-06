@@ -64,10 +64,19 @@ bool obs_module_load(void)
 
     obs_log(LOG_INFO, "plugin loaded successfully (version %s)", plugin_version);
 
-    atk::create();
+    if (!atk::create())
+    {
+        obs_log(LOG_ERROR, "Failed to initialize OBS JUCE plugin format lifecycle");
+        return false;
+    }
 
     auto* mainWindow = (QObject*)obs_frontend_get_main_window();
-    atk::startMessagePump(mainWindow);
+    if (!atk::startMessagePump(mainWindow))
+    {
+        obs_log(LOG_ERROR, "Failed to start OBS JUCE plugin format message pump");
+        atk::destroy();
+        return false;
+    }
 
     atk::update();
 

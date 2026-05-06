@@ -81,22 +81,22 @@ public:
             }
         }
 
-        // Build DAG node connectivity from JUCE connections
-        // Only add unique node connections (not per-channel duplicates)
+        // Build DAG node connectivity from JUCE connections.
+        // Only add unique node connections (not per-channel duplicates).
+        // Only connect nodes that are both present in dagNodes: skipped nodes (OBS Output, etc.)
+        // must not appear in outputsTo, otherwise they count as non-excluded outputs and
+        // break endpoint detection in the DAG partitioner.
         for (const auto& conn : connections)
         {
             auto srcIt = dagNodes.find(conn.source.nodeID);
             auto dstIt = dagNodes.find(conn.destination.nodeID);
 
-            if (srcIt != dagNodes.end())
+            if (srcIt != dagNodes.end() && dstIt != dagNodes.end())
             {
                 auto& outputs = srcIt->second.outputsTo;
                 if (std::find(outputs.begin(), outputs.end(), conn.destination.nodeID) == outputs.end())
                     outputs.push_back(conn.destination.nodeID);
-            }
 
-            if (dstIt != dagNodes.end())
-            {
                 auto& inputs = dstIt->second.inputsFrom;
                 if (std::find(inputs.begin(), inputs.end(), conn.source.nodeID) == inputs.end())
                     inputs.push_back(conn.source.nodeID);

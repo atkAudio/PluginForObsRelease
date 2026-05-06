@@ -3,6 +3,11 @@
 #include <atkaudio/SharedPluginList.h>
 #include <juce_gui_extra/juce_gui_extra.h>
 
+#ifdef ENABLE_QT
+#include <QCoreApplication>
+#include <QMetaObject>
+#endif
+
 using namespace juce;
 
 HostAudioProcessorEditor::HostAudioProcessorEditor(HostAudioProcessorImpl& owner)
@@ -60,10 +65,32 @@ void HostAudioProcessorEditor::pluginChanged()
         auto editorComponent = std::make_unique<PluginEditorComponent>(
             hostProcessor.createInnerEditor(),
             &hostProcessor,
-            [this]
+            [safeThis = Component::SafePointer<HostAudioProcessorEditor>(this)]
             {
-                [[maybe_unused]] const auto posted = MessageManager::callAsync([this] { clearPlugin(); });
-                jassert(posted);
+#ifdef ENABLE_QT
+                // Defer unload to the Qt event queue so plugin teardown happens
+                // outside the active JUCE dispatch batch.
+                if (auto* app = QCoreApplication::instance())
+                {
+                    QMetaObject::invokeMethod(
+                        app,
+                        [safeThis]
+                        {
+                            if (safeThis != nullptr)
+                                safeThis->clearPlugin();
+                        },
+                        Qt::QueuedConnection
+                    );
+                    return;
+                }
+#endif
+
+                if (safeThis != nullptr)
+                {
+                    [[maybe_unused]] const auto posted =
+                        MessageManager::callAsync([safeThis] { if (safeThis != nullptr) safeThis->clearPlugin(); });
+                    jassert(posted);
+                }
             }
         );
 

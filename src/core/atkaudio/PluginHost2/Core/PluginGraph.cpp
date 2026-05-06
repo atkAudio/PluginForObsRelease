@@ -280,9 +280,7 @@ Result PluginGraph::saveDocument(const File& file)
 File PluginGraph::getLastDocumentOpened()
 {
     RecentlyOpenedFilesList recentFiles;
-    recentFiles.restoreFromString(
-        mainHostWindow.getAppProperties().getUserSettings()->getValue("recentFilterGraphFiles")
-    );
+    recentFiles.restoreFromString(mainHostWindow.getAppProperties().getValue("recentFilterGraphFiles"));
 
     return recentFiles.getFile(0);
 }
@@ -290,13 +288,11 @@ File PluginGraph::getLastDocumentOpened()
 void PluginGraph::setLastDocumentOpened(const File& file)
 {
     RecentlyOpenedFilesList recentFiles;
-    recentFiles.restoreFromString(
-        mainHostWindow.getAppProperties().getUserSettings()->getValue("recentFilterGraphFiles")
-    );
+    recentFiles.restoreFromString(mainHostWindow.getAppProperties().getValue("recentFilterGraphFiles"));
 
     recentFiles.addFile(file);
 
-    mainHostWindow.getAppProperties().getUserSettings()->setValue("recentFilterGraphFiles", recentFiles.toString());
+    mainHostWindow.getAppProperties().setValue("recentFilterGraphFiles", recentFiles.toString());
 }
 
 static void readBusLayoutFromXml(

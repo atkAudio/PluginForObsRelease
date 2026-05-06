@@ -1266,6 +1266,20 @@ void AudioServer::shutdown()
     deviceEnumerator.reset();
 }
 
+juce::StringArray AudioServer::getOpenDeviceNames() const
+{
+    std::lock_guard<std::mutex> lock(devicesMutex);
+    juce::StringArray names;
+    for (const auto& [key, handler] : deviceHandlers)
+    {
+        int sep = key.indexOf("|");
+        juce::String deviceName = (sep >= 0) ? key.substring(sep + 1) : key;
+        if (deviceName.isNotEmpty())
+            names.addIfNotAlreadyThere(deviceName);
+    }
+    return names;
+}
+
 juce::String AudioServer::makeDeviceKey(const juce::String& deviceType, const juce::String& deviceName)
 {
     return deviceType + "|" + deviceName;

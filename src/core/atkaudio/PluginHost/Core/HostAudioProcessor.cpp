@@ -45,22 +45,10 @@ HostAudioProcessorImpl::HostAudioProcessorImpl(int numChannels)
               .withInput("Sidechain", getChannelSetForCount(numChannels), false)
       )
 {
-    appProperties.setStorageParameters(
-        [&]
-        {
-            PropertiesFile::Options opt;
-            opt.applicationName = getName();
-            opt.commonToAllUsers = false;
-            opt.doNotSave = false;
-            opt.filenameSuffix = "settings";
-            opt.ignoreCaseOfKeyNames = false;
-            opt.storageFormat = PropertiesFile::StorageFormat::storeAsXML;
-            opt.osxLibrarySubFolder = "Application Support";
-            opt.folderName = "atkAudio Plugin";
-            opt.processLock = &appPropertiesLock;
-            return opt;
-        }()
-    );
+    PropertiesFile::Options opt;
+    opt.processLock = &appPropertiesLock;
+    opt.storageFormat = PropertiesFile::StorageFormat::storeAsXML;
+    appProperties = std::make_unique<PropertiesFile>(atk::getSettingsFile(getName()), opt);
 
     juce::addDefaultFormatsToManager(pluginFormatManager);
 

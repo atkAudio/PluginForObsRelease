@@ -1,11 +1,10 @@
 #include "core/atkaudio/atkaudio.h"
 
 #include <atkaudio/AudioProcessorGraphMT/RealtimeThreadPool.h>
-#include <atkaudio/JuceApp.h>
 #include <atkaudio/LookAndFeel.h>
-#include <atkaudio/MessagePump.h>
 #include <atkaudio/ModuleInfrastructure/AudioServer/AudioServer.h>
 #include <atkaudio/ModuleInfrastructure/MidiServer/MidiServer.h>
+#include <atkaudio/ObsJucePluginFormatLifecycle.h>
 #include <atkaudio/UpdateCheck.h>
 
 #include <juce_audio_utils/juce_audio_utils.h>
@@ -18,31 +17,59 @@
 #include <QWindow>
 #endif
 
+#include <obs-module.h>
 #include <obs-frontend-api.h>
 
 UpdateCheck* updateCheck = nullptr;
-atk::MessagePump* g_messagePump = nullptr;
 
 // Store Qt main window handle for per-instance parent creation (lazy-initialized)
 static void* g_qtMainWindowHandle = nullptr;
 static bool g_qtMainWindowInitialized = false;
 
-void atk::create()
+static juce::File getFallbackSettingsFile(const juce::String& name)
 {
-// Set createInstance to make JUCE think this is a standalone app.
-// This enables per-monitor DPI awareness on Windows via setDPIAwareness().
-#ifndef JUCE_MAC
-    juce::JUCEApplicationBase::createInstance = []() -> juce::JUCEApplicationBase* { return nullptr; };
-#endif
-    juce::initialiseJuce_GUI();
+    juce::PropertiesFile::Options opts;
+    opts.applicationName = name;
+    opts.filenameSuffix = "settings";
+    opts.osxLibrarySubFolder = "Application Support";
+    opts.folderName = "atkAudio Plugin";
+    return opts.getDefaultFile();
+}
 
-    juce::MessageManager::getInstance()->setCurrentThreadAsMessageThread();
+juce::File atk::getSettingsFile(const juce::String& name)
+{
+    auto* module = obs_current_module();
+    if (module == nullptr)
+        return getFallbackSettingsFile(name);
+
+    auto filename = name + ".settings";
+    char* obsPath = obs_module_get_config_path(module, filename.toRawUTF8());
+    if (obsPath == nullptr)
+        return getFallbackSettingsFile(name);
+
+    juce::File result(obsPath);
+    bfree(obsPath);
+    return result;
+}
+
+bool atk::create()
+{
+    auto& lifecycle = atk::ObsJucePluginFormatLifecycle::getInstance();
+    if (!lifecycle.initialize())
+    {
+        DBG("create: failed to initialize OBS JUCE format lifecycle");
+        return false;
+    }
 
     // Initialize LookAndFeel singleton
     juce::SharedResourcePointer<atk::LookAndFeel> lookAndFeel;
 
-    // Sync OBS theme colors to JUCE LookAndFeel
+    // Sync OBS theme colors to JUCE LookAndFeel.
+    // Bypass only true Debug builds (_DEBUG without NDEBUG), but keep this enabled
+    // in RelWithDebInfo where _DEBUG may still be defined by toolchain settings.
+#if !(defined(_DEBUG) && !defined(NDEBUG))
     getQtMainWindowHandle();
+#endif
 
     // Initialize MIDI server
     if (auto* midiServer = atk::MidiServer::getInstance())
@@ -55,49 +82,40 @@ void atk::create()
     // Initialize RealtimeThreadPool synchronously so it's ready when filters are created
     if (auto* threadPool = atk::RealtimeThreadPool::getInstance())
         threadPool->initialize();
+
+    return true;
 }
 
 void atk::pump()
 {
-#if JUCE_LINUX
-    // On Linux, we need to pump the JUCE message loop
-    // Use dispatchPendingMessages() instead of runDispatchLoopUntil() to avoid
-    // conflicts with Qt's event loop - we just want to process pending JUCE messages
-    // without polling/blocking for new ones
-    if (auto* mm = juce::MessageManager::getInstanceWithoutCreating())
-    {
-        // Only dispatch if we're on the message thread
-        if (mm->isThisTheMessageThread())
-        {
-            // Process any pending async callbacks
-            mm->runDispatchLoopUntil(0); // 0ms = just process pending, don't wait
-        }
-    }
-#endif
+    atk::ObsJucePluginFormatLifecycle::getInstance().pumpPendingMessages();
 }
 
-void atk::startMessagePump(QObject* qtParent)
+bool atk::startMessagePump(QObject* qtParent)
 {
-#if JUCE_LINUX
-    // On Linux, we need a Qt timer-based message pump for JUCE
-    if (g_messagePump)
+    auto& lifecycle = atk::ObsJucePluginFormatLifecycle::getInstance();
+    if (!lifecycle.startMessagePump(qtParent))
     {
-        DBG("startMessagePump: MessagePump already started");
-        return;
+        DBG("startMessagePump: failed to start OBS JUCE format message pump");
+        return false;
     }
 
-    g_messagePump = new atk::MessagePump(qtParent);
-#else
-    // On macOS and Windows, we don't need a message pump - JUCE integrates with native event loops
-    (void)qtParent;
-#endif
+    return true;
+}
+
+bool atk::isReady()
+{
+    return atk::ObsJucePluginFormatLifecycle::getInstance().isReady();
+}
+
+bool atk::isShuttingDown()
+{
+    return atk::ObsJucePluginFormatLifecycle::getInstance().isShuttingDown();
 }
 
 void atk::destroy()
 {
-    juce::MessageManager::getInstance()->setCurrentThreadAsMessageThread();
-
-    g_messagePump = nullptr;
+    auto& lifecycle = atk::ObsJucePluginFormatLifecycle::getInstance();
 
     if (auto* midiServer = atk::MidiServer::getInstance())
     {
@@ -117,7 +135,7 @@ void atk::destroy()
         atk::RealtimeThreadPool::deleteInstance();
     }
 
-    juce::shutdownJuce_GUI();
+    lifecycle.shutdown();
 }
 
 void atk::update()

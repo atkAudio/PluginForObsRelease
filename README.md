@@ -57,6 +57,10 @@ git clone https://github.com/atkaudio/pluginforobsrelease
 cd pluginforobsrelease
 cmake --preset ubuntu-x86_64
 cmake --build --preset ubuntu-x86_64 
+
+# Local debug build
+cmake --preset ubuntu-x86_64-debug
+cmake --build --preset ubuntu-x86_64-debug
 ```
 
 Find `atkaudio-pluginforobs.so` and copy it to OBS plugins directory.

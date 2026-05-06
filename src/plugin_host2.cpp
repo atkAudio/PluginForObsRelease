@@ -1,4 +1,5 @@
 #include <algorithm>
+#include "core/atkaudio/atkaudio.h"
 #include "core/atkaudio/PluginHost2/API/PluginHost2.h"
 #include <inttypes.h>
 #include <math.h>
@@ -22,7 +23,7 @@ struct pluginhost2_data
     obs_source_t* context;
     obs_source_t* parent;
 
-    atk::PluginHost2 pluginHost2;
+    std::unique_ptr<atk::PluginHost2> pluginHost2;
 
     size_t num_channels;
     size_t sample_rate;
@@ -39,8 +40,11 @@ static const char* pluginhost2_name(void* unused)
 static void save(void* data, obs_data_t* settings)
 {
     auto* ph = (struct pluginhost2_data*)data;
+    if (ph == nullptr || ph->pluginHost2 == nullptr)
+        return;
+
     std::string s;
-    ph->pluginHost2.getState(s);
+    ph->pluginHost2->getState(s);
 
     obs_data_set_string(settings, FILTER_ID, s.c_str());
 }
@@ -48,18 +52,23 @@ static void save(void* data, obs_data_t* settings)
 static void load(void* data, obs_data_t* settings)
 {
     auto* ph = (struct pluginhost2_data*)data;
+    if (ph == nullptr || ph->pluginHost2 == nullptr)
+        return;
+
     if (ph->hasLoadedState)
         return;
     ph->hasLoadedState = true;
 
     const char* chunkData = obs_data_get_string(settings, FILTER_ID);
     std::string stateStr = chunkData ? chunkData : "";
-    ph->pluginHost2.setState(stateStr);
+    ph->pluginHost2->setState(stateStr);
 }
 
 static void pluginhost2_update(void* data, obs_data_t* s)
 {
     struct pluginhost2_data* ph = (struct pluginhost2_data*)data;
+    if (ph == nullptr)
+        return;
 
     const uint32_t sample_rate = audio_output_get_sample_rate(obs_get_audio());
     const size_t num_channels = audio_output_get_channels(obs_get_audio());
@@ -70,10 +79,17 @@ static void pluginhost2_update(void* data, obs_data_t* s)
 
 static void* pluginhost2_create(obs_data_t* settings, obs_source_t* filter)
 {
+    if (!atk::isReady() || atk::isShuttingDown())
+    {
+        blog(LOG_WARNING, "[atkAudio PluginHost2] lifecycle not ready; skipping create");
+        return nullptr;
+    }
+
     struct pluginhost2_data* ph = new pluginhost2_data();
     ph->context = filter;
     ph->parent = obs_filter_get_parent(filter);
-    ph->pluginHost2.setParentSource(ph->parent);
+    ph->pluginHost2 = std::make_unique<atk::PluginHost2>();
+    ph->pluginHost2->setParentSource(ph->parent);
 
     pluginhost2_update(ph, settings);
 
@@ -82,7 +98,7 @@ static void* pluginhost2_create(obs_data_t* settings, obs_source_t* filter)
     if (chunkData && strlen(chunkData) > 0)
     {
         std::string stateStr = chunkData;
-        ph->pluginHost2.setState(stateStr);
+        ph->pluginHost2->setState(stateStr);
         ph->hasLoadedState = true;
     }
 
@@ -92,6 +108,8 @@ static void* pluginhost2_create(obs_data_t* settings, obs_source_t* filter)
 static void pluginhost2_destroy(void* data)
 {
     struct pluginhost2_data* ph = (struct pluginhost2_data*)data;
+    if (ph == nullptr)
+        return;
 
     delete ph;
 }
@@ -99,6 +117,8 @@ static void pluginhost2_destroy(void* data)
 static struct obs_audio_data* pluginhost2_filter_audio(void* data, struct obs_audio_data* audio)
 {
     struct pluginhost2_data* ph = (struct pluginhost2_data*)data;
+    if (ph == nullptr || ph->pluginHost2 == nullptr)
+        return audio;
 
     int num_samples = audio->frames;
     if (num_samples == 0)
@@ -106,7 +126,7 @@ static struct obs_audio_data* pluginhost2_filter_audio(void* data, struct obs_au
 
     float** samples = (float**)audio->data;
 
-    ph->pluginHost2.process(samples, (int)ph->num_channels, num_samples, (double)ph->sample_rate);
+    ph->pluginHost2->process(samples, (int)ph->num_channels, num_samples, (double)ph->sample_rate);
 
     return audio;
 }
@@ -117,7 +137,10 @@ static bool open_editor_button_clicked(obs_properties_t* props, obs_property_t* 
     obs_property_set_visible(obs_properties_get(props, CLOSE_PLUGIN_SETTINGS), true);
 
     pluginhost2_data* ph = (pluginhost2_data*)data;
-    ph->pluginHost2.setVisible(true);
+    if (ph == nullptr || ph->pluginHost2 == nullptr)
+        return true;
+
+    ph->pluginHost2->setVisible(true);
 
     return true;
 }
@@ -128,7 +151,10 @@ static bool close_editor_button_clicked(obs_properties_t* props, obs_property_t*
     obs_property_set_visible(obs_properties_get(props, CLOSE_PLUGIN_SETTINGS), false);
 
     pluginhost2_data* ph = (pluginhost2_data*)data;
-    ph->pluginHost2.setVisible(false);
+    if (ph == nullptr || ph->pluginHost2 == nullptr)
+        return true;
+
+    ph->pluginHost2->setVisible(false);
 
     return true;
 }
@@ -157,8 +183,11 @@ static obs_properties_t* pluginhost2_properties(void* data)
 static void pluginhost2_filter_add(void* data, obs_source_t* source)
 {
     struct pluginhost2_data* ph = (struct pluginhost2_data*)data;
+    if (ph == nullptr || ph->pluginHost2 == nullptr)
+        return;
+
     ph->parent = source;
-    ph->pluginHost2.setParentSource(source);
+    ph->pluginHost2->setParentSource(source);
 }
 
 struct obs_source_info pluginhost2_filter = {
