@@ -4,6 +4,7 @@
 #include "PluginHostFooter.h"
 #include "UICommon.h"
 
+#include <atkaudio/Logging.h>
 #include <atkaudio/ModuleInfrastructure/AudioServer/AudioServerSettingsComponent.h>
 #include <atkaudio/ModuleInfrastructure/MidiServer/MidiServerSettingsComponent.h>
 #include <cmath>
@@ -424,8 +425,14 @@ private:
             float currentScale = (float)peer->getPlatformScaleFactor();
             if (std::abs(currentScale - cachedScaleFactor) > 0.01f)
             {
-                DBG("PluginEditorComponent: Scale factor changed from " << cachedScaleFactor << " to " << currentScale);
-
+                atk::logging::info(
+                    "PluginEditorComponent::checkScaleFactorChanged",
+                    juce::String::formatted(
+                        "scale factor changed %.2f -> %.2f; scheduling editor recreation",
+                        cachedScaleFactor,
+                        currentScale
+                    )
+                );
                 // Defer editor recreation to avoid re-entrancy during resize callbacks
                 juce::MessageManager::callAsync(
                     [safeThis = juce::Component::SafePointer<PluginEditorComponent>(this)]

@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <atkaudio/FifoBuffer2.h>
+#include "core/atkaudio/Logging.h"
 #include "core/atkaudio/atkaudio.h"
 #include "core/atkaudio/PluginHost/PluginHost.h"
 #include <inttypes.h>
@@ -86,12 +87,17 @@ static void sidechain_capture(void* param, obs_source_t* source, const struct au
 static void save(void* data, obs_data_t* settings)
 {
     auto* ph = (struct pluginhost_data*)data;
+    atk::logging::debug("OBS_API.PluginHost.save", "called");
+
     std::string s;
     ph->pluginHost->getState(s);
 
     obs_source_t* parent = obs_filter_get_parent(ph->context);
     const char* parentName = parent ? obs_source_get_name(parent) : "(no parent)";
-    blog(LOG_INFO, "[PluginHost] save() - parent: %s, state size: %zu bytes", parentName, s.size());
+    atk::logging::debug(
+        "OBS_API.PluginHost.save",
+        "parent=" + juce::String(parentName) + ", stateSize=" + juce::String((int)s.size())
+    );
 
     obs_data_set_string(settings, FILTER_ID, s.c_str());
 }
@@ -102,16 +108,21 @@ static void load(void* data, obs_data_t* settings)
     obs_source_t* parent = obs_filter_get_parent(ph->context);
     const char* parentName = parent ? obs_source_get_name(parent) : "(no parent)";
 
+    atk::logging::debug("OBS_API.PluginHost.load", "called");
+
     if (ph->hasLoadedState)
     {
-        blog(LOG_INFO, "[PluginHost] load() - parent: %s, SKIPPED (already loaded)", parentName);
+        atk::logging::debug("OBS_API.PluginHost.load", "skipped; state already loaded");
         return;
     }
     ph->hasLoadedState = true;
 
     const char* chunkData = obs_data_get_string(settings, FILTER_ID);
     size_t stateSize = chunkData ? strlen(chunkData) : 0;
-    blog(LOG_INFO, "[PluginHost] load() - parent: %s, state size: %zu bytes", parentName, stateSize);
+    atk::logging::debug(
+        "OBS_API.PluginHost.load",
+        "parent=" + juce::String(parentName) + ", stateSize=" + juce::String((int)stateSize)
+    );
 
     std::string stateStr = chunkData ? chunkData : "";
     ph->pluginHost->setState(stateStr);
@@ -175,9 +186,11 @@ static void pluginhost_update(void* data, obs_data_t* s)
 
 static void* pluginhost_create(obs_data_t* settings, obs_source_t* filter)
 {
+    atk::logging::info("OBS_API.PluginHost.create", "called");
+
     if (!atk::isReady() || atk::isShuttingDown())
     {
-        blog(LOG_WARNING, "[PluginHost] lifecycle not ready; skipping create");
+        atk::logging::warning("OBS_API.PluginHost.create", "skipping create because lifecycle is not ready");
         return nullptr;
     }
 
@@ -188,7 +201,10 @@ static void* pluginhost_create(obs_data_t* settings, obs_source_t* filter)
     const char* parentName = parent ? obs_source_get_name(parent) : "(no parent)";
     const char* chunkData = obs_data_get_string(settings, FILTER_ID);
     size_t stateSize = chunkData ? strlen(chunkData) : 0;
-    blog(LOG_INFO, "[PluginHost] create() - parent: %s, settings has state: %zu bytes", parentName, stateSize);
+    atk::logging::debug(
+        "OBS_API.PluginHost.create",
+        "parent=" + juce::String(parentName) + ", savedStateSize=" + juce::String((int)stateSize)
+    );
 
     ph->pluginHost = std::make_unique<atk::PluginHost>();
 
@@ -213,11 +229,13 @@ static void* pluginhost_create(obs_data_t* settings, obs_source_t* filter)
     // Load state from settings if present (OBS load callback may not be called for all source types)
     if (stateSize > 0)
     {
-        blog(LOG_INFO, "[PluginHost] create() - loading state from settings");
+        atk::logging::debug("OBS_API.PluginHost.create", "loading saved state from settings");
         std::string stateStr = chunkData;
         ph->pluginHost->setState(stateStr);
         ph->hasLoadedState = true;
     }
+
+    atk::logging::info("OBS_API.PluginHost.create", "completed");
 
     return ph;
 }
@@ -225,6 +243,8 @@ static void* pluginhost_create(obs_data_t* settings, obs_source_t* filter)
 static void pluginhost_destroy(void* data)
 {
     struct pluginhost_data* ph = (struct pluginhost_data*)data;
+
+    atk::logging::info("OBS_API.PluginHost.destroy", "called");
 
     if (ph->weak_sidechain)
     {
@@ -237,6 +257,8 @@ static void pluginhost_destroy(void* data)
 
         obs_weak_source_release(ph->weak_sidechain);
     }
+
+    ph->pluginHost.reset();
 
     bfree(ph->sidechain_name);
     delete ph;

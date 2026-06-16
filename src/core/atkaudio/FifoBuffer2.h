@@ -336,7 +336,13 @@ public:
         return toWrite;
     }
 
-    int read(float* const* dest, int numChannels, int numSamples, bool advanceReadPos = true, bool addToBuffer = false)
+    int read(
+        float* const* dest,
+        int numChannels,
+        int numSamples,
+        bool advanceReadPos = true,
+        bool addToBuffer = false
+    )
     {
         std::unique_lock<std::mutex> lock(readLock, std::try_to_lock);
         if (!lock.owns_lock())
@@ -568,7 +574,13 @@ public:
         return fifoBuffer.write(src, numChannels, numSamples);
     }
 
-    bool read(float* const* dest, int numChannels, int numSamples, double sampleRate, bool addToBuffer = false)
+    bool read(
+        float* const* dest,
+        int numChannels,
+        int numSamples,
+        double sampleRate,
+        bool addToBuffer = false
+    )
     {
         std::unique_lock<std::mutex> lock(readLock, std::try_to_lock);
         if (!lock.owns_lock())
@@ -590,9 +602,12 @@ public:
         {
             // Need to prepare - must acquire writeLock
             lock.unlock();
-            std::lock_guard<std::mutex> lock1(writeLock);
-            std::lock_guard<std::mutex> lock2(readLock);
-            prepare();
+            {
+                std::lock_guard<std::mutex> lock1(writeLock);
+                std::lock_guard<std::mutex> lock2(readLock);
+                prepare();
+            }
+            lock.lock();
         }
 
         if (!isPrepared.load(std::memory_order_acquire))
@@ -616,7 +631,8 @@ public:
                 maxBaseLevel = std::max(maxBaseLevel, bufferLevelHistory[i]);
             }
 
-            int baseTargetLevel = std::min(static_cast<int>(std::ceil(readerBufferSize * ratio)), maxBaseLevel);
+            int baseTargetLevel =
+                std::min(static_cast<int>(std::ceil(readerBufferSize * ratio)), maxBaseLevel);
 
             float targetFactor = targetLevelFactor.load(std::memory_order_acquire);
             float hyst = hysteresis.load(std::memory_order_acquire);
@@ -628,7 +644,8 @@ public:
             if (minBufferLevel < lowThreshold || minBufferLevel > highThreshold)
             {
                 int error = minBufferLevel - targetLevel;
-                int64_t windowSamples = static_cast<int64_t>(readerBufferSize) * BUFFER_HISTORY_SIZE;
+                int64_t windowSamples =
+                    static_cast<int64_t>(readerBufferSize) * BUFFER_HISTORY_SIZE;
                 bufferCompensation = static_cast<double>(error) / windowSamples;
                 wasAtTargetLevel = (minBufferLevel >= lowThreshold);
             }
@@ -672,7 +689,8 @@ public:
 
         if (tempBuffer.size() < static_cast<size_t>(writerNumChannels))
             tempBuffer.resize(writerNumChannels);
-        if (tempBuffer.size() > 0 && tempBuffer[0].size() < static_cast<size_t>(writerSamplesNeeded))
+        if (tempBuffer.size() > 0
+            && tempBuffer[0].size() < static_cast<size_t>(writerSamplesNeeded))
             for (auto& channel : tempBuffer)
                 channel.resize(writerSamplesNeeded);
 
@@ -682,7 +700,8 @@ public:
         for (int ch = 0; ch < writerNumChannels; ++ch)
             tempPtrs[ch] = tempBuffer[ch].data();
 
-        auto writerSamples = fifoBuffer.read(tempPtrs.data(), writerNumChannels, writerSamplesNeeded, false);
+        auto writerSamples =
+            fifoBuffer.read(tempPtrs.data(), writerNumChannels, writerSamplesNeeded, false);
 
         if (writerSamples == 0)
             return false;
@@ -728,7 +747,8 @@ public:
 
         auto channelGain = 1.0f;
         if (writerNumChannels > numChannels)
-            channelGain = static_cast<float>(std::sqrt(static_cast<double>(numChannels) / writerNumChannels));
+            channelGain =
+                static_cast<float>(std::sqrt(static_cast<double>(numChannels) / writerNumChannels));
 
         for (int srcCh = 0; srcCh < writerNumChannels; ++srcCh)
         {
@@ -737,9 +757,14 @@ public:
             int samplesConsumed;
             if (srcCh < numChannels)
             {
-                samplesConsumed =
-                    interpolators[srcCh]
-                        ->process(finalRatio, tempBuffer[srcCh].data(), dest[destCh], numSamples, writerSamples, 0);
+                samplesConsumed = interpolators[srcCh]->process(
+                    finalRatio,
+                    tempBuffer[srcCh].data(),
+                    dest[destCh],
+                    numSamples,
+                    writerSamples,
+                    0
+                );
             }
             else
             {

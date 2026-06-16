@@ -1,6 +1,6 @@
 #include "IOConfigurationWindow.h"
 
-#include "../Core/InternalPlugins.h"
+#include "../InternalPlugins/InternalPlugins.h"
 #include "GraphEditorPanel.h"
 #include "MainHostWindow.h"
 
@@ -415,8 +415,9 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(InputOutputConfig)
 };
 
-IOConfigurationWindow::IOConfigurationWindow(AudioProcessor& p)
+IOConfigurationWindow::IOConfigurationWindow(AudioProcessor& p, MainHostWindow* ownerMainWindow)
     : AudioProcessorEditor(&p)
+    , mainWindow(ownerMainWindow)
     , title("title", p.getName())
 {
     setOpaque(true);
@@ -510,13 +511,7 @@ AudioProcessorGraphMT::NodeID IOConfigurationWindow::getNodeID() const
 
 MainHostWindow* IOConfigurationWindow::getMainWindow() const
 {
-    auto& desktop = Desktop::getInstance();
-
-    for (int i = desktop.getNumComponents(); --i >= 0;)
-        if (auto* mainWindow = dynamic_cast<MainHostWindow*>(desktop.getComponent(i)))
-            return mainWindow;
-
-    return nullptr;
+    return mainWindow;
 }
 
 GraphDocumentComponent* IOConfigurationWindow::getGraphEditor() const
@@ -530,7 +525,7 @@ GraphDocumentComponent* IOConfigurationWindow::getGraphEditor() const
 AudioProcessorGraphMT* IOConfigurationWindow::getGraph() const
 {
     if (auto* graphEditor = getGraphEditor())
-        if (auto* panel = graphEditor->graph.get())
+        if (auto* panel = graphEditor->graph)
             return &panel->graph;
 
     return nullptr;

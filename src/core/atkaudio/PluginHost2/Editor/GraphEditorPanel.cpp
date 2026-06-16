@@ -1,143 +1,8 @@
 #include "GraphEditorPanel.h"
 
-#include "../Core/InternalPlugins.h"
+#include "../../Logging.h"
+#include "../InternalPlugins/InternalPlugins.h"
 #include "MainHostWindow.h"
-
-GraphDocumentComponent::GraphAudioCallback::GraphAudioCallback(GraphDocumentComponent& owner_)
-    : owner(owner_)
-{
-    // Constructor - no MidiMessageCollector needed, all MIDI goes through MidiServer
-}
-
-GraphDocumentComponent::GraphAudioCallback::~GraphAudioCallback()
-{
-    // Ensure we're stopped before destruction
-    audioDeviceStopped();
-}
-
-void GraphDocumentComponent::GraphAudioCallback::audioDeviceAboutToStart(juce::AudioIODevice* device)
-{
-    const juce::ScopedLock sl(callbackLock);
-
-    currentDevice = device;
-
-    if (device != nullptr)
-    {
-        sampleRate = device->getCurrentSampleRate();
-        blockSize = device->getCurrentBufferSizeSamples();
-    }
-
-    // Prepare the graph if it exists
-    if (owner.graph != nullptr)
-    {
-        auto& graph = owner.graph->graph;
-
-        // Set up the graph with device configuration
-        // This is critical for I/O nodes to work properly
-        graph.setPlayConfigDetails(
-            device ? device->getActiveInputChannels().countNumberOfSetBits() : 0,
-            device ? device->getActiveOutputChannels().countNumberOfSetBits() : 0,
-            sampleRate,
-            blockSize
-        );
-
-        graph.prepareToPlay(sampleRate, blockSize);
-        isPrepared = true;
-
-        // Reset load measurer with new sample rate and buffer size
-        loadMeasurer.reset(sampleRate, blockSize);
-    }
-}
-
-void GraphDocumentComponent::GraphAudioCallback::audioDeviceStopped()
-{
-    const juce::ScopedLock sl(callbackLock);
-
-    if (isPrepared && owner.graph != nullptr)
-    {
-        owner.graph->graph.releaseResources();
-        isPrepared = false;
-    }
-
-    currentDevice = nullptr;
-}
-
-void GraphDocumentComponent::GraphAudioCallback::audioDeviceIOCallbackWithContext(
-    const float* const* inputChannelData,
-    int numInputChannels,
-    float* const* outputChannelData,
-    int numOutputChannels,
-    int numSamples,
-    const juce::AudioIODeviceCallbackContext& context
-)
-{
-    juce::ignoreUnused(context);
-
-    const juce::ScopedTryLock stl(callbackLock);
-
-    if (!stl.isLocked() || !isPrepared || owner.graph == nullptr)
-    {
-        // Clear output if we can't process
-        for (int i = 0; i < numOutputChannels; ++i)
-            if (outputChannelData[i] != nullptr)
-                juce::FloatVectorOperations::clear(outputChannelData[i], numSamples);
-        return;
-    }
-
-    juce::AudioProcessLoadMeasurer::ScopedTimer timer(loadMeasurer, numSamples);
-
-    auto* graph = owner.graph.get();
-    auto& audioGraph = graph->graph;
-
-    // Prepare MIDI buffer and get MIDI input from MidiServer
-    // This includes MIDI from hardware devices, virtual keyboard, and MidiServer clients
-    juce::MidiBuffer midiMessages;
-    graph->processMidiInput(midiMessages, numSamples, sampleRate);
-
-    // Prepare audio buffer
-    juce::AudioBuffer<float> audioBuffer(outputChannelData, numOutputChannels, numSamples);
-
-    // Copy input to output buffer (for through processing)
-    for (int ch = 0; ch < juce::jmin(numInputChannels, numOutputChannels); ++ch)
-        if (inputChannelData[ch] != nullptr && outputChannelData[ch] != nullptr)
-            juce::FloatVectorOperations::copy(outputChannelData[ch], inputChannelData[ch], numSamples);
-
-    // Clear remaining output channels if we have more outputs than inputs
-    for (int ch = numInputChannels; ch < numOutputChannels; ++ch)
-        if (outputChannelData[ch] != nullptr)
-            juce::FloatVectorOperations::clear(outputChannelData[ch], numSamples);
-
-    // 3. Process through the plugin graph
-    // Process audio (float precision only)
-    audioGraph.processBlock(audioBuffer, midiMessages);
-
-    // 4. Send MIDI output back to MidiServer and external MIDI devices
-    graph->processMidiOutput(midiMessages);
-
-    // 5. Send MIDI output to external MIDI device if configured
-    if (owner.midiOutput != nullptr)
-        owner.midiOutput->sendBlockOfMessagesNow(midiMessages);
-}
-
-void GraphDocumentComponent::GraphAudioCallback::audioDeviceIOCallback(
-    const float* const* inputChannelData,
-    int numInputChannels,
-    float* const* outputChannelData,
-    int numOutputChannels,
-    int numSamples
-)
-{
-    // Call the context-aware version with a dummy context
-    juce::AudioIODeviceCallbackContext dummyContext;
-    audioDeviceIOCallbackWithContext(
-        inputChannelData,
-        numInputChannels,
-        outputChannelData,
-        numOutputChannels,
-        numSamples,
-        dummyContext
-    );
-}
 
 struct GraphEditorPanel::PinComponent final
     : public Component
@@ -1350,27 +1215,47 @@ struct GraphDocumentComponent::PluginListBoxModel final
 
 GraphDocumentComponent::GraphDocumentComponent(
     MainHostWindow& mainWindow,
-    AudioPluginFormatManager& fm,
+    PluginGraph& graphModel,
     AudioDeviceManager& dm,
     KnownPluginList& kpl
 )
-    : graph(new PluginGraph(mainWindow, fm, kpl))
+    : graph(&graphModel)
     , deviceManager(dm)
     , pluginList(kpl)
-    , graphAudioCallback(std::make_unique<GraphAudioCallback>(*this))
     , mainHostWindow(mainWindow)
 {
+    atk::logging::debug("GraphDocumentComponent::ctor", "begin");
+
     init();
 
     deviceManager.addChangeListener(graphPanel.get());
-    deviceManager.addAudioCallback(graphAudioCallback.get());
     deviceManager.addChangeListener(this);
 
     startTimer(100);
+
+    atk::logging::debug("GraphDocumentComponent::ctor", "completed");
+}
+
+void GraphDocumentComponent::setCpuLoad()
+{
+    auto cpuLoad = mainHostWindow.getRuntimeCpuLoad();
+
+    auto latencySamples = graph != nullptr ? graph->graph.getLatencySamples() : 0;
+    auto* currentDevice = deviceManager.getCurrentAudioDevice();
+    auto latencyMs = latencySamples > 0 && currentDevice != nullptr
+                       ? (int)std::round((float)latencySamples / currentDevice->getCurrentSampleRate() * 1000.0f)
+                       : 0;
+
+    cpuLoadLabel.setText(
+        "dly: " + juce::String(latencyMs) + "ms, " + "cpu: " + juce::String(cpuLoad, 2).replace("0.", "."),
+        juce::dontSendNotification
+    );
 }
 
 void GraphDocumentComponent::init()
 {
+    atk::logging::debug("GraphDocumentComponent::init", "begin");
+
     updateMidiOutput();
 
     graphPanel.reset(new GraphEditorPanel(*graph));
@@ -1381,6 +1266,7 @@ void GraphDocumentComponent::init()
 
     keyboardComp.reset(new MidiKeyboardComponent(keyState, MidiKeyboardComponent::horizontalKeyboard));
     addAndMakeVisible(keyboardComp.get());
+
     statusBar.reset(new TooltipBar());
     addAndMakeVisible(statusBar.get());
 
@@ -1389,15 +1275,21 @@ void GraphDocumentComponent::init()
     cpuLoadLabel.setJustificationType(juce::Justification::centredRight);
 
     graphPanel->updateComponents();
+
+    atk::logging::debug("GraphDocumentComponent::init", "completed");
 }
 
 GraphDocumentComponent::~GraphDocumentComponent()
 {
+    atk::logging::debug("GraphDocumentComponent::dtor", "begin");
+
     if (midiOutput != nullptr)
         midiOutput->stopBackgroundThread();
 
     keyState.removeListener(this);
     releaseGraph();
+
+    atk::logging::debug("GraphDocumentComponent::dtor", "completed");
 }
 
 void GraphDocumentComponent::resized()
@@ -1433,8 +1325,7 @@ void GraphDocumentComponent::createNewPlugin(const PluginDescriptionAndPreferenc
 
 void GraphDocumentComponent::releaseGraph()
 {
-    // Remove our custom audio callback
-    deviceManager.removeAudioCallback(graphAudioCallback.get());
+    deviceManager.removeChangeListener(this);
 
     if (graphPanel != nullptr)
     {
@@ -1506,7 +1397,7 @@ void GraphDocumentComponent::checkAvailableWidth()
 
 bool GraphDocumentComponent::closeAnyOpenPluginWindows()
 {
-    return graphPanel->graph.closeAnyOpenPluginWindows();
+    return graph != nullptr ? graph->closeAnyOpenPluginWindows() : false;
 }
 
 void GraphDocumentComponent::changeListenerCallback(ChangeBroadcaster*)

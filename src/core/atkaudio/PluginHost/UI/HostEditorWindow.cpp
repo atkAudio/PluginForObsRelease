@@ -87,8 +87,13 @@ void HostAudioProcessorEditor::pluginChanged()
 
                 if (safeThis != nullptr)
                 {
-                    [[maybe_unused]] const auto posted =
-                        MessageManager::callAsync([safeThis] { if (safeThis != nullptr) safeThis->clearPlugin(); });
+                    [[maybe_unused]] const auto posted = MessageManager::callAsync(
+                        [safeThis]
+                        {
+                            if (safeThis != nullptr)
+                                safeThis->clearPlugin();
+                        }
+                    );
                     jassert(posted);
                 }
             }
@@ -154,20 +159,20 @@ ComponentBoundsConstrainer* HostAudioProcessorEditor::getPluginConstrainer() con
 
 class HostEditorComponent::MainContentComponent
     : public Component
-    , private Value::Listener
     , private ComponentListener
 {
 public:
     MainContentComponent(HostEditorComponent& ownerComponent)
         : owner(ownerComponent)
-        , editor(
-              owner.getAudioProcessor()->hasEditor() ? owner.getAudioProcessor()->createEditorIfNeeded()
-                                                     : new GenericAudioProcessorEditor(*owner.getAudioProcessor())
-          )
     {
         setOpaque(true);
 
-        inputMutedValue.referTo(owner.pluginHolder->getMuteInputValue());
+        if (auto* processor = owner.getAudioProcessor())
+        {
+            editor.reset(
+                processor->hasEditor() ? processor->createEditorIfNeeded() : new GenericAudioProcessorEditor(*processor)
+            );
+        }
 
         if (editor != nullptr)
         {
@@ -175,14 +180,6 @@ public:
             handleMovedOrResized();
             addAndMakeVisible(editor.get());
         }
-
-        if (owner.pluginHolder->getProcessorHasPotentialFeedbackLoop())
-        {
-            inputMutedValue.addListener(this);
-            shouldShowNotification = inputMutedValue.getValue();
-        }
-
-        inputMutedChanged(shouldShowNotification);
     }
 
     ~MainContentComponent() override
@@ -190,7 +187,8 @@ public:
         if (editor != nullptr)
         {
             editor->removeComponentListener(this);
-            owner.pluginHolder->processor->editorBeingDeleted(editor.get());
+            if (auto* processor = owner.getAudioProcessor())
+                processor->editorBeingDeleted(editor.get());
             editor = nullptr;
         }
     }
@@ -224,22 +222,6 @@ public:
     }
 
 private:
-    void inputMutedChanged(bool newInputMutedValue)
-    {
-        shouldShowNotification = newInputMutedValue;
-
-        if (editor != nullptr)
-        {
-            const auto rect = getSizeToContainEditor();
-            setSize(rect.getWidth(), rect.getHeight());
-        }
-    }
-
-    void valueChanged(Value& value) override
-    {
-        inputMutedChanged(value.getValue());
-    }
-
     void handleResized()
     {
         auto r = getLocalBounds();
@@ -287,15 +269,13 @@ private:
 
     HostEditorComponent& owner;
     std::unique_ptr<AudioProcessorEditor> editor;
-    Value inputMutedValue;
-    bool shouldShowNotification = false;
     bool preventResizingEditor = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainContentComponent)
 };
 
-HostEditorComponent::HostEditorComponent(std::unique_ptr<PluginHolder> pluginHolderIn)
-    : pluginHolder(std::move(pluginHolderIn))
+HostEditorComponent::HostEditorComponent(HostAudioProcessorImpl* hostProcessorIn)
+    : hostProcessor(hostProcessorIn)
 {
     setOpaque(true);
     updateContent();
@@ -315,9 +295,8 @@ HostEditorComponent::~HostEditorComponent()
     if (editorToWatch != nullptr)
         editorToWatch->removeComponentListener(this);
 
-    pluginHolder->stopPlaying();
     contentComponent = nullptr;
-    pluginHolder = nullptr;
+    hostProcessor = nullptr;
 }
 
 void HostEditorComponent::paint(Graphics& g)
@@ -361,22 +340,12 @@ void HostEditorComponent::componentMovedOrResized(Component& component, bool /*w
 
 AudioProcessor* HostEditorComponent::getAudioProcessor() const noexcept
 {
-    return pluginHolder ? pluginHolder->processor.get() : nullptr;
+    return hostProcessor;
 }
 
 HostAudioProcessorImpl* HostEditorComponent::getHostProcessor() const noexcept
 {
-    return pluginHolder ? pluginHolder->getHostProcessor() : nullptr;
-}
-
-CriticalSection& HostEditorComponent::getPluginHolderLock()
-{
-    return pluginHolderLock;
-}
-
-PluginHolder* HostEditorComponent::getPluginHolder()
-{
-    return pluginHolder.get();
+    return hostProcessor;
 }
 
 ComponentBoundsConstrainer* HostEditorComponent::getEditorConstrainer() const
@@ -405,7 +374,7 @@ void HostEditorComponent::destroyUI()
 
 void HostEditorComponent::recreateUI()
 {
-    if (!pluginHolder || !pluginHolder->processor)
+    if (hostProcessor == nullptr)
         return;
 
     destroyUI();
@@ -419,6 +388,12 @@ void HostEditorComponent::recreateUI()
         editorToWatch->addComponentListener(this);
 
     setSize(contentComponent->getWidth(), contentComponent->getHeight());
+}
+
+void HostEditorComponent::detachProcessor()
+{
+    destroyUI();
+    hostProcessor = nullptr;
 }
 
 void HostEditorComponent::updateContent()

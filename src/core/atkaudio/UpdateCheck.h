@@ -1,6 +1,7 @@
 #pragma once
 #include "LookAndFeel.h"
 
+#include <atkaudio/Logging.h>
 #include <config.h>
 #include <juce_audio_utils/juce_audio_utils.h>
 
@@ -83,7 +84,7 @@ public:
             < 7 * 24 * 60 * 60 * 1000
         )
         {
-            DBG("last modification time: " << lastVersionFile.getLastModificationTime().toString(true, true));
+            atk::logging::debug("UpdateCheck::checkForUpdate", "skipped; last check was within 7 days");
             return;
         }
 #endif

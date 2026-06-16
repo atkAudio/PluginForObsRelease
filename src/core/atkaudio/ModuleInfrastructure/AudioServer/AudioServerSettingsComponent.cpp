@@ -1,5 +1,6 @@
 #include "AudioServerSettingsComponent.h"
 #include <atkaudio/atkaudio.h>
+#include <atkaudio/Logging.h>
 
 namespace atk
 {
@@ -333,8 +334,10 @@ void AudioServerSettingsComponent::ChannelMappingMatrix::setNumClientChannels(in
         );
     }
 
-    DBG("Total columns after: " << table.getHeader().getNumColumns(true));
-
+    atk::logging::debug(
+        "AudioServerSettingsComponent::ChannelMappingMatrix",
+        juce::String::formatted("set client channel count to %d", numClientChannels)
+    );
     table.updateContent();
     table.repaint();
 }
@@ -615,9 +618,10 @@ AudioServerSettingsComponent::AudioServerSettingsComponent(AudioClient* audioCli
     if (clientChannels <= 0)
         clientChannels = 2; // Default fallback
 
-    DBG("AudioServerSettingsComponent: Client is " << (client ? "valid" : "null"));
-    DBG("AudioServerSettingsComponent: Client has " << clientChannels << " channels");
-
+    atk::logging::info(
+        "AudioServerSettingsComponent::ctor",
+        juce::String::formatted("initializing audio settings UI with %d client channels", clientChannels)
+    );
     inputMappingMatrix = std::make_unique<ChannelMappingMatrix>();
     addAndMakeVisible(inputMappingMatrix.get());
     inputMappingMatrix->setFirstColumnName("Routing");
@@ -1036,11 +1040,7 @@ void AudioServerSettingsComponent::applySubscriptions()
         onObsMappingChanged(matrices.first, matrices.second);
     }
 
-    DBG("AudioServer: Applied subscriptions - "
-        << state.inputSubscriptions.size()
-        << " input, "
-        << state.outputSubscriptions.size()
-        << " output");
+    atk::logging::info("AudioServerSettingsComponent::applySubscriptions", "applied subscriptions and routing");
 }
 
 void AudioServerSettingsComponent::setClientChannelInfo(
@@ -1342,14 +1342,15 @@ void AudioServerSettingsComponent::timerCallback()
                     // Only refresh if channel count changed
                     if (newChannelCount != deviceItem->getNumSubItems())
                     {
-                        DBG("AudioServerSettingsComponent: Device '"
-                            + deviceName
-                            + "' channel count changed from "
-                            + juce::String(deviceItem->getNumSubItems())
-                            + " to "
-                            + juce::String(newChannelCount)
-                            + " - refreshing tree node");
-
+                        atk::logging::debug(
+                            "AudioServerSettingsComponent::timerCallback",
+                            juce::String::formatted(
+                                "device \"%s\" channel count changed %d -> %d",
+                                deviceName.toRawUTF8(),
+                                deviceItem->getNumSubItems(),
+                                newChannelCount
+                            )
+                        );
                         // Clear and rebuild child items
                         deviceItem->clearSubItems();
                         deviceItem->resetChildrenLoadedFlag();

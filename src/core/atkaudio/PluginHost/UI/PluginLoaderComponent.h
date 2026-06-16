@@ -4,6 +4,7 @@
 #include "PluginHostFooter.h"
 #include "UICommon.h"
 
+#include <atkaudio/Logging.h>
 #include <atkaudio/ModuleInfrastructure/AudioServer/AudioServerSettingsComponent.h>
 #include <atkaudio/ModuleInfrastructure/MidiServer/MidiServerSettingsComponent.h>
 #include <atkaudio/SandboxedPluginScanner.h>
@@ -42,9 +43,12 @@ public:
         sandboxedScanner->setFormatManager(&manager);
         sandboxedScanner->setKnownPluginList(&list);
         if (sandboxedScanner->isScannerAvailable())
-            DBG("PluginLoaderComponent: Using sandboxed plugin scanner");
+            atk::logging::info("PluginLoaderComponent::ctor", "using sandboxed plugin scanner");
         else
-            DBG("PluginLoaderComponent: Sandboxed scanner not available, using in-process scanning");
+            atk::logging::warning(
+                "PluginLoaderComponent::ctor",
+                "sandboxed scanner unavailable; plugin scanning will fall back to in-process"
+            );
         list.setCustomScanner(std::move(sandboxedScanner));
 
         addAndMakeVisible(pluginListComponent);

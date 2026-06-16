@@ -1,6 +1,7 @@
 #include <algorithm>
+#include "core/atkaudio/Logging.h"
 #include "core/atkaudio/atkaudio.h"
-#include "core/atkaudio/PluginHost2/API/PluginHost2.h"
+#include "core/atkaudio/PluginHost2/PluginHost2.h"
 #include <inttypes.h>
 #include <math.h>
 #include <media-io/audio-math.h>
@@ -43,6 +44,8 @@ static void save(void* data, obs_data_t* settings)
     if (ph == nullptr || ph->pluginHost2 == nullptr)
         return;
 
+    atk::logging::debug("OBS_API.PluginHost2.save", "called");
+
     std::string s;
     ph->pluginHost2->getState(s);
 
@@ -54,6 +57,8 @@ static void load(void* data, obs_data_t* settings)
     auto* ph = (struct pluginhost2_data*)data;
     if (ph == nullptr || ph->pluginHost2 == nullptr)
         return;
+
+    atk::logging::debug("OBS_API.PluginHost2.load", "called");
 
     if (ph->hasLoadedState)
         return;
@@ -70,6 +75,8 @@ static void pluginhost2_update(void* data, obs_data_t* s)
     if (ph == nullptr)
         return;
 
+    atk::logging::debug("OBS_API.PluginHost2.update", "called");
+
     const uint32_t sample_rate = audio_output_get_sample_rate(obs_get_audio());
     const size_t num_channels = audio_output_get_channels(obs_get_audio());
 
@@ -79,9 +86,11 @@ static void pluginhost2_update(void* data, obs_data_t* s)
 
 static void* pluginhost2_create(obs_data_t* settings, obs_source_t* filter)
 {
+    atk::logging::info("OBS_API.PluginHost2.create", "called");
+
     if (!atk::isReady() || atk::isShuttingDown())
     {
-        blog(LOG_WARNING, "[atkAudio PluginHost2] lifecycle not ready; skipping create");
+        atk::logging::warning("OBS_API.PluginHost2.create", "skipping create because lifecycle is not ready");
         return nullptr;
     }
 
@@ -102,6 +111,8 @@ static void* pluginhost2_create(obs_data_t* settings, obs_source_t* filter)
         ph->hasLoadedState = true;
     }
 
+    atk::logging::info("OBS_API.PluginHost2.create", "completed");
+
     return ph;
 }
 
@@ -110,6 +121,8 @@ static void pluginhost2_destroy(void* data)
     struct pluginhost2_data* ph = (struct pluginhost2_data*)data;
     if (ph == nullptr)
         return;
+
+    atk::logging::info("OBS_API.PluginHost2.destroy", "called");
 
     delete ph;
 }
@@ -133,6 +146,8 @@ static struct obs_audio_data* pluginhost2_filter_audio(void* data, struct obs_au
 
 static bool open_editor_button_clicked(obs_properties_t* props, obs_property_t* property, void* data)
 {
+    atk::logging::debug("OBS_API.PluginHost2.openEditor", "called");
+
     obs_property_set_visible(obs_properties_get(props, OPEN_PLUGIN_SETTINGS), false);
     obs_property_set_visible(obs_properties_get(props, CLOSE_PLUGIN_SETTINGS), true);
 
@@ -147,6 +162,8 @@ static bool open_editor_button_clicked(obs_properties_t* props, obs_property_t* 
 
 static bool close_editor_button_clicked(obs_properties_t* props, obs_property_t* property, void* data)
 {
+    atk::logging::debug("OBS_API.PluginHost2.closeEditor", "called");
+
     obs_property_set_visible(obs_properties_get(props, OPEN_PLUGIN_SETTINGS), true);
     obs_property_set_visible(obs_properties_get(props, CLOSE_PLUGIN_SETTINGS), false);
 
@@ -185,6 +202,8 @@ static void pluginhost2_filter_add(void* data, obs_source_t* source)
     struct pluginhost2_data* ph = (struct pluginhost2_data*)data;
     if (ph == nullptr || ph->pluginHost2 == nullptr)
         return;
+
+    atk::logging::debug("OBS_API.PluginHost2.filter_add", "called");
 
     ph->parent = source;
     ph->pluginHost2->setParentSource(source);

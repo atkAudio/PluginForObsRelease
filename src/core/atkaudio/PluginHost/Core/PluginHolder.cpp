@@ -1,13 +1,7 @@
 #include "PluginHolder.h"
 #include <atkaudio/atkaudio.h>
 
-#ifndef DOXYGEN
-#include <juce_audio_plugin_client/detail/juce_CreatePluginFilter.h>
-#endif
-
 using namespace juce;
-
-extern AudioProcessor* JUCE_CALLTYPE createPluginFilter();
 
 PluginHolder::PluginHolder(
     PropertySet* settingsToUse,
@@ -250,7 +244,7 @@ void PluginHolder::reloadPluginState()
 
 void PluginHolder::handleCreatePlugin()
 {
-    processor.reset(createPluginFilter());
+    processor = std::make_unique<HostAudioProcessor>();
     processor->setRateAndBufferSizeDetails(48000, MAX_OBS_AUDIO_BUFFER_SIZE);
 
     processorHasPotentialFeedbackLoop = (getNumInputChannels() > 0 && getNumOutputChannels() > 0);

@@ -9,8 +9,7 @@
 namespace atk
 {
 
-struct AudioServerDeviceInfo
-{
+struct AudioServerDeviceInfo {
     juce::String deviceName;
     juce::String deviceType; // "ASIO", "Windows Audio", "CoreAudio", "ALSA"
 
@@ -51,7 +50,7 @@ public:
         isDestroying.store(true, std::memory_order_release);
 
         if (auto* server = AudioServer::getInstanceWithoutCreating())
-            server->unregisterDirectCallback(actualDeviceName.toStdString(), this);
+            server->unregisterDirectCallback(actualDeviceName, this);
 
         // Wait for any active callbacks to exit
         while (activeCallbackCount.load(std::memory_order_acquire) > 0)
@@ -103,12 +102,10 @@ public:
     {
         bool needsReopen = false;
 
-        if (isOpen_)
-        {
+        if (isOpen_) {
             const juce::ScopedLock sl(lock);
             if ((sampleRate > 0.0 && !juce::exactlyEqual(currentSampleRate, sampleRate))
-                || (bufferSizeSamples > 0 && currentBufferSize != bufferSizeSamples))
-            {
+                || (bufferSizeSamples > 0 && currentBufferSize != bufferSizeSamples)) {
                 needsReopen = true;
             }
         }
@@ -120,8 +117,7 @@ public:
 
             int actualInputChannelCount = 0;
             int actualOutputChannelCount = 0;
-            if (auto* server = AudioServer::getInstanceWithoutCreating())
-            {
+            if (auto* server = AudioServer::getInstanceWithoutCreating()) {
                 actualInputChannelCount = server->getDeviceNumChannels(actualDeviceName, true);
                 actualOutputChannelCount = server->getDeviceNumChannels(actualDeviceName, false);
             }
@@ -138,34 +134,29 @@ public:
                     activeOutputChannels.setBit(i);
         }
 
-        if (needsReopen || !isOpen_)
-        {
+        if (needsReopen || !isOpen_) {
             juce::AudioDeviceManager::AudioDeviceSetup currentSetup;
             bool hasCurrentSetup = false;
-            if (needsReopen)
-            {
+            if (needsReopen) {
                 if (auto* server = AudioServer::getInstanceWithoutCreating())
                     hasCurrentSetup = server->getCurrentDeviceSetup(actualDeviceName, currentSetup);
                 close();
             }
 
-            if (!isOpen_)
-            {
-                if (auto* server = AudioServer::getInstance())
-                {
+            if (!isOpen_) {
+                if (auto* server = AudioServer::getInstance()) {
                     juce::AudioDeviceManager::AudioDeviceSetup setup;
 
-                    if (needsReopen && hasCurrentSetup)
-                    {
-                        setup.sampleRate = (sampleRate > 0.0 && !juce::exactlyEqual(currentSampleRate, sampleRate))
-                                             ? sampleRate
-                                             : currentSetup.sampleRate;
-                        setup.bufferSize = (bufferSizeSamples > 0 && currentBufferSize != bufferSizeSamples)
-                                             ? bufferSizeSamples
-                                             : currentSetup.bufferSize;
-                    }
-                    else
-                    {
+                    if (needsReopen && hasCurrentSetup) {
+                        setup.sampleRate =
+                            (sampleRate > 0.0 && !juce::exactlyEqual(currentSampleRate, sampleRate))
+                                ? sampleRate
+                                : currentSetup.sampleRate;
+                        setup.bufferSize =
+                            (bufferSizeSamples > 0 && currentBufferSize != bufferSizeSamples)
+                                ? bufferSizeSamples
+                                : currentSetup.bufferSize;
+                    } else {
                         setup.sampleRate = 0.0;
                         setup.bufferSize = 0;
                     }
@@ -173,7 +164,7 @@ public:
                     // Don't pass channel config - AudioServer opens with all channels,
                     // and ModuleAudioServerDevice filters to active ones in the callback
 
-                    if (!server->registerDirectCallback(actualDeviceName.toStdString(), this, setup))
+                    if (!server->registerDirectCallback(actualDeviceName, this, setup))
                         return "Failed to register with AudioServer";
 
                     const juce::ScopedLock sl(lock);
@@ -196,7 +187,7 @@ public:
         stop();
 
         if (auto* server = AudioServer::getInstanceWithoutCreating())
-            server->unregisterDirectCallback(actualDeviceName.toStdString(), this);
+            server->unregisterDirectCallback(actualDeviceName, this);
 
         {
             const juce::ScopedLock sl(lock);
@@ -321,8 +312,7 @@ private:
         // Track active callbacks for safe destruction
         activeCallbackCount.fetch_add(1, std::memory_order_acquire);
 
-        struct Guard
-        {
+        struct Guard {
             std::atomic<int>& c;
 
             ~Guard()
@@ -334,8 +324,7 @@ private:
         if (isDestroying.load(std::memory_order_acquire))
             return;
 
-        auto clearOutputs = [&]()
-        {
+        auto clearOutputs = [&]() {
             if (outputChannelData != nullptr)
                 for (int ch = 0; ch < numOutputChannels; ++ch)
                     if (outputChannelData[ch] != nullptr)
@@ -363,13 +352,16 @@ private:
                 ++numActiveOutputs;
 
         // Resize temp output buffer if needed
-        if (tempOutputBuffer.getNumChannels() < numActiveOutputs || tempOutputBuffer.getNumSamples() < numSamples)
+        if (tempOutputBuffer.getNumChannels() < numActiveOutputs
+            || tempOutputBuffer.getNumSamples() < numSamples)
             tempOutputBuffer.setSize(numActiveOutputs, numSamples, false, false, true);
 
         // Build filtered input pointers
         activeInputPtrs.clearQuick();
         for (int ch = 0; ch < numInputChannels; ++ch)
-            if (activeInputChannels[ch] && inputChannelData != nullptr && inputChannelData[ch] != nullptr)
+            if (activeInputChannels[ch]
+                && inputChannelData != nullptr
+                && inputChannelData[ch] != nullptr)
                 activeInputPtrs.add(inputChannelData[ch]);
 
         // Channel count mismatch - skip (will resync on next audioDeviceAboutToStart)
@@ -395,13 +387,16 @@ private:
 
         // Copy output back to hardware channels
         int activeIdx = 0;
-        for (int ch = 0; ch < numOutputChannels; ++ch)
-        {
+        for (int ch = 0; ch < numOutputChannels; ++ch) {
             if (outputChannelData == nullptr || outputChannelData[ch] == nullptr)
                 continue;
 
             if (activeOutputChannels[ch] && activeIdx < numActiveOutputs)
-                std::copy_n(tempOutputBuffer.getReadPointer(activeIdx++), numSamples, outputChannelData[ch]);
+                std::copy_n(
+                    tempOutputBuffer.getReadPointer(activeIdx++),
+                    numSamples,
+                    outputChannelData[ch]
+                );
             else
                 juce::FloatVectorOperations::clear(outputChannelData[ch], numSamples);
         }
@@ -414,8 +409,7 @@ private:
         {
             const juce::ScopedLock sl(lock);
 
-            if (device != nullptr)
-            {
+            if (device != nullptr) {
                 // Clamp active channels to device capabilities
                 auto deviceInputs = device->getActiveInputChannels();
                 auto deviceOutputs = device->getActiveOutputChannels();

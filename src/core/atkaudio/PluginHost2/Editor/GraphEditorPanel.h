@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../Core/PluginGraph.h"
+#include "../PluginGraph.h"
 // Not using parallel graph implementation
 // #include "../../AudioProcessorGraphMT/AudioProcessorGraphMT_Impl.h"
 
@@ -75,35 +75,14 @@ class GraphDocumentComponent final
 public:
     GraphDocumentComponent(
         MainHostWindow& mainHostWindow,
-        AudioPluginFormatManager& formatManager,
+        PluginGraph& graphModel,
         AudioDeviceManager& deviceManager,
         KnownPluginList& pluginList
     );
 
     ~GraphDocumentComponent() override;
 
-    void setCpuLoad()
-    {
-        auto cpuLoad = graphAudioCallback ? graphAudioCallback->getCpuLoad() : 0.0f;
-
-        auto latencySamples = graph->graph.getLatencySamples();
-        auto latencyMs =
-            latencySamples > 0
-                ? (int)std::round(
-                      (float)latencySamples / deviceManager.getCurrentAudioDevice()->getCurrentSampleRate() * 1000.0f
-                  )
-                : 0;
-
-        cpuLoadLabel.setText(
-            "dly: "
-                // + juce::String(latencySamples) + "smp/"
-                + juce::String(latencyMs)
-                + "ms, "
-                + "cpu: "
-                + juce::String(cpuLoad, 2).replace("0.", "."),
-            juce::dontSendNotification
-        );
-    }
+    void setCpuLoad();
 
     void timerCallback() override
     {
@@ -113,7 +92,7 @@ public:
     void createNewPlugin(const PluginDescriptionAndPreference&, Point<int> position);
     bool closeAnyOpenPluginWindows();
 
-    std::unique_ptr<PluginGraph> graph;
+    PluginGraph* graph = nullptr;
 
     void resized() override;
     void releaseGraph();
@@ -130,75 +109,11 @@ public:
     BurgerMenuComponent burgerMenu;
 
 private:
-    class GraphAudioCallback : public juce::AudioIODeviceCallback
-    {
-    public:
-        GraphAudioCallback(GraphDocumentComponent& owner);
-        ~GraphAudioCallback() override;
-
-        void audioDeviceAboutToStart(juce::AudioIODevice* device) override;
-        void audioDeviceStopped() override;
-        void audioDeviceIOCallbackWithContext(
-            const float* const* inputChannelData,
-            int numInputChannels,
-            float* const* outputChannelData,
-            int numOutputChannels,
-            int numSamples,
-            const juce::AudioIODeviceCallbackContext& context
-        ) override;
-
-        // Legacy callback for non-context aware systems (not virtual, but called by JUCE)
-        void audioDeviceIOCallback(
-            const float* const* inputChannelData,
-            int numInputChannels,
-            float* const* outputChannelData,
-            int numOutputChannels,
-            int numSamples
-        );
-
-    private:
-        GraphDocumentComponent& owner;
-        juce::CriticalSection callbackLock;
-        double sampleRate = 44100.0;
-        int blockSize = 512;
-        bool isPrepared = false;
-        juce::AudioIODevice* currentDevice = nullptr;
-        juce::AudioProcessLoadMeasurer loadMeasurer;
-
-        // Peak hold for CPU load display (3 second hold)
-        mutable float peakCpuLoad = 0.0f;
-        mutable double peakCpuTime = 0.0;
-
-    public:
-        float getCpuLoad() const
-        {
-            float currentLoad = static_cast<float>(loadMeasurer.getLoadAsProportion());
-
-            // Peak hold for 3 seconds
-            auto now = juce::Time::getMillisecondCounterHiRes();
-            if (currentLoad >= peakCpuLoad)
-            {
-                peakCpuLoad = currentLoad;
-                peakCpuTime = now;
-            }
-            else if (now - peakCpuTime > 3000.0)
-            {
-                peakCpuLoad = currentLoad;
-                peakCpuTime = now;
-            }
-
-            return peakCpuLoad;
-        }
-
-        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(GraphAudioCallback)
-    };
-
     Label cpuLoadLabel;
 
     AudioDeviceManager& deviceManager;
     KnownPluginList& pluginList;
 
-    std::unique_ptr<GraphAudioCallback> graphAudioCallback;
     MidiKeyboardState keyState;
     MidiOutput* midiOutput = nullptr;
 

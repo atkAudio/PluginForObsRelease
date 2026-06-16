@@ -3,7 +3,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 using namespace juce;
 
-#include "../Core/ARAPlugin.h"
+#include "../InternalPlugins/ARAPlugin.h"
 
 #include "IOConfigurationWindow.h"
 
@@ -142,7 +142,12 @@ public:
         numTypes
     };
 
-    PluginWindow(AudioProcessorGraphMT::Node* n, Type t, OwnedArray<PluginWindow>& windowList)
+    PluginWindow(
+        AudioProcessorGraphMT::Node* n,
+        Type t,
+        OwnedArray<PluginWindow>& windowList,
+        MainHostWindow* ownerMainWindow
+    )
         : juce::DocumentWindow(
               n->getProcessor()->getName() + getFormatSuffix(n->getProcessor()),
               LookAndFeel::getDefaultLookAndFeel().findColour(ResizableWindow::backgroundColourId),
@@ -151,11 +156,12 @@ public:
         , activeWindowList(windowList)
         , node(n)
         , type(t)
+        , mainWindow(ownerMainWindow)
     {
         setTitleBarButtonsRequired(DocumentWindow::minimiseButton | DocumentWindow::closeButton, false);
         setSize(400, 300);
 
-        if (auto* ui = createProcessorEditor(*node->getProcessor(), type))
+        if (auto* ui = createProcessorEditor(*node->getProcessor(), type, mainWindow))
         {
             setContentOwned(ui, true);
             setResizable(ui->isResizable(), false);
@@ -286,8 +292,10 @@ private:
     };
 
     DecoratorConstrainer constrainer{*this};
+    MainHostWindow* mainWindow = nullptr;
 
-    static AudioProcessorEditor* createProcessorEditor(AudioProcessor& processor, PluginWindow::Type type)
+    static AudioProcessorEditor*
+    createProcessorEditor(AudioProcessor& processor, PluginWindow::Type type, MainHostWindow* mainWindow)
     {
         if (type == PluginWindow::Type::normal)
         {
@@ -319,7 +327,7 @@ private:
             return new ProgramAudioProcessorEditor(processor);
 
         if (type == PluginWindow::Type::audioIO)
-            return new IOConfigurationWindow(processor);
+            return new IOConfigurationWindow(processor, mainWindow);
 
         if (type == PluginWindow::Type::debug)
             return new PluginDebugWindow(processor);

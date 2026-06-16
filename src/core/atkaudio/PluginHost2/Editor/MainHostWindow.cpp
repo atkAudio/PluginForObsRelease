@@ -1,9 +1,10 @@
 #include "MainHostWindow.h"
 
 #include "../../About.h"
+#include "../../Logging.h"
 #include "../../SandboxedPluginScanner.h"
 #include "../../SharedPluginList.h"
-#include "../Core/InternalPlugins.h"
+#include "../InternalPlugins/InternalPlugins.h"
 
 #include <atkaudio/ModuleInfrastructure/MidiServer/MidiServerSettingsComponent.h>
 
@@ -36,9 +37,12 @@ public:
         sandboxedScanner->setFormatManager(&pluginFormatManager);
         sandboxedScanner->setKnownPluginList(&owner.knownPluginList);
         if (sandboxedScanner->isScannerAvailable())
-            DBG("PluginListWindow: Using sandboxed plugin scanner");
+            atk::logging::debug("MainHostWindow::PluginListWindow", "using sandboxed plugin scanner");
         else
-            DBG("PluginListWindow: Sandboxed scanner not available, using in-process scanning");
+            atk::logging::warning(
+                "MainHostWindow::PluginListWindow",
+                "sandboxed scanner unavailable, using in-process scanning"
+            );
         owner.knownPluginList.setCustomScanner(std::move(sandboxedScanner));
 
         setContentOwned(pluginListComponent, true);
@@ -66,14 +70,17 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginListWindow)
 };
 
-MainHostWindow::MainHostWindow()
+MainHostWindow::MainHostWindow(juce::AudioDeviceManager& deviceManagerIn)
     : juce::DocumentWindow(
           "atkAudio PluginHost2",
           LookAndFeel::getDefaultLookAndFeel().findColour(ResizableWindow::backgroundColourId),
           DocumentWindow::allButtons,
           false // don't add to desktop until explicitly shown
       )
+    , deviceManager(deviceManagerIn)
 {
+    atk::logging::info("MainHostWindow::ctor", "begin");
+
     // Initialize AudioServer and MidiServer
     audioServer = atk::AudioServer::getInstance();
     midiServer = atk::MidiServer::getInstance();
@@ -88,7 +95,7 @@ MainHostWindow::MainHostWindow()
 
     initialise("");
 
-    // AudioDeviceManager setup is now handled by PluginHost2::Impl via ModuleDeviceManager
+    // AudioDeviceManager setup is handled by PluginHost2 via ModuleDeviceManager.
 
     juce::addDefaultFormatsToManager(formatManager);
     formatManager.addFormat(std::make_unique<InternalPluginFormat>());
@@ -128,10 +135,6 @@ MainHostWindow::MainHostWindow()
     // Load plugin list from shared file before creating graph
     atk::SharedPluginList::getInstance()->loadPluginList(knownPluginList);
 
-    graphHolder.reset(new GraphDocumentComponent(*this, formatManager, deviceManager, knownPluginList));
-
-    setContentNonOwned(graphHolder.get(), false);
-
     // Position title bar buttons on the right (Windows-style), like Plugin Host
     setTitleBarButtonsRequired(DocumentWindow::allButtons, false);
 
@@ -166,9 +169,6 @@ MainHostWindow::MainHostWindow()
 
     knownPluginList.addChangeListener(this);
 
-    if (auto* g = graphHolder->graph.get())
-        g->addChangeListener(this);
-
     addKeyListener(getCommandManager().getKeyMappings());
 
     Process::setPriority(Process::HighPriority);
@@ -176,10 +176,99 @@ MainHostWindow::MainHostWindow()
     setMenuBar(this);
 
     getCommandManager().setFirstCommandTarget(this);
+
+    atk::logging::info("MainHostWindow::ctor", "completed");
+}
+
+void MainHostWindow::attachGraph(PluginGraph& graphModel)
+{
+    atk::logging::debug("MainHostWindow::attachGraph", "begin");
+
+    detachGraphEditor();
+
+    graphHolder.reset(new GraphDocumentComponent(*this, graphModel, deviceManager, knownPluginList));
+
+    setContentNonOwned(graphHolder.get(), false);
+
+    if (graphHolder->graph != nullptr)
+        graphHolder->graph->addChangeListener(this);
+
+    atk::logging::debug("MainHostWindow::attachGraph", "completed");
+}
+
+void MainHostWindow::detachGraphEditor()
+{
+    closeAnyOpenPluginWindows();
+
+    if (graphHolder != nullptr)
+    {
+        if (graphHolder->graph != nullptr)
+            graphHolder->graph->removeChangeListener(this);
+    }
+    clearContentComponent();
+    graphHolder = nullptr;
+}
+
+PluginWindow* MainHostWindow::getOrCreatePluginWindowFor(AudioProcessorGraphMT::Node* node, PluginWindow::Type type)
+{
+    jassert(node != nullptr);
+
+#if JUCE_IOS || JUCE_ANDROID
+    closeAnyOpenPluginWindows();
+#else
+    for (auto* window : activePluginWindows)
+        if (window->node.get() == node && window->type == type)
+            return window;
+#endif
+
+    if (auto* processor = node->getProcessor())
+    {
+        if (auto* plugin = dynamic_cast<AudioPluginInstance*>(processor))
+        {
+            auto description = plugin->getPluginDescription();
+
+            if (!plugin->hasEditor() && description.pluginFormatName == "Internal")
+            {
+                if (auto* ioProcessor = dynamic_cast<AudioProcessorGraphMT::AudioGraphIOProcessor*>(processor))
+                {
+                    auto ioType = ioProcessor->getType();
+                    if (ioType == AudioProcessorGraphMT::AudioGraphIOProcessor::midiInputNode
+                        || ioType == AudioProcessorGraphMT::AudioGraphIOProcessor::midiOutputNode)
+                    {
+                        getCommandManager().invokeDirectly(CommandIDs::showMidiSettings, false);
+                        return nullptr;
+                    }
+                }
+
+                getCommandManager().invokeDirectly(CommandIDs::showAudioSettings, false);
+                return nullptr;
+            }
+
+            return activePluginWindows.add(new PluginWindow(node, type, activePluginWindows, this));
+        }
+    }
+
+    return nullptr;
+}
+
+bool MainHostWindow::closeAnyOpenPluginWindows()
+{
+    bool wasEmpty = activePluginWindows.isEmpty();
+    activePluginWindows.clear();
+    return !wasEmpty;
+}
+
+void MainHostWindow::pruneStalePluginWindows(const AudioProcessorGraphMT& graphModel)
+{
+    for (int i = activePluginWindows.size(); --i >= 0;)
+        if (!graphModel.getNodes().contains(activePluginWindows.getUnchecked(i)->node))
+            activePluginWindows.remove(i);
 }
 
 MainHostWindow::~MainHostWindow()
 {
+    atk::logging::info("MainHostWindow::dtor", "begin");
+
     // Hide window before destroying components to prevent paint messages during destruction
     setVisible(false);
     removeFromDesktop();
@@ -194,16 +283,14 @@ MainHostWindow::~MainHostWindow()
     }
 
     pluginListWindow = nullptr;
+    detachGraphEditor();
     knownPluginList.removeChangeListener(this);
 
-    if (auto* g = graphHolder->graph.get())
-        g->removeChangeListener(this);
-
     getAppProperties().setValue("mainWindowPos", getWindowStateAsString());
-    clearContentComponent();
 
     setMenuBar(nullptr);
-    graphHolder = nullptr;
+
+    atk::logging::info("MainHostWindow::dtor", "completed");
 }
 
 void MainHostWindow::closeButtonPressed()
@@ -229,8 +316,7 @@ void MainHostWindow::tryToQuitApplication()
 {
     // In plugin context, we don't quit the host application (OBS).
     // Instead, attempt to close plugin windows and hide our window.
-    if (graphHolder != nullptr)
-        (void)graphHolder->closeAnyOpenPluginWindows();
+    (void)closeAnyOpenPluginWindows();
 
     if (ModalComponentManager::getInstance() != nullptr)
         (void)ModalComponentManager::getInstance()->cancelAllModalComponents();
@@ -245,7 +331,7 @@ void MainHostWindow::changeListenerCallback(ChangeBroadcaster* changed)
         menuItemsChanged();
         atk::SharedPluginList::getInstance()->savePluginList(knownPluginList);
     }
-    else if (graphHolder != nullptr && changed == graphHolder->graph.get())
+    else if (graphHolder != nullptr && changed == graphHolder->graph)
     {
         auto title = juce::String("atkAudio PluginHost2");
         auto f = graphHolder->graph->getFile();
@@ -352,7 +438,7 @@ void MainHostWindow::menuItemSelected(int menuItemID, int /*topLevelMenuIndex*/)
     if (menuItemID == 250)
     {
         if (graphHolder != nullptr)
-            if (auto* graph = graphHolder->graph.get())
+            if (auto* graph = graphHolder->graph)
                 graph->clear();
     }
     else if (menuItemID >= 100 && menuItemID < 200)
@@ -362,7 +448,7 @@ void MainHostWindow::menuItemSelected(int menuItemID, int /*topLevelMenuIndex*/)
 
         if (graphHolder != nullptr)
         {
-            if (auto* graph = graphHolder->graph.get())
+            if (auto* graph = graphHolder->graph)
             {
                 SafePointer<MainHostWindow> parent{this};
                 graph->saveIfNeededAndUserAgreesAsync(
@@ -798,7 +884,7 @@ void MainHostWindow::filesDropped(const StringArray& files, int x, int y)
 
         if (files.size() == 1 && firstFile.hasFileExtension(PluginGraph::getFilenameSuffix()))
         {
-            if (auto* g = graphHolder->graph.get())
+            if (auto* g = graphHolder->graph)
             {
                 SafePointer<MainHostWindow> parent;
                 g->saveIfNeededAndUserAgreesAsync(

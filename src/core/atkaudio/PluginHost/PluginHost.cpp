@@ -1,7 +1,6 @@
 #include "PluginHost.h"
-#include "../PluginHost2/Core/PluginGraph.h"
+#include "../PluginHost2/PluginGraph.h"
 #include "Core/HostAudioProcessor.h"
-#include "Core/PluginHolder.h"
 #include "UI/HostEditorWindow.h"
 #include <atkaudio/AudioProcessorGraphMT/RealtimeThreadPool.h>
 #include <atkaudio/FifoBuffer.h>
@@ -17,16 +16,6 @@
 #include <QDockWidget>
 #include <QMainWindow>
 #include <QTimer>
-
-juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
-{
-    return new HostAudioProcessor();
-}
-
-static std::unique_ptr<PluginHolder> createPluginHolder()
-{
-    return std::make_unique<PluginHolder>(nullptr);
-}
 
 struct atk::PluginHost::Impl : public juce::AsyncUpdater
 {
@@ -103,16 +92,23 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
 
         auto* impl = context->owner;
 
-        if (!impl->mainComponent->getPluginHolderLock().tryEnter())
+        if (!impl->processorLock.tryEnter())
         {
             context->markCompleted();
             return;
         }
 
-        auto* processor = impl->mainComponent->getAudioProcessor();
+        auto* processor = impl->hostProcessor.get();
+        if (processor == nullptr)
+        {
+            impl->processorLock.exit();
+            context->markCompleted();
+            return;
+        }
+
         if (!processor->getCallbackLock().tryEnter())
         {
-            impl->mainComponent->getPluginHolderLock().exit();
+            impl->processorLock.exit();
             context->markCompleted();
             return;
         }
@@ -121,7 +117,7 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
         if (maxBlockSize <= 0)
         {
             processor->getCallbackLock().exit();
-            impl->mainComponent->getPluginHolderLock().exit();
+            impl->processorLock.exit();
             context->markCompleted();
             return;
         }
@@ -152,7 +148,7 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
         }
 
         processor->getCallbackLock().exit();
-        impl->mainComponent->getPluginHolderLock().exit();
+        impl->processorLock.exit();
 
         context->markCompleted();
     }
@@ -165,11 +161,12 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
     }
 
     Impl()
-        : mainComponent(new HostEditorComponent(createPluginHolder()))
+        : hostProcessor(std::make_unique<HostAudioProcessor>())
+        , mainComponent(new HostEditorComponent(hostProcessor.get()))
     {
         jobContext.owner = this;
 
-        if (auto* hostProc = mainComponent->getHostProcessor())
+        if (auto* hostProc = hostProcessor.get())
         {
             hostProc->getMultiCoreEnabled = [this]() { return useThreadPool.load(std::memory_order_acquire); };
             hostProc->setMultiCoreEnabled = [this](bool enabled) { setMultiCoreEnabled(enabled); };
@@ -216,19 +213,31 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
 
         std::lock_guard<std::mutex> lock(timerMutex);
 
-        if (mainComponent)
+        if (auto* hostProc = hostProcessor.get())
         {
-            if (auto* hostProc = mainComponent->getHostProcessor())
-            {
-                hostProc->getMultiCoreEnabled = nullptr;
-                hostProc->setMultiCoreEnabled = nullptr;
-                hostProc->getCpuLoad = nullptr;
-                hostProc->getLatencyMs = nullptr;
-            }
+            hostProc->getMultiCoreEnabled = nullptr;
+            hostProc->setMultiCoreEnabled = nullptr;
+            hostProc->getCpuLoad = nullptr;
+            hostProc->getLatencyMs = nullptr;
         }
 
         if (useThreadPool.load(std::memory_order_acquire))
             jobContext.waitForCompletionWithTimeout(std::chrono::milliseconds(100));
+
+        if (mainComponent)
+            mainComponent->detachProcessor();
+
+        {
+            juce::ScopedLock lock(processorLock);
+
+            if (auto* hostProc = hostProcessor.get())
+            {
+                hostProc->suspendProcessing(true);
+                hostProc->clearPlugin();
+            }
+
+            hostProcessor.reset();
+        }
 
         if (qtWidget)
             qtWidget->clearCallbacks();
@@ -290,8 +299,11 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
         jobContext.waitForCompletion();
 
         // Acquire locks - audio callback uses tryEnter so it will bail out
-        juce::ScopedLock lock(mainComponent->getPluginHolderLock());
-        auto* processor = mainComponent->getAudioProcessor();
+        juce::ScopedLock lock(processorLock);
+        auto* processor = hostProcessor.get();
+        if (processor == nullptr)
+            return;
+
         juce::ScopedLock callbackLock(processor->getCallbackLock());
 
         if (isPrepared)
@@ -396,17 +408,25 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
             wasUsingThreading = false;
         }
 
-        if (!mainComponent->getPluginHolderLock().tryEnter())
+        if (!processorLock.tryEnter())
         {
             for (int ch = 0; ch < newNumChannels * 2; ++ch)
                 juce::FloatVectorOperations::clear(buffer[ch], newNumSamples);
             return;
         }
 
-        auto* processor = mainComponent->getAudioProcessor();
+        auto* processor = hostProcessor.get();
+        if (processor == nullptr)
+        {
+            processorLock.exit();
+            for (int ch = 0; ch < newNumChannels * 2; ++ch)
+                juce::FloatVectorOperations::clear(buffer[ch], newNumSamples);
+            return;
+        }
+
         if (!processor->getCallbackLock().tryEnter())
         {
-            mainComponent->getPluginHolderLock().exit();
+            processorLock.exit();
             for (int ch = 0; ch < newNumChannels * 2; ++ch)
                 juce::FloatVectorOperations::clear(buffer[ch], newNumSamples);
             return;
@@ -422,7 +442,7 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
         }
 
         processor->getCallbackLock().exit();
-        mainComponent->getPluginHolderLock().exit();
+        processorLock.exit();
     }
 
     void setVisible(bool visible)
@@ -567,9 +587,7 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
 
     HostAudioProcessorImpl* getHostProcessor() const
     {
-        if (!mainComponent)
-            return nullptr;
-        return mainComponent->getHostProcessor();
+        return hostProcessor.get();
     }
 
     int getInnerPluginChannelCount() const
@@ -595,8 +613,11 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
         s.clear();
 
         {
-            juce::ScopedLock lock(mainComponent->getPluginHolderLock());
-            auto* processor = mainComponent->getAudioProcessor();
+            juce::ScopedLock lock(processorLock);
+            auto* processor = hostProcessor.get();
+            if (processor == nullptr)
+                return;
+
             juce::ScopedLock callbackLock(processor->getCallbackLock());
             processor->getStateInformation(state);
         }
@@ -761,8 +782,11 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
         if (!jobContext.waitForCompletionWithTimeout(std::chrono::milliseconds(100)))
             return;
 
-        juce::ScopedLock lock(mainComponent->getPluginHolderLock());
-        auto* processor = mainComponent->getAudioProcessor();
+        juce::ScopedLock lock(processorLock);
+        auto* processor = hostProcessor.get();
+        if (processor == nullptr)
+            return;
+
         juce::ScopedLock callbackLock(processor->getCallbackLock());
         juce::MemoryBlock stateData(stateString.data(), stateString.size());
         processor->setStateInformation(stateData.getData(), (int)stateData.getSize());
@@ -812,10 +836,10 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
     int getLatencyMs() const
     {
         std::lock_guard<std::mutex> lock(timerMutex);
-        if (!mainComponent || sampleRate <= 0.0)
+        if (sampleRate <= 0.0)
             return 0;
 
-        auto* hostProc = mainComponent->getHostProcessor();
+        auto* hostProc = hostProcessor.get();
         if (!hostProc)
             return 0;
 
@@ -855,6 +879,8 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
     }
 
 private:
+    juce::CriticalSection processorLock;
+    std::unique_ptr<HostAudioProcessor> hostProcessor;
     HostEditorComponent* mainComponent = nullptr;
     atk::JuceQtWidget* qtWidget = nullptr;
     const char* dockId = nullptr;
@@ -1004,6 +1030,25 @@ atk::PluginHost::~PluginHost()
     auto* impl = pImpl.release();
     if (impl == nullptr)
         return;
+
+#ifdef ENABLE_QT
+    if (auto* app = QCoreApplication::instance())
+    {
+        // Defer actual teardown to the Qt event queue so it runs outside
+        // the active JUCE dispatch batch on Linux.
+        QMetaObject::invokeMethod(app, [impl]() { delete impl; }, Qt::QueuedConnection);
+        return;
+    }
+#endif
+
+    if (auto* mm = juce::MessageManager::getInstanceWithoutCreating())
+    {
+        if (mm->isThisTheMessageThread())
+        {
+            delete impl;
+            return;
+        }
+    }
 
     atk::atkAudioModule::destroyOnMessageThread([impl]() { delete impl; });
 }

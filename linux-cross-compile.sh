@@ -42,9 +42,23 @@ echo "Container architecture: $(uname -m)"
 # Configure environment
 export DEBIAN_FRONTEND=noninteractive
 
+repair_dpkg_state() {
+  if [ -d /var/lib/dpkg ] && [ -n "$(ls -A /var/lib/dpkg/updates 2>/dev/null)" ]; then
+    echo "Detected interrupted dpkg state; repairing"
+  fi
+
+  dpkg --configure -a || true
+  apt-get -f install -y || true
+}
+
+safe_apt_install() {
+  repair_dpkg_state
+  apt-get install -y --no-install-recommends "$@"
+}
+
 # Install base packages
 apt-get update
-apt-get install -y --no-install-recommends git software-properties-common
+safe_apt_install git software-properties-common
 git config --global --add safe.directory /workspace
 
 # Configure multi-arch for cross-compilation
@@ -97,7 +111,7 @@ OBS_DEPS=$(apply_arch_suffix "${OBS_DEPS[@]}")
 QT6_DEPS=$(apply_arch_suffix "${QT6_DEPS[@]}")
 
 # Install build dependencies
-apt-get install -y --no-install-recommends ${BUILD_DEPS_BASE}
+safe_apt_install ${BUILD_DEPS_BASE}
 
 # Install target architecture libraries
 if [ "${CROSS_COMPILE}" = "true" ]; then
@@ -117,15 +131,29 @@ Pin: release *
 Pin-Priority: -1
 EOF
   
-  apt-get install -y --no-install-recommends ${JUCE_DEPS} ${OBS_DEPS} ${QT6_DEPS}
-  apt-get install -y --no-install-recommends ${QT6_TOOLS[@]}  # x86_64 moc/uic/rcc
+  safe_apt_install ${JUCE_DEPS} ${OBS_DEPS} ${QT6_DEPS}
+  safe_apt_install ${QT6_TOOLS[@]}  # x86_64 moc/uic/rcc
 else
-  apt-get install -y --no-install-recommends ${JUCE_DEPS} ${OBS_DEPS} ${QT6_DEPS}
+  safe_apt_install ${JUCE_DEPS} ${OBS_DEPS} ${QT6_DEPS}
 fi
 
 # Configure CMake
 BUILD_CONFIG="${BUILD_CONFIG:-Release}"
-CMAKE_FLAGS="-B build_${TARGET_ARCH} -G Ninja -DCMAKE_BUILD_TYPE=${BUILD_CONFIG}"
+BUILD_DIR="build_${TARGET_ARCH}"
+
+if [ -f "${BUILD_DIR}/CMakeCache.txt" ]; then
+  CACHEFILE_DIR=$(sed -n 's/^CMAKE_CACHEFILE_DIR:INTERNAL=//p' "${BUILD_DIR}/CMakeCache.txt")
+  CACHE_HOME_DIR=$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "${BUILD_DIR}/CMakeCache.txt")
+  CURRENT_BUILD_DIR="$(pwd)/${BUILD_DIR}"
+  CURRENT_SOURCE_DIR="$(pwd)"
+
+  if [ "${CACHEFILE_DIR}" != "${CURRENT_BUILD_DIR}" ] || [ "${CACHE_HOME_DIR}" != "${CURRENT_SOURCE_DIR}" ]; then
+    echo "Removing stale ${BUILD_DIR} because it was configured for a different workspace path"
+    rm -rf "${BUILD_DIR}"
+  fi
+fi
+
+CMAKE_FLAGS="-B ${BUILD_DIR} -G Ninja -DCMAKE_BUILD_TYPE=${BUILD_CONFIG}"
 CMAKE_FLAGS="${CMAKE_FLAGS} -DCMAKE_INSTALL_PREFIX=/usr"
 
 # Cross-compilation configuration
@@ -176,12 +204,17 @@ fi
 
 # Build
 cmake ${CMAKE_FLAGS}
-cmake --build build_${TARGET_ARCH} --config ${BUILD_CONFIG} --parallel
+cmake --build ${BUILD_DIR} --config ${BUILD_CONFIG} --parallel
 
 # Verify and strip (only strip for Release builds, keep debug symbols for RelWithDebInfo)
-echo "Built binary: $(file build_${TARGET_ARCH}/${BUILD_CONFIG}/*.so || file build_${TARGET_ARCH}/obs-plugins/64bit/*.so || echo 'Not found')"
+BUILT_BINARY=$(find "${BUILD_DIR}" -name '*.so' | head -n 1)
+if [ -n "${BUILT_BINARY}" ]; then
+  echo "Built binary: $(file "${BUILT_BINARY}")"
+else
+  echo "Built binary: Not found"
+fi
 if [ "${CROSS_COMPILE}" = "true" ] && [ "${BUILD_CONFIG}" = "Release" ]; then
-  find build_${TARGET_ARCH} -name '*.so' -exec ${CROSS_TRIPLE}-strip --strip-debug {} \; 2>/dev/null || true
+  find ${BUILD_DIR} -name '*.so' -exec ${CROSS_TRIPLE}-strip --strip-debug {} \; 2>/dev/null || true
 fi
 
 

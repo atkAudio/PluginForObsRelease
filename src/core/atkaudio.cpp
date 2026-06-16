@@ -1,6 +1,7 @@
 #include "core/atkaudio/atkaudio.h"
 
 #include <atkaudio/AudioProcessorGraphMT/RealtimeThreadPool.h>
+#include <atkaudio/Logging.h>
 #include <atkaudio/LookAndFeel.h>
 #include <atkaudio/ModuleInfrastructure/AudioServer/AudioServer.h>
 #include <atkaudio/ModuleInfrastructure/MidiServer/MidiServer.h>
@@ -54,10 +55,12 @@ juce::File atk::getSettingsFile(const juce::String& name)
 
 bool atk::create()
 {
+    atk::logging::info("LIFECYCLE", "atk::create begin");
+
     auto& lifecycle = atk::ObsJucePluginFormatLifecycle::getInstance();
     if (!lifecycle.initialize())
     {
-        DBG("create: failed to initialize OBS JUCE format lifecycle");
+        atk::logging::error("LIFECYCLE", "atk::create failed to initialize OBS JUCE lifecycle");
         return false;
     }
 
@@ -83,6 +86,8 @@ bool atk::create()
     if (auto* threadPool = atk::RealtimeThreadPool::getInstance())
         threadPool->initialize();
 
+    atk::logging::info("LIFECYCLE", "atk::create completed");
+
     return true;
 }
 
@@ -96,9 +101,11 @@ bool atk::startMessagePump(QObject* qtParent)
     auto& lifecycle = atk::ObsJucePluginFormatLifecycle::getInstance();
     if (!lifecycle.startMessagePump(qtParent))
     {
-        DBG("startMessagePump: failed to start OBS JUCE format message pump");
+        atk::logging::error("LIFECYCLE", "atk::startMessagePump failed");
         return false;
     }
+
+    atk::logging::info("LIFECYCLE", "atk::startMessagePump completed");
 
     return true;
 }
@@ -115,6 +122,8 @@ bool atk::isShuttingDown()
 
 void atk::destroy()
 {
+    atk::logging::info("LIFECYCLE", "atk::destroy begin");
+
     auto& lifecycle = atk::ObsJucePluginFormatLifecycle::getInstance();
 
     if (auto* midiServer = atk::MidiServer::getInstance())
@@ -136,6 +145,8 @@ void atk::destroy()
     }
 
     lifecycle.shutdown();
+
+    atk::logging::info("LIFECYCLE", "atk::destroy completed");
 }
 
 void atk::update()
@@ -156,7 +167,7 @@ void* atk::getQtMainWindowHandle()
         QWidget* mainQWidget = (QWidget*)obs_frontend_get_main_window();
         if (!mainQWidget)
         {
-            DBG("getQtMainWindowHandle: obs_frontend_get_main_window() returned null");
+            atk::logging::warning("UI", "getQtMainWindowHandle: obs_frontend_get_main_window returned null");
             return nullptr;
         }
 
@@ -174,12 +185,11 @@ void* atk::getQtMainWindowHandle()
         if (nativeHandle)
         {
             g_qtMainWindowHandle = nativeHandle;
-            DBG("getQtMainWindowHandle: Extracted native handle on first access");
-            DBG("  Native handle: " + juce::String::toHexString((juce::pointer_sized_int)nativeHandle));
+            atk::logging::debug("UI", "getQtMainWindowHandle: extracted native handle");
         }
         else
         {
-            DBG("getQtMainWindowHandle: Failed to extract native handle");
+            atk::logging::warning("UI", "getQtMainWindowHandle: failed to extract native handle");
         }
 
         // Apply OBS theme colors to JUCE
@@ -191,7 +201,7 @@ void* atk::getQtMainWindowHandle()
         auto fgColour = juce::Colour(fgColor.red(), fgColor.green(), fgColor.blue());
         atk::LookAndFeel::applyColorsToInstance(bgColour, fgColour);
 
-        DBG("getQtMainWindowHandle: Applied OBS theme colors");
+        atk::logging::debug("UI", "getQtMainWindowHandle: applied OBS theme colors");
 #endif
     }
 
@@ -216,5 +226,5 @@ void atk::applyColors(uint8_t bgR, uint8_t bgG, uint8_t bgB, uint8_t fgR, uint8_
 
 void atk::logMessage(const juce::String& message)
 {
-    DBG(message);
+    atk::logging::info("ATK", message);
 }

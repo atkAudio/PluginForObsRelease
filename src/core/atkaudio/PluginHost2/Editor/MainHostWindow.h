@@ -5,11 +5,12 @@ using namespace juce;
 #include "../../LookAndFeel.h"
 #include "../../SharedPluginList.h"
 
-#include "../Core/PluginGraph.h"
+#include "../PluginGraph.h"
 #include "GraphEditorPanel.h"
 
 #include <atkaudio/ModuleInfrastructure/AudioServer/AudioServer.h>
 #include <atkaudio/ModuleInfrastructure/MidiServer/MidiServer.h>
+#include <functional>
 #include <string>
 
 namespace CommandIDs
@@ -52,8 +53,11 @@ class MainHostWindow final
     , public FileDragAndDropTarget
 {
 public:
-    MainHostWindow();
+    explicit MainHostWindow(juce::AudioDeviceManager& deviceManagerIn);
     ~MainHostWindow() override;
+
+    void attachGraph(PluginGraph& graphModel);
+    void detachGraphEditor();
 
     void closeButtonPressed() override;
     void changeListenerCallback(ChangeBroadcaster*) override;
@@ -77,6 +81,10 @@ public:
     void tryToQuitApplication();
 
     void createPlugin(const PluginDescriptionAndPreference&, Point<int> pos);
+
+    PluginWindow* getOrCreatePluginWindowFor(AudioProcessorGraphMT::Node*, PluginWindow::Type);
+    bool closeAnyOpenPluginWindows();
+    void pruneStalePluginWindows(const AudioProcessorGraphMT& graphModel);
 
     void addPluginsToMenu(PopupMenu&);
     std::optional<PluginDescriptionAndPreference> getChosenType(int menuID) const;
@@ -163,6 +171,26 @@ public:
         return deviceManager;
     }
 
+    auto& getFormatManager()
+    {
+        return formatManager;
+    }
+
+    auto& getKnownPluginList()
+    {
+        return knownPluginList;
+    }
+
+    void setRuntimeCpuLoadProvider(std::function<float()> provider)
+    {
+        runtimeCpuLoadProvider = std::move(provider);
+    }
+
+    float getRuntimeCpuLoad() const
+    {
+        return runtimeCpuLoadProvider ? runtimeCpuLoadProvider() : 0.0f;
+    }
+
 private:
     bool isAutoScalePluginWindowsEnabled();
 
@@ -183,12 +211,14 @@ private:
     // NEW: MidiClient from ModuleDeviceManager (external reference, required)
     atk::MidiClient* externalMidiClient = nullptr;
 
-    // OLD: Keep for backward compatibility with VirtualAudioIODevice
-    AudioDeviceManager deviceManager;
+    // Audio device manager is owned by PluginHost2 processor-side runtime.
+    AudioDeviceManager& deviceManager;
 
     AudioPluginFormatManager formatManager;
 
     std::vector<PluginDescription> internalTypes;
+
+    OwnedArray<PluginWindow> activePluginWindows;
 
     // Own plugin list instance, loads from/saves to shared file
     KnownPluginList knownPluginList;
@@ -203,6 +233,8 @@ private:
 
     // Parent OBS source UUID (not ref-counted, just the UUID string)
     std::string parentSourceUuid;
+
+    std::function<float()> runtimeCpuLoadProvider;
 
     JUCE_DECLARE_NON_COPYABLE(MainHostWindow)
 };

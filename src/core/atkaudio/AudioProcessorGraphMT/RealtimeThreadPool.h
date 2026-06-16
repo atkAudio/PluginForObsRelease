@@ -3,6 +3,7 @@
 #pragma once
 
 #include "../CpuInfo.h"
+#include <atkaudio/Logging.h>
 #include "../RealtimeThread.h"
 #include "DependencyTaskGraph.h"
 
@@ -155,8 +156,14 @@ public:
         auto physicalCores = getPhysicalCoreMapping();
         const int numPhysical = static_cast<int>(physicalCores.size());
 
-        DBG("[RealtimeThreadPool] Initializing with " << numWorkers << " workers");
-
+        atk::logging::info(
+            "RealtimeThreadPool::initialize",
+            juce::String::formatted(
+                "initializing worker pool with %d workers (physical cores: %d)",
+                numWorkers,
+                numPhysical
+            )
+        );
         for (int i = 0; i < numWorkers; ++i)
         {
             int coreId = -1;

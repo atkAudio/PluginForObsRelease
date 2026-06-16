@@ -1,8 +1,8 @@
 #include "PluginGraph.h"
 
-#include "../UI/GraphEditorPanel.h"
-#include "../UI/MainHostWindow.h"
-#include "InternalPlugins.h"
+#include "Editor/GraphEditorPanel.h"
+#include "Editor/MainHostWindow.h"
+#include "InternalPlugins/InternalPlugins.h"
 
 // Initialize static instance counter
 std::atomic<int> PluginGraph::activeInstanceCount{0};
@@ -27,6 +27,8 @@ PluginGraph::PluginGraph(MainHostWindow& mw, AudioPluginFormatManager& fm, Known
 PluginGraph::~PluginGraph()
 {
     activeInstanceCount.fetch_sub(1, std::memory_order_relaxed);
+    // Editor teardown owns plugin window cleanup and may already have destroyed
+    // MainHostWindow before PluginGraph is deleted.
     graph.removeListener(this);
     graph.removeChangeListener(this);
     graph.clear();
@@ -42,9 +44,7 @@ void PluginGraph::changeListenerCallback(ChangeBroadcaster*)
 {
     changed();
 
-    for (int i = activePluginWindows.size(); --i >= 0;)
-        if (!graph.getNodes().contains(activePluginWindows.getUnchecked(i)->node))
-            activePluginWindows.remove(i);
+    mainHostWindow.pruneStalePluginWindows(graph);
 }
 
 AudioProcessorGraphMT::Node::Ptr PluginGraph::getNodeForName(const String& name) const
@@ -137,55 +137,12 @@ void PluginGraph::clear()
 
 PluginWindow* PluginGraph::getOrCreateWindowFor(AudioProcessorGraphMT::Node* node, PluginWindow::Type type)
 {
-    jassert(node != nullptr);
-
-#if JUCE_IOS || JUCE_ANDROID
-    closeAnyOpenPluginWindows();
-#else
-    for (auto* w : activePluginWindows)
-        if (w->node.get() == node && w->type == type)
-            return w;
-#endif
-
-    if (auto* processor = node->getProcessor())
-    {
-        if (auto* plugin = dynamic_cast<AudioPluginInstance*>(processor))
-        {
-            auto description = plugin->getPluginDescription();
-
-            if (!plugin->hasEditor() && description.pluginFormatName == "Internal")
-            {
-                // Check if this is a MIDI I/O node
-                if (auto* ioProcessor = dynamic_cast<AudioProcessorGraphMT::AudioGraphIOProcessor*>(processor))
-                {
-                    auto ioType = ioProcessor->getType();
-                    if (ioType == AudioProcessorGraphMT::AudioGraphIOProcessor::midiInputNode
-                        || ioType == AudioProcessorGraphMT::AudioGraphIOProcessor::midiOutputNode)
-                    {
-                        // Open MIDI settings window for MIDI nodes
-                        mainHostWindow.getCommandManager().invokeDirectly(CommandIDs::showMidiSettings, false);
-                        return nullptr;
-                    }
-                }
-
-                // Open audio settings for other internal plugins without editor
-                mainHostWindow.getCommandManager().invokeDirectly(CommandIDs::showAudioSettings, false);
-                return nullptr;
-            }
-
-            auto localDpiDisabler = makeDPIAwarenessDisablerForPlugin(description);
-            return activePluginWindows.add(new PluginWindow(node, type, activePluginWindows));
-        }
-    }
-
-    return nullptr;
+    return mainHostWindow.getOrCreatePluginWindowFor(node, type);
 }
 
 bool PluginGraph::closeAnyOpenPluginWindows()
 {
-    bool wasEmpty = activePluginWindows.isEmpty();
-    activePluginWindows.clear();
-    return !wasEmpty;
+    return mainHostWindow.closeAnyOpenPluginWindows();
 }
 
 String PluginGraph::getDocumentTitle()
@@ -598,16 +555,4 @@ File PluginGraph::getDefaultGraphDocumentOnMobile()
 {
     auto persistantStorageLocation = File::getSpecialLocation(File::userApplicationDataDirectory);
     return persistantStorageLocation.getChildFile("state.filtergraph");
-}
-
-void PluginGraph::processMidiInput(juce::MidiBuffer& midiMessages, int numSamples, double sampleRate)
-{
-    // Get MIDI input from MidiServer through MainHostWindow's MidiClient
-    mainHostWindow.getMidiClient().getPendingMidi(midiMessages, numSamples, sampleRate);
-}
-
-void PluginGraph::processMidiOutput(const juce::MidiBuffer& midiMessages)
-{
-    // Send MIDI output to MidiServer through MainHostWindow's MidiClient
-    mainHostWindow.getMidiClient().sendMidi(midiMessages);
 }

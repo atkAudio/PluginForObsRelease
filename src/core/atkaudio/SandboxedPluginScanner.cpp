@@ -1,5 +1,7 @@
 #include "SandboxedPluginScanner.h"
 
+#include <atkaudio/Logging.h>
+
 namespace atk
 {
 
@@ -41,7 +43,13 @@ SandboxedScanner::SandboxedScanner()
 {
     if (!scannerPath.existsAsFile())
     {
-        DBG("[SandboxedScanner] Scanner not found: " + scannerPath.getFullPathName());
+        atk::logging::warning(
+            "SandboxedScanner::ctor",
+            juce::String::formatted(
+                "scanner executable not found at \"%s\"; falling back to in-process scanning",
+                scannerPath.getFullPathName().toRawUTF8()
+            )
+        );
         showMissingScannerWarning();
     }
 }
@@ -75,7 +83,14 @@ bool SandboxedScanner::findPluginTypesFor(
     {
         // Process failed to start - track as failed scan
         failedScans.push_back({fileOrIdentifier, format.getName()});
-        DBG("[SandboxedScanner] Failed to start scanner for: " + fileOrIdentifier);
+        atk::logging::warning(
+            "SandboxedScanner::findPluginTypesFor",
+            juce::String::formatted(
+                "failed to start scanner process for \"%s\" (%s)",
+                fileOrIdentifier.toRawUTF8(),
+                format.getName().toRawUTF8()
+            )
+        );
         return true;
     }
 
@@ -86,7 +101,15 @@ bool SandboxedScanner::findPluginTypesFor(
         process.kill();
         // Timeout - track as failed scan
         failedScans.push_back({fileOrIdentifier, format.getName()});
-        DBG("[SandboxedScanner] Scanner timeout for: " + fileOrIdentifier);
+        atk::logging::warning(
+            "SandboxedScanner::findPluginTypesFor",
+            juce::String::formatted(
+                "scanner timeout after %d ms for \"%s\" (%s)",
+                timeoutMs,
+                fileOrIdentifier.toRawUTF8(),
+                format.getName().toRawUTF8()
+            )
+        );
         return true;
     }
 
@@ -94,8 +117,14 @@ bool SandboxedScanner::findPluginTypesFor(
     {
         // Non-zero exit code - track as failed scan
         failedScans.push_back({fileOrIdentifier, format.getName()});
-        DBG(
-            "[SandboxedScanner] Scanner exit code " + juce::String(process.getExitCode()) + " for: " + fileOrIdentifier
+        atk::logging::warning(
+            "SandboxedScanner::findPluginTypesFor",
+            juce::String::formatted(
+                "scanner exited with code %d for \"%s\" (%s)",
+                process.getExitCode(),
+                fileOrIdentifier.toRawUTF8(),
+                format.getName().toRawUTF8()
+            )
         );
         return true;
     }
@@ -109,7 +138,14 @@ bool SandboxedScanner::findPluginTypesFor(
     {
         // Failed to parse or scan reported failure - track as failed scan
         failedScans.push_back({fileOrIdentifier, format.getName()});
-        DBG("[SandboxedScanner] Scan failed for: " + fileOrIdentifier);
+        atk::logging::warning(
+            "SandboxedScanner::findPluginTypesFor",
+            juce::String::formatted(
+                "scanner produced invalid XML or failure for \"%s\" (%s)",
+                fileOrIdentifier.toRawUTF8(),
+                format.getName().toRawUTF8()
+            )
+        );
         return true;
     }
 

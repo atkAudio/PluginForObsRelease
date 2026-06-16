@@ -2,11 +2,7 @@
 file(GLOB_RECURSE OBS_PLUGIN_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
 list(FILTER OBS_PLUGIN_SOURCES EXCLUDE REGEX [[.*/scanner/.*]])
 
-target_sources(
-    ${PROJECT_NAME}
-    PRIVATE
-        ${OBS_PLUGIN_SOURCES}
-)
+target_sources(${PROJECT_NAME} PRIVATE ${OBS_PLUGIN_SOURCES})
 
 target_include_directories(
     ${PROJECT_NAME}
@@ -26,8 +22,9 @@ FetchContent_Declare(
     juce
     EXCLUDE_FROM_ALL
     GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
-    GIT_TAG 8.0.12
-    PATCH_COMMAND ${CMAKE_COMMAND} -P "${CMAKE_SOURCE_DIR}/cmake/patches/apply-juce-patches.cmake"
+    GIT_TAG 8.0.13
+    PATCH_COMMAND
+        ${CMAKE_COMMAND} -P "${CMAKE_SOURCE_DIR}/cmake/patches/apply-juce-patches.cmake"
 )
 FetchContent_MakeAvailable(juce)
 
@@ -53,15 +50,19 @@ target_compile_definitions(
         JUCE_USE_CURL=1
         JUCE_WEB_BROWSER=0
         JUCE_MODAL_LOOPS_PERMITTED=1
+        $<$<OR:$<BOOL:$ENV{CI}>,$<BOOL:$ENV{GITHUB_ACTIONS}>>:ATKAUDIO_CI_BUILD=1>
         $<$<AND:$<CONFIG:RelWithDebInfo>,$<OR:$<BOOL:$ENV{CI}>,$<BOOL:$ENV{GITHUB_ACTIONS}>>>:JUCE_DISABLE_ASSERTIONS>
 )
 
 set_target_properties(
     ${PROJECT_NAME}
     PROPERTIES
-        JUCE_NEEDS_WEB_BROWSER FALSE
-        JUCE_NEEDS_CURL TRUE
-        JUCE_IS_PLUGIN TRUE
+        JUCE_NEEDS_WEB_BROWSER
+            FALSE
+        JUCE_NEEDS_CURL
+            TRUE
+        JUCE_IS_PLUGIN
+            TRUE
 )
 
 if(UNIX AND NOT APPLE)
@@ -76,7 +77,13 @@ endif()
 if(MSVC)
     # This target does not use C++ modules. Disabling MSVC's module scan avoids
     # spurious `*.module.json` warnings when multiple sources share a basename.
-    set_property(TARGET ${PROJECT_NAME} PROPERTY CXX_SCAN_FOR_MODULES OFF)
+    set_property(
+        TARGET
+            ${PROJECT_NAME}
+        PROPERTY
+            CXX_SCAN_FOR_MODULES
+                OFF
+    )
 
     target_compile_options(
         ${PROJECT_NAME}
@@ -100,8 +107,17 @@ if(NOT WIN32)
 endif()
 
 if(WIN32)
-    file(TO_CMAKE_PATH "${CMAKE_INSTALL_PREFIX}" _sanitized_prefix)
-    string(REGEX REPLACE "/$" "" _sanitized_prefix "${_sanitized_prefix}")
+    file(
+        TO_CMAKE_PATH
+        "${CMAKE_INSTALL_PREFIX}"
+        _sanitized_prefix
+    )
+    string(
+        REGEX REPLACE "/$"
+        ""
+        _sanitized_prefix
+        "${_sanitized_prefix}"
+    )
     set(CMAKE_INSTALL_PREFIX "${_sanitized_prefix}" CACHE PATH "Sanitized install prefix" FORCE)
 endif()
 

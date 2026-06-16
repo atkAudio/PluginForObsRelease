@@ -3,8 +3,8 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 using namespace juce;
 
-#include "../UI/PluginWindow.h"
-#include "../../AudioProcessorGraphMT/AudioProcessorGraphMT.h"
+#include "Editor/PluginWindow.h"
+#include "../AudioProcessorGraphMT/AudioProcessorGraphMT.h"
 
 // Using AudioProcessorGraphMT from atk namespace
 using atk::AudioProcessorGraphMT;
@@ -101,9 +101,6 @@ public:
         return activeInstanceCount.load() > 0;
     }
 
-    void processMidiInput(juce::MidiBuffer& midiMessages, int numSamples, double sampleRate);
-    void processMidiOutput(const juce::MidiBuffer& midiMessages);
-
     MainHostWindow& getMainHostWindow()
     {
         return mainHostWindow;
@@ -113,7 +110,6 @@ private:
     MainHostWindow& mainHostWindow;
     AudioPluginFormatManager& formatManager;
     KnownPluginList& knownPlugins;
-    OwnedArray<PluginWindow> activePluginWindows;
     ScopedMessageBox messageBox;
 
     NodeID lastUID;

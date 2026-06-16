@@ -1,5 +1,6 @@
 #include "AudioProcessorGraphMT.h"
 
+#include <atkaudio/Logging.h>
 #include "SubgraphExtractor.h"
 #include "RealtimeThreadPool.h"
 #include "DependencyTaskGraph.h"
@@ -156,15 +157,13 @@ public:
                    + String((int)c.destination.nodeID.uid)
                    + "."
                    + String(c.destination.channelIndex);
-        DBG(msg);
-        Logger::writeToLog(msg);
+        atk::logging::debug("AudioProcessorGraphMT::Connections", msg);
 #endif
 
         if (!canConnect(n, c))
         {
 #ifdef ATK_DEBUG
-            DBG("  canConnect returned FALSE");
-            Logger::writeToLog("  canConnect returned FALSE");
+            atk::logging::warning("AudioProcessorGraphMT::Connections", "rejected illegal graph connection");
 #endif
             return false;
         }
@@ -173,8 +172,7 @@ public:
 
 #ifdef ATK_DEBUG
         String countMsg = "  Connection added. Total connections: " + String(getConnections().size());
-        DBG(countMsg);
-        Logger::writeToLog(countMsg);
+        atk::logging::debug("AudioProcessorGraphMT::Connections", countMsg);
 #endif
         jassert(isConnected(c));
         return true;
@@ -3134,17 +3132,7 @@ public:
             }
 
             if (currentLatencySum != chain->latencySum)
-            {
-#ifdef ATK_DEBUG
-                DBG("[PARALLEL] Latency changed in subgraph "
-                    << i
-                    << ": expected "
-                    << chain->latencySum
-                    << ", current "
-                    << currentLatencySum);
-#endif
                 return true;
-            }
         }
         return false;
     }
@@ -3730,11 +3718,6 @@ void AudioProcessorGraphMT::setStateInformation(const void*, int)
 
 void AudioProcessorGraphMT::processBlock(AudioBuffer<float>& audio, MidiBuffer& midi)
 {
-#ifdef ATK_DEBUG
-    if (!midi.isEmpty())
-        DBG("[AudioProcessorGraphMT::processBlock] Received MIDI: " << midi.getNumEvents() << " events");
-#endif
-
     return pimpl->processBlock(audio, midi, getPlayHead());
 }
 
@@ -4401,7 +4384,6 @@ public:
 
             // No test here, but older versions of the graph would take forever to complete building
             // this graph, so we just want to make sure that we finish the test without timing out.
-            DBG("render sequence built in " + String(duration) + " ms");
         }
     }
 

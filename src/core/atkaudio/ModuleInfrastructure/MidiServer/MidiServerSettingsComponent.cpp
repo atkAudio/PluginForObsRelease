@@ -1,5 +1,7 @@
 #include "MidiServerSettingsComponent.h"
 
+#include <atkaudio/Logging.h>
+
 namespace atk
 {
 
@@ -7,8 +9,7 @@ MidiServerSettingsComponent::MidiServerSettingsComponent(MidiClient* client)
     : client(client)
     , server(MidiServer::getInstance())
 {
-    DBG("[MIDI_SRV] MidiServerSettingsComponent created with client: " << (client ? "YES" : "NO"));
-
+    atk::logging::info("MidiServerSettingsComponent::ctor", "initializing MIDI settings UI");
     // Input devices section
     inputsLabel.setText("MIDI Inputs", juce::dontSendNotification);
     inputsLabel.setFont(juce::FontOptions(16.0f, juce::Font::bold));
@@ -152,22 +153,12 @@ MidiClientState MidiServerSettingsComponent::getSubscriptionState() const
     MidiClientState state;
 
     for (int i = 0; i < inputToggles.size(); ++i)
-    {
         if (inputToggles[i]->getToggleState())
-        {
             state.subscribedInputDevices.add(inputToggles[i]->getButtonText());
-            DBG("[MIDI_SRV] Input device checked: " << inputToggles[i]->getButtonText());
-        }
-    }
 
     for (int i = 0; i < outputToggles.size(); ++i)
-    {
         if (outputToggles[i]->getToggleState())
-        {
             state.subscribedOutputDevices.add(outputToggles[i]->getButtonText());
-            DBG("[MIDI_SRV] Output device checked: " << outputToggles[i]->getButtonText());
-        }
-    }
 
     return state;
 }
@@ -226,24 +217,19 @@ void MidiServerSettingsComponent::updateDeviceLists()
 
 void MidiServerSettingsComponent::updateSubscriptions()
 {
-    DBG("[MIDI_SRV] updateSubscriptions called - server: "
-        << (server ? "YES" : "NO")
-        << ", client: "
-        << (client ? "YES" : "NO")
-        << ", client ID: "
-        << juce::String::toHexString((juce::pointer_sized_int)client->getClientId()));
-
     if (server == nullptr || client == nullptr)
         return;
 
     auto state = getSubscriptionState();
 
-    DBG("[MIDI_SRV] getSubscriptionState returned "
-        << state.subscribedInputDevices.size()
-        << " inputs, "
-        << state.subscribedOutputDevices.size()
-        << " outputs");
-
+    atk::logging::debug(
+        "MidiServerSettingsComponent::updateSubscriptions",
+        juce::String::formatted(
+            "applying MIDI subscriptions: inputs=%d outputs=%d",
+            state.subscribedInputDevices.size(),
+            state.subscribedOutputDevices.size()
+        )
+    );
     client->setSubscriptions(state);
 }
 
@@ -368,8 +354,7 @@ void MidiServerSettingsComponent::sendMidiPanic()
     if (!client)
         return;
 
-    DBG("[MIDI_SRV] Sending MIDI Panic");
-
+    atk::logging::info("MidiServerSettingsComponent::sendMidiPanic", "sending MIDI reset across all channels");
     juce::MidiBuffer panicMessages;
 
     for (int channel = 1; channel <= 16; ++channel)
@@ -384,7 +369,7 @@ void MidiServerSettingsComponent::sendMidiPanic()
     if (keyboardState)
         keyboardState->allNotesOff(1);
 
-    DBG("[MIDI_SRV] MIDI Panic sent - all notes and controllers off on all channels");
+    atk::logging::info("MidiServerSettingsComponent::sendMidiPanic", "MIDI reset sent");
 }
 
 } // namespace atk

@@ -11,7 +11,7 @@ class GraphDocumentComponent;
 class IOConfigurationWindow final : public AudioProcessorEditor
 {
 public:
-    IOConfigurationWindow(AudioProcessor&);
+    IOConfigurationWindow(AudioProcessor&, MainHostWindow* mainWindow);
     ~IOConfigurationWindow() override;
 
     void paint(Graphics& g) override;
@@ -20,6 +20,7 @@ public:
 private:
     class InputOutputConfig;
 
+    MainHostWindow* mainWindow = nullptr;
     AudioProcessor::BusesLayout currentLayout;
     Label title;
     std::unique_ptr<InputOutputConfig> inConfig, outConfig;

@@ -6,7 +6,7 @@ using namespace juce;
 #include "DeviceIo2Plugin.h"
 #include "ObsOutput.h"
 #include "ObsSource.h"
-#include "PluginGraph.h"
+#include "../PluginGraph.h"
 
 class InternalPluginFormat final : public AudioPluginFormat
 {

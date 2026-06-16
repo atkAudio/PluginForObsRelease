@@ -2,6 +2,8 @@
 #include "../../SharedPluginList.h"
 #include "../UI/HostEditorWindow.h"
 
+#include <atkaudio/Logging.h>
+
 using namespace juce;
 using juce::NullCheckedInvocation;
 
@@ -84,13 +86,13 @@ HostAudioProcessorImpl::HostAudioProcessorImpl(int numChannels)
 
     routingMatrix.initializeDefaultMapping(numChannels * 2);
 
-    DBG("[MIDI_SRV] PluginHost created with MidiClient");
+    atk::logging::info("HostAudioProcessorImpl::ctor", "initialized PluginHost processor");
 }
 
 HostAudioProcessorImpl::~HostAudioProcessorImpl()
 {
     pluginList.removeChangeListener(this);
-    DBG("[MIDI_SRV] PluginHost destroying, MidiClient will auto-unregister");
+    atk::logging::info("HostAudioProcessorImpl::dtor", "destroyed PluginHost processor");
 }
 
 bool HostAudioProcessorImpl::isBusesLayoutSupported(const BusesLayout& layouts) const
@@ -107,15 +109,85 @@ bool HostAudioProcessorImpl::isBusesLayoutSupported(const BusesLayout& layouts) 
     return true;
 }
 
+void HostAudioProcessorImpl::configureInnerProcessingUnlocked(double sampleRate, int samplesPerBlock)
+{
+    if (inner == nullptr)
+        return;
+
+    bool layoutSupported = false;
+    auto layout = getBusesLayout();
+
+    if (inner->checkBusesLayoutSupported(layout))
+    {
+        inner->setBusesLayout(layout);
+        layoutSupported = true;
+    }
+
+    if (!layoutSupported && layout.inputBuses.size() > 1)
+    {
+        layout.inputBuses.removeLast();
+        layout.inputBuses.add(AudioChannelSet::stereo());
+        if (inner->checkBusesLayoutSupported(layout))
+        {
+            inner->setBusesLayout(layout);
+            layoutSupported = true;
+        }
+    }
+
+    if (!layoutSupported && layout.inputBuses.size() > 1)
+    {
+        layout.inputBuses.removeLast();
+        layout.inputBuses.add(AudioChannelSet::mono());
+        if (inner->checkBusesLayoutSupported(layout))
+        {
+            inner->setBusesLayout(layout);
+            layoutSupported = true;
+        }
+    }
+
+    if (!layoutSupported && layout.inputBuses.size() > 1)
+    {
+        layout.inputBuses.removeLast();
+        if (inner->checkBusesLayoutSupported(layout))
+        {
+            inner->setBusesLayout(layout);
+            layoutSupported = true;
+        }
+    }
+
+    if (layoutSupported)
+    {
+        inner->setRateAndBufferSizeDetails(sampleRate, samplesPerBlock);
+        return;
+    }
+
+    auto pluginInputs = inner->getTotalNumInputChannels();
+    auto pluginOutputs = inner->getTotalNumOutputChannels();
+    auto hostInputs = getMainBusNumInputChannels();
+    auto hostOutputs = getMainBusNumOutputChannels();
+
+    inner->setPlayConfigDetails(
+        jmin(pluginInputs, hostInputs),
+        jmin(pluginOutputs, hostOutputs),
+        sampleRate,
+        samplesPerBlock
+    );
+}
+
 void HostAudioProcessorImpl::prepareToPlay(double sr, int bs)
 {
     const ScopedLock sl(innerMutex);
+
+    const bool wasActive = active;
 
     active = true;
 
     if (inner != nullptr)
     {
-        inner->setRateAndBufferSizeDetails(sr, bs);
+        if (wasActive && juce::MessageManager::getInstanceWithoutCreating() != nullptr)
+            inner->releaseResources();
+
+        configureInnerProcessingUnlocked(sr, bs);
         inner->prepareToPlay(sr, bs);
     }
 
@@ -328,7 +400,14 @@ void HostAudioProcessorImpl::getStateInformation(MemoryBlock& destData)
 
     auto audioState = audioClient.getSubscriptions();
     auto audioStateStr = audioState.serialize();
-    DBG("HostAudioProcessor: Saving audio state: " << audioStateStr);
+    atk::logging::debug(
+        "HostAudioProcessorImpl::getStateInformation",
+        juce::String::formatted(
+            "serializing audio subscriptions: inputs=%d outputs=%d",
+            (int)audioState.inputSubscriptions.size(),
+            (int)audioState.outputSubscriptions.size()
+        )
+    );
     xml.setAttribute("audioClientState", audioStateStr);
 
     auto midiState = midiClient.getSubscriptions();
@@ -407,7 +486,7 @@ void HostAudioProcessorImpl::setStateInformation(const void* data, int sizeInByt
     if (xml->hasAttribute("audioClientState"))
     {
         auto audioStateStr = xml->getStringAttribute("audioClientState");
-        DBG("HostAudioProcessor: Restoring audio state: " << audioStateStr);
+        atk::logging::debug("HostAudioProcessorImpl::setStateInformation", "restoring audio subscription state");
         atk::AudioClientState audioState;
         audioState.deserialize(audioStateStr);
         audioClient.setSubscriptions(audioState);
@@ -551,71 +630,17 @@ void HostAudioProcessorImpl::setNewPlugin(const PluginDescription& pd, EditorSty
 
         editorStyle = where;
 
-        if (active)
+        if (active && inner != nullptr)
         {
-            bool layoutSupported = false;
-            auto layout = getBusesLayout();
+            const auto sampleRate = getSampleRate();
+            const auto blockSize = getBlockSize();
 
-            // Try various bus layouts
-            if (inner->checkBusesLayoutSupported(layout))
+            if (sampleRate > 0.0 && blockSize > 0)
             {
-                inner->setBusesLayout(layout);
-                inner->setRateAndBufferSizeDetails(getSampleRate(), getBlockSize());
-                layoutSupported = true;
-            }
-
-            if (!layoutSupported && layout.inputBuses.size() > 1)
-            {
-                layout.inputBuses.removeLast();
-                layout.inputBuses.add(AudioChannelSet::stereo());
-                if (inner->checkBusesLayoutSupported(layout))
-                {
-                    inner->setBusesLayout(layout);
-                    inner->setRateAndBufferSizeDetails(getSampleRate(), getBlockSize());
-                    layoutSupported = true;
-                }
-            }
-
-            if (!layoutSupported && layout.inputBuses.size() > 1)
-            {
-                layout.inputBuses.removeLast();
-                layout.inputBuses.add(AudioChannelSet::mono());
-                if (inner->checkBusesLayoutSupported(layout))
-                {
-                    inner->setBusesLayout(layout);
-                    inner->setRateAndBufferSizeDetails(getSampleRate(), getBlockSize());
-                    layoutSupported = true;
-                }
-            }
-
-            if (!layoutSupported && layout.inputBuses.size() > 1)
-            {
-                layout.inputBuses.removeLast();
-                if (inner->checkBusesLayoutSupported(layout))
-                {
-                    inner->setBusesLayout(layout);
-                    inner->setRateAndBufferSizeDetails(getSampleRate(), getBlockSize());
-                    layoutSupported = true;
-                }
-            }
-
-            if (!layoutSupported)
-            {
-                auto pluginInputs = inner->getTotalNumInputChannels();
-                auto pluginOutputs = inner->getTotalNumOutputChannels();
-                auto hostInputs = getMainBusNumInputChannels();
-                auto hostOutputs = getMainBusNumOutputChannels();
-
-                inner->setPlayConfigDetails(
-                    jmin(pluginInputs, hostInputs),
-                    jmin(pluginOutputs, hostOutputs),
-                    getSampleRate(),
-                    getBlockSize()
-                );
+                configureInnerProcessingUnlocked(sampleRate, blockSize);
+                inner->prepareToPlay(sampleRate, blockSize);
             }
         }
-
-        this->prepareToPlay(getSampleRate(), getBlockSize());
 
         if (inner != nullptr && !mb.isEmpty())
             inner->setStateInformation(mb.getData(), (int)mb.getSize());
@@ -630,8 +655,18 @@ void HostAudioProcessorImpl::setNewPlugin(const PluginDescription& pd, EditorSty
 
 void HostAudioProcessorImpl::clearPlugin()
 {
-    const ScopedLock sl(innerMutex);
-    inner = nullptr;
+    std::unique_ptr<AudioPluginInstance> pluginToDestroy;
+    {
+        const ScopedLock sl(innerMutex);
+        pluginToDestroy = std::move(inner);
+    }
+
+    if (pluginToDestroy != nullptr)
+    {
+        pluginToDestroy->suspendProcessing(true);
+        pluginToDestroy = nullptr;
+    }
+
     NullCheckedInvocation::invoke(pluginChanged);
 }
 

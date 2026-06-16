@@ -1,6 +1,6 @@
 #include "config.h"
 
-#include <atkaudio/PluginHost2/Core/ObsOutput.h>
+#include <atkaudio/PluginHost2/InternalPlugins/ObsOutput.h>
 #include <obs-module.h>
 
 #define SOURCE_NAME "atkAudio Ph2 OBS Output Node"

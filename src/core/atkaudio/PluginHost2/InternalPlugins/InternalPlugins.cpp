@@ -4,7 +4,7 @@
 #include "InternalPlugins.h"
 
 #include "GainPlugin.h"
-#include "PluginGraph.h"
+#include "../PluginGraph.h"
 
 #include <config.h>
 #include <juce_audio_plugin_client/juce_audio_plugin_client.h>

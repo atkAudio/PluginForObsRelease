@@ -3,7 +3,6 @@
 #include "../../LookAndFeel.h"
 
 #include "../Core/HostAudioProcessor.h"
-#include "../Core/PluginHolder.h"
 #include "PluginEditorComponent.h"
 #include "PluginLoaderComponent.h"
 #include "UICommon.h"
@@ -55,7 +54,7 @@ class HostEditorComponent final
     , private juce::ComponentListener
 {
 public:
-    HostEditorComponent(std::unique_ptr<PluginHolder> pluginHolderIn);
+    explicit HostEditorComponent(HostAudioProcessorImpl* hostProcessorIn);
 
     ~HostEditorComponent() override;
 
@@ -65,14 +64,12 @@ public:
 
     juce::AudioProcessor* getAudioProcessor() const noexcept;
     HostAudioProcessorImpl* getHostProcessor() const noexcept;
-    juce::CriticalSection& getPluginHolderLock();
-
-    PluginHolder* getPluginHolder();
 
     juce::ComponentBoundsConstrainer* getEditorConstrainer() const;
 
     void destroyUI();
     void recreateUI();
+    void detachProcessor();
 
     void setFooterVisible(bool visible);
 
@@ -81,15 +78,13 @@ public:
         getIsDocked = std::move(callback);
     }
 
-    std::unique_ptr<PluginHolder> pluginHolder;
-
 private:
     class MainContentComponent;
 
     void updateContent();
     void componentMovedOrResized(juce::Component& component, bool wasMoved, bool wasResized) override;
 
-    juce::CriticalSection pluginHolderLock;
+    HostAudioProcessorImpl* hostProcessor = nullptr;
     std::unique_ptr<MainContentComponent> contentComponent;
     juce::AudioProcessorEditor* editorToWatch = nullptr;
     bool resizingFromEditor = false;

@@ -90,6 +90,7 @@ private:
 
     static juce::AudioChannelSet getChannelSetForCount(int numChannels);
     void changeListenerCallback(juce::ChangeBroadcaster* source) final;
+    void configureInnerProcessingUnlocked(double sampleRate, int samplesPerBlock);
 
     static inline juce::InterProcessLock appPropertiesLock{"atkAudioPluginHostLock"};
 

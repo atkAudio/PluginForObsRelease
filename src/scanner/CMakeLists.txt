@@ -76,8 +76,10 @@ else()
         TARGET ${CMAKE_PROJECT_NAME}_scanner
         POST_BUILD
         COMMAND
+            ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>
+        COMMAND
             ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:${CMAKE_PROJECT_NAME}_scanner>
-            $<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>
+            $<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>/$<TARGET_FILE_NAME:${CMAKE_PROJECT_NAME}_scanner>
         COMMENT "Copying scanner to plugin directory"
     )
 endif()

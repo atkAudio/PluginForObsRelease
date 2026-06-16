@@ -1,5 +1,7 @@
 #include "MidiServer.h"
 
+#include <atkaudio/Logging.h>
+
 namespace atk
 {
 
@@ -141,13 +143,15 @@ void MidiServer::initialize()
     if (initialized)
         return;
 
-    DBG("[MidiServer] Initializing...");
-
+    atk::logging::info("MidiServer::initialize", "begin");
     juce::String error = deviceManager.initialise(0, 0, nullptr, true, {}, nullptr);
 
     if (error.isNotEmpty())
     {
-        DBG("[MidiServer] Failed to initialize AudioDeviceManager: " + error);
+        atk::logging::warning(
+            "MidiServer::initialize",
+            juce::String::formatted("AudioDeviceManager initialise failed: %s", error.toRawUTF8())
+        );
         return;
     }
 
@@ -156,7 +160,7 @@ void MidiServer::initialize()
 
     startTimer(10);
     initialized = true;
-    DBG("[MidiServer] Initialized successfully");
+    atk::logging::info("MidiServer::initialize", "completed");
 }
 
 void MidiServer::shutdown()
@@ -164,8 +168,7 @@ void MidiServer::shutdown()
     if (!initialized)
         return;
 
-    DBG("[MidiServer] Shutting down...");
-
+    atk::logging::info("MidiServer::shutdown", "begin");
     stopTimer();
 
     {
@@ -188,7 +191,7 @@ void MidiServer::shutdown()
 
     deviceManager.closeAudioDevice();
     initialized = false;
-    DBG("[MidiServer] Shutdown complete");
+    atk::logging::info("MidiServer::shutdown", "completed");
 }
 
 void MidiServer::registerClient(
@@ -341,10 +344,7 @@ void MidiServer::timerCallback()
                         {
                             output = juce::MidiOutput::openDevice(device.identifier).release();
                             if (output != nullptr)
-                            {
                                 outputDevices.set(deviceName, output);
-                                DBG("[MidiServer] Opened MIDI output: " + deviceName);
-                            }
                             break;
                         }
                     }
@@ -414,7 +414,10 @@ void MidiServer::updateMidiDeviceSubscriptions()
                 deviceManager.setMidiInputDeviceEnabled(it->second, true);
                 deviceManager.addMidiInputDeviceCallback(it->second, this);
                 enabledInputDevices[name] = it->second;
-                DBG("[MidiServer] Enabled MIDI input: " + name);
+                atk::logging::debug(
+                    "MidiServer::updateMidiDeviceSubscriptions",
+                    juce::String::formatted("enabled MIDI input \"%s\"", name.toRawUTF8())
+                );
             }
         }
     }
@@ -425,7 +428,10 @@ void MidiServer::updateMidiDeviceSubscriptions()
         {
             deviceManager.setMidiInputDeviceEnabled(it->second, false);
             deviceManager.removeMidiInputDeviceCallback(it->second, this);
-            DBG("[MidiServer] Disabled MIDI input: " + it->first);
+            atk::logging::debug(
+                "MidiServer::updateMidiDeviceSubscriptions",
+                juce::String::formatted("disabled MIDI input \"%s\"", it->first.toRawUTF8())
+            );
             it = enabledInputDevices.erase(it);
         }
         else
