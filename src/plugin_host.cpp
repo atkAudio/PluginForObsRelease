@@ -48,6 +48,7 @@ struct pluginhost_data
 
     std::mutex sidechain_mutex;
     size_t max_sidechain_frames;
+    bool rename_signal_connected;
 
     bool hasLoadedState = false;
 };
@@ -65,6 +66,21 @@ static const char* pluginhost_name(void* unused)
 {
     UNUSED_PARAMETER(unused);
     return obs_module_text(FILTER_NAME);
+}
+
+static void on_filter_rename(void* data, calldata_t* calldata)
+{
+    auto* ph = (struct pluginhost_data*)data;
+    UNUSED_PARAMETER(calldata);
+
+    if (!ph || !ph->context || !ph->pluginHost)
+        return;
+
+    const char* filterName = obs_source_get_name(ph->context);
+    if (!filterName || !*filterName)
+        return;
+
+    ph->pluginHost->setDockTitle(filterName);
 }
 
 static void sidechain_capture(void* param, obs_source_t* source, const struct audio_data* audio_data, bool muted)
@@ -212,6 +228,17 @@ static void* pluginhost_create(obs_data_t* settings, obs_source_t* filter)
     if (filterUuid)
         ph->pluginHost->setDockId(filterUuid);
 
+    const char* filterName = obs_source_get_name(filter);
+    if (filterName && *filterName)
+        ph->pluginHost->setDockTitle(filterName);
+
+    signal_handler_t* signalHandler = obs_source_get_signal_handler(filter);
+    if (signalHandler)
+    {
+        signal_handler_connect(signalHandler, "rename", on_filter_rename, ph);
+        ph->rename_signal_connected = true;
+    }
+
     pluginhost_update(ph, settings);
 
     ph->pointersToProcess.resize(ph->num_channels * 2, nullptr);
@@ -245,6 +272,13 @@ static void pluginhost_destroy(void* data)
     struct pluginhost_data* ph = (struct pluginhost_data*)data;
 
     atk::logging::info("OBS_API.PluginHost.destroy", "called");
+
+    if (ph->rename_signal_connected && ph->context)
+    {
+        signal_handler_t* signalHandler = obs_source_get_signal_handler(ph->context);
+        if (signalHandler)
+            signal_handler_disconnect(signalHandler, "rename", on_filter_rename, ph);
+    }
 
     if (ph->weak_sidechain)
     {

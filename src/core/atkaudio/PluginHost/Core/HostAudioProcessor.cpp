@@ -7,7 +7,8 @@
 using namespace juce;
 using juce::NullCheckedInvocation;
 
-juce::Optional<juce::AudioPlayHead::PositionInfo> HostAudioProcessorImpl::AtkAudioPlayHead::getPosition() const
+juce::Optional<juce::AudioPlayHead::PositionInfo>
+HostAudioProcessorImpl::AtkAudioPlayHead::getPosition() const
 {
     return positionInfo;
 }
@@ -195,13 +196,16 @@ void HostAudioProcessorImpl::prepareToPlay(double sr, int bs)
     const int maxSamples = bs * 2;
     const int maxSubscriptions = 16;
 
-    if (internalBuffer.getNumChannels() < maxChannels || internalBuffer.getNumSamples() < maxSamples)
+    if (internalBuffer.getNumChannels() < maxChannels
+        || internalBuffer.getNumSamples() < maxSamples)
         internalBuffer.setSize(maxChannels, maxSamples, false, false, true);
 
-    if (deviceInputBuffer.getNumChannels() < maxSubscriptions || deviceInputBuffer.getNumSamples() < maxSamples)
+    if (deviceInputBuffer.getNumChannels() < maxSubscriptions
+        || deviceInputBuffer.getNumSamples() < maxSamples)
         deviceInputBuffer.setSize(maxSubscriptions, maxSamples, false, false, true);
 
-    if (deviceOutputBuffer.getNumChannels() < maxSubscriptions || deviceOutputBuffer.getNumSamples() < maxSamples)
+    if (deviceOutputBuffer.getNumChannels() < maxSubscriptions
+        || deviceOutputBuffer.getNumSamples() < maxSamples)
         deviceOutputBuffer.setSize(maxSubscriptions, maxSamples, false, false, true);
 
     inputMidiCopy.ensureSize(2048);
@@ -249,8 +253,9 @@ void HostAudioProcessorImpl::processBlock(AudioBuffer<float>& buffer, MidiBuffer
 
     atkPlayHead.positionInfo.setIsPlaying(true);
     atkPlayHead.positionInfo.setBpm(120.0);
-    auto pos =
-        atkPlayHead.positionInfo.getTimeInSamples().hasValue() ? *atkPlayHead.positionInfo.getTimeInSamples() : 0;
+    auto pos = atkPlayHead.positionInfo.getTimeInSamples().hasValue()
+                 ? *atkPlayHead.positionInfo.getTimeInSamples()
+                 : 0;
     atkPlayHead.positionInfo.setTimeInSamples(pos + buffer.getNumSamples());
     inner->setPlayHead(&atkPlayHead);
 
@@ -258,15 +263,19 @@ void HostAudioProcessorImpl::processBlock(AudioBuffer<float>& buffer, MidiBuffer
     int numOutputSubs = audioClient.getNumOutputSubscriptions();
 
     int pluginChannels = buffer.getNumChannels();
-    if (internalBuffer.getNumChannels() < pluginChannels || internalBuffer.getNumSamples() < buffer.getNumSamples())
+    if (internalBuffer.getNumChannels() < pluginChannels
+        || internalBuffer.getNumSamples() < buffer.getNumSamples())
         internalBuffer.setSize(pluginChannels, buffer.getNumSamples(), false, false, true);
 
-    if (deviceInputBuffer.getNumChannels() < numInputSubs || deviceInputBuffer.getNumSamples() < buffer.getNumSamples())
-        deviceInputBuffer.setSize(std::max(numInputSubs, 1), buffer.getNumSamples(), false, false, true);
+    if (deviceInputBuffer.getNumChannels() < numInputSubs
+        || deviceInputBuffer.getNumSamples() < buffer.getNumSamples())
+        deviceInputBuffer
+            .setSize(std::max(numInputSubs, 1), buffer.getNumSamples(), false, false, true);
 
     if (deviceOutputBuffer.getNumChannels() < numOutputSubs
         || deviceOutputBuffer.getNumSamples() < buffer.getNumSamples())
-        deviceOutputBuffer.setSize(std::max(numOutputSubs, 1), buffer.getNumSamples(), false, false, true);
+        deviceOutputBuffer
+            .setSize(std::max(numOutputSubs, 1), buffer.getNumSamples(), false, false, true);
 
     audioClient.pullSubscribedInputs(deviceInputBuffer, buffer.getNumSamples(), getSampleRate());
 
@@ -481,12 +490,17 @@ void HostAudioProcessorImpl::setStateInformation(const void* data, int sizeInByt
 {
     const ScopedLock sl(innerMutex);
 
-    auto xml = XmlDocument::parse(String(CharPointer_UTF8(static_cast<const char*>(data)), (size_t)sizeInBytes));
+    auto xml = XmlDocument::parse(
+        String(CharPointer_UTF8(static_cast<const char*>(data)), (size_t)sizeInBytes)
+    );
 
     if (xml->hasAttribute("audioClientState"))
     {
         auto audioStateStr = xml->getStringAttribute("audioClientState");
-        atk::logging::debug("HostAudioProcessorImpl::setStateInformation", "restoring audio subscription state");
+        atk::logging::debug(
+            "HostAudioProcessorImpl::setStateInformation",
+            "restoring audio subscription state"
+        );
         atk::AudioClientState audioState;
         audioState.deserialize(audioStateStr);
         audioClient.setSubscriptions(audioState);
@@ -602,17 +616,25 @@ void HostAudioProcessorImpl::setStateInformation(const void* data, int sizeInByt
     }
 }
 
-void HostAudioProcessorImpl::setNewPlugin(const PluginDescription& pd, EditorStyle where, const MemoryBlock& mb)
+void HostAudioProcessorImpl::setNewPlugin(
+    const PluginDescription& pd,
+    EditorStyle where,
+    const MemoryBlock& mb
+)
 {
     const ScopedLock sl(innerMutex);
 
-    const auto callback = [this, where, mb](std::unique_ptr<AudioPluginInstance> instance, const String& error)
+    const auto callback =
+        [this, where, mb](std::unique_ptr<AudioPluginInstance> instance, const String& error)
     {
         const ScopedLock sl(innerMutex);
         if (error.isNotEmpty())
         {
-            auto options =
-                MessageBoxOptions::makeOptionsOk(MessageBoxIconType::WarningIcon, "Plugin Load Failed", error);
+            auto options = MessageBoxOptions::makeOptionsOk(
+                MessageBoxIconType::WarningIcon,
+                "Plugin Load Failed",
+                error
+            );
             messageBox = AlertWindow::showScopedAsync(options, nullptr);
             return;
         }
@@ -687,7 +709,7 @@ std::unique_ptr<AudioProcessorEditor> HostAudioProcessorImpl::createInnerEditor(
         pluginToUse = inner.get();
     }
     if (pluginToUse != nullptr && pluginToUse->hasEditor())
-        return rawToUniquePtr(pluginToUse->createEditorIfNeeded());
+        return rawToUniquePtr(pluginToUse->createEditorAndMakeActive());
     return nullptr;
 }
 

@@ -20,7 +20,7 @@ foreach(PATCH_FILE ${PATCHES})
     # Check if patch is already applied (reverse check succeeds if applied)
     execute_process(
         COMMAND
-            ${GIT_EXECUTABLE} apply --reverse --check "${PATCH_FILE}"
+            ${GIT_EXECUTABLE} apply --ignore-whitespace --reverse --check "${PATCH_FILE}"
         RESULT_VARIABLE REVERSE_CHECK_RESULT
         OUTPUT_QUIET
         ERROR_QUIET
@@ -32,7 +32,7 @@ foreach(PATCH_FILE ${PATCHES})
         # Check if patch can be applied
         execute_process(
             COMMAND
-                ${GIT_EXECUTABLE} apply --check "${PATCH_FILE}"
+                ${GIT_EXECUTABLE} apply --ignore-whitespace --check "${PATCH_FILE}"
             RESULT_VARIABLE CHECK_RESULT
             OUTPUT_QUIET
             ERROR_QUIET
@@ -42,17 +42,17 @@ foreach(PATCH_FILE ${PATCHES})
             # Apply the patch
             execute_process(
                 COMMAND
-                    ${GIT_EXECUTABLE} apply "${PATCH_FILE}"
+                    ${GIT_EXECUTABLE} apply --ignore-whitespace "${PATCH_FILE}"
                 RESULT_VARIABLE APPLY_RESULT
             )
 
             if(APPLY_RESULT EQUAL 0)
                 message(STATUS "Successfully applied patch: ${PATCH_NAME}")
             else()
-                message(WARNING "Failed to apply patch: ${PATCH_NAME}")
+                message(FATAL_ERROR "Failed to apply patch: ${PATCH_NAME}")
             endif()
         else()
-            message(STATUS "Patch cannot be applied (may be partially applied or conflict): ${PATCH_NAME}")
+            message(FATAL_ERROR "Patch cannot be applied (may be partially applied or conflict): ${PATCH_NAME}")
         endif()
     endif()
 endforeach()

@@ -1,9 +1,9 @@
 diff --git a/modules/juce_gui_basics/components/juce_Component.cpp b/modules/juce_gui_basics/components/juce_Component.cpp
-index abcdef123..456789abc 100644
 --- a/modules/juce_gui_basics/components/juce_Component.cpp
 +++ b/modules/juce_gui_basics/components/juce_Component.cpp
-@@ -211,6 +211,7 @@ public:
-     void paint (Graphics& g, Component& c, bool ignoreAlphaLevel)
+@@ -216,7 +216,8 @@ public:
+                 OpaqueLayer& opaqueLayer,
+                 ComponentPaintDiagnostics& diagnostics)
      {
          auto scale = g.getInternalContext().getPhysicalPixelScaleFactor();
 +        scale = jmax (1.0f, scale);

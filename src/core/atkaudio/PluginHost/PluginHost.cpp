@@ -168,10 +168,22 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
 
         if (auto* hostProc = hostProcessor.get())
         {
-            hostProc->getMultiCoreEnabled = [this]() { return useThreadPool.load(std::memory_order_acquire); };
-            hostProc->setMultiCoreEnabled = [this](bool enabled) { setMultiCoreEnabled(enabled); };
-            hostProc->getCpuLoad = [this]() { return getCpuLoad(); };
-            hostProc->getLatencyMs = [this]() { return getLatencyMs(); };
+            hostProc->getMultiCoreEnabled = [this]()
+            {
+                return useThreadPool.load(std::memory_order_acquire);
+            };
+            hostProc->setMultiCoreEnabled = [this](bool enabled)
+            {
+                setMultiCoreEnabled(enabled);
+            };
+            hostProc->getCpuLoad = [this]()
+            {
+                return getCpuLoad();
+            };
+            hostProc->getLatencyMs = [this]()
+            {
+                return getLatencyMs();
+            };
         }
 
         obs_frontend_add_event_callback(frontendEventCallback, this);
@@ -457,7 +469,8 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
             if (!dockId && !dockIdStorage.empty())
             {
                 dockId = dockIdStorage.c_str();
-                obs_frontend_add_dock_by_id(dockId, "atkAudio PluginHost", qtWidget);
+                const char* title = dockTitle.empty() ? "atkAudio PluginHost" : dockTitle.c_str();
+                obs_frontend_add_dock_by_id(dockId, title, qtWidget);
             }
 
             // Try to apply pending dock state immediately
@@ -486,6 +499,22 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
             else
                 qtWidget->hide();
         }
+    }
+
+    void setDockTitle(const std::string& title)
+    {
+        if (title.empty())
+            return;
+
+        dockTitle = title;
+
+        if (!qtWidget)
+            return;
+
+        qtWidget->setWindowTitle(dockTitle.c_str());
+
+        if (auto* dock = qobject_cast<QDockWidget*>(qtWidget->parentWidget()))
+            dock->setWindowTitle(dockTitle.c_str());
     }
 
     void applyPendingDockState()
@@ -885,6 +914,7 @@ private:
     atk::JuceQtWidget* qtWidget = nullptr;
     const char* dockId = nullptr;
     std::string dockIdStorage;
+    std::string dockTitle;
     bool obsExiting = false;
     bool dockVisible = false;
     bool dockFloating = true; // Default to floating when no state is loaded
@@ -996,7 +1026,10 @@ void atk::PluginHost::setVisible(bool visible)
     if (!pImpl)
         return;
 
-    auto doUi = [this, visible]() { pImpl->setVisible(visible); };
+    auto doUi = [this, visible]()
+    {
+        pImpl->setVisible(visible);
+    };
 
     if (juce::MessageManager::getInstance()->isThisTheMessageThread())
         doUi();
@@ -1010,6 +1043,22 @@ void atk::PluginHost::setDockId(const std::string& id)
         return;
 
     pImpl->setDockId(id);
+}
+
+void atk::PluginHost::setDockTitle(const std::string& title)
+{
+    if (!pImpl || title.empty())
+        return;
+
+    auto doUi = [this, title]()
+    {
+        pImpl->setDockTitle(title);
+    };
+
+    if (juce::MessageManager::getInstance()->isThisTheMessageThread())
+        doUi();
+    else
+        juce::MessageManager::callAsync(doUi);
 }
 
 bool atk::PluginHost::isDockVisible() const

@@ -72,7 +72,13 @@ private:
     void appendToLog(StringRef action, AudioProcessorParameter& param, StringRef value)
     {
         String entry(
-            action + " " + param.getName(30).quoted() + " [" + String(param.getParameterIndex()) + "]: " + value
+            action
+            + " "
+            + param.getName(30).quoted()
+            + " ["
+            + String(param.getParameterIndex())
+            + "]: "
+            + value
         );
 
         {
@@ -98,7 +104,12 @@ private:
         g.setColour(getLookAndFeel().findColour(TextEditor::textColourId));
 
         if (isPositiveAndBelow(rowNumber, log.size()))
-            g.drawText(log[rowNumber], juce::Rectangle<int>{0, 0, width, height}, Justification::left, true);
+            g.drawText(
+                log[rowNumber],
+                juce::Rectangle<int>{0, 0, width, height},
+                Justification::left,
+                true
+            );
     }
 
     void handleAsyncUpdate() override
@@ -158,7 +169,10 @@ public:
         , type(t)
         , mainWindow(ownerMainWindow)
     {
-        setTitleBarButtonsRequired(DocumentWindow::minimiseButton | DocumentWindow::closeButton, false);
+        setTitleBarButtonsRequired(
+            DocumentWindow::minimiseButton | DocumentWindow::closeButton,
+            false
+        );
         setSize(400, 300);
 
         if (auto* ui = createProcessorEditor(*node->getProcessor(), type, mainWindow))
@@ -170,7 +184,8 @@ public:
         setConstrainer(&constrainer);
 
 #if JUCE_IOS || JUCE_ANDROID
-        const auto screenBounds = Desktop::getInstance().getDisplays().getTotalBounds(true).toFloat();
+        const auto screenBounds =
+            Desktop::getInstance().getDisplays().getTotalBounds(true).toFloat();
         const auto scaleFactor = jmin(
             (screenBounds.getWidth() - 50.0f) / (float)getWidth(),
             (screenBounds.getHeight() - 50.0f) / (float)getHeight()
@@ -182,8 +197,10 @@ public:
         setTopLeftPosition(20, 20);
 #else
         setTopLeftPosition(
-            node->properties.getWithDefault(getLastXProp(type), Random::getSystemRandom().nextInt(500)),
-            node->properties.getWithDefault(getLastYProp(type), Random::getSystemRandom().nextInt(500))
+            node->properties
+                .getWithDefault(getLastXProp(type), Random::getSystemRandom().nextInt(500)),
+            node->properties
+                .getWithDefault(getLastYProp(type), Random::getSystemRandom().nextInt(500))
         );
 #endif
 
@@ -294,13 +311,17 @@ private:
     DecoratorConstrainer constrainer{*this};
     MainHostWindow* mainWindow = nullptr;
 
-    static AudioProcessorEditor*
-    createProcessorEditor(AudioProcessor& processor, PluginWindow::Type type, MainHostWindow* mainWindow)
+    static AudioProcessorEditor* createProcessorEditor(
+        AudioProcessor& processor,
+        PluginWindow::Type type,
+        MainHostWindow* mainWindow
+    )
     {
         if (type == PluginWindow::Type::normal)
         {
             if (processor.hasEditor())
-                if (auto* ui = processor.createEditorIfNeeded())
+                if (auto* ui = processor.createEditorAndMakeActive())
+                    // if (auto* ui = processor.createEditorIfNeeded())
                     return ui;
 
             type = PluginWindow::Type::generic;
@@ -309,7 +330,8 @@ private:
         if (type == PluginWindow::Type::araHost)
         {
 #if JUCE_PLUGINHOST_ARA && (JUCE_MAC || JUCE_WINDOWS || JUCE_LINUX)
-            if (auto* araPluginInstanceWrapper = dynamic_cast<ARAPluginInstanceWrapper*>(&processor))
+            if (auto* araPluginInstanceWrapper =
+                    dynamic_cast<ARAPluginInstanceWrapper*>(&processor))
                 if (auto* ui = araPluginInstanceWrapper->createARAHostEditor())
                     return ui;
 #endif
@@ -398,14 +420,21 @@ private:
                 return proc.getNumPrograms();
             }
 
-            void paintListBoxItem(int rowNumber, Graphics& g, int width, int height, bool rowIsSelected) override
+            void paintListBoxItem(
+                int rowNumber,
+                Graphics& g,
+                int width,
+                int height,
+                bool rowIsSelected
+            ) override
             {
                 const auto textColour = owner.findColour(ListBox::textColourId);
 
                 if (rowIsSelected)
                 {
                     const auto defaultColour = owner.findColour(ListBox::backgroundColourId);
-                    const auto c = rowIsSelected ? defaultColour.interpolatedWith(textColour, 0.5f) : defaultColour;
+                    const auto c = rowIsSelected ? defaultColour.interpolatedWith(textColour, 0.5f)
+                                                 : defaultColour;
 
                     g.fillAll(c);
                 }

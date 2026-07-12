@@ -15,6 +15,12 @@
 class PluginEditorComponent final : public juce::Component
 {
 public:
+    ~PluginEditorComponent() override
+    {
+        if (editor != nullptr && editor->getParentComponent() == this)
+            removeChildComponent(editor.get());
+    }
+
     template <typename Callback>
     PluginEditorComponent(
         std::unique_ptr<juce::AudioProcessorEditor> editorIn,
@@ -50,8 +56,14 @@ public:
         };
         footer.actionButton.onClick = lambda;
 
-        footer.audioButton.onClick = [this] { showAudioWindow(); };
-        footer.midiButton.onClick = [this] { showMidiWindow(); };
+        footer.audioButton.onClick = [this]
+        {
+            showAudioWindow();
+        };
+        footer.midiButton.onClick = [this]
+        {
+            showMidiWindow();
+        };
 
         // Set up Multi toggle callbacks (use lambdas to read from processor dynamically)
         if (processor)
@@ -114,9 +126,8 @@ public:
             int totalHeight = editorSize.getHeight();
             if (visible)
                 totalHeight += margin + buttonHeight;
-            resizingFromChild = true;
+            const juce::ScopedValueSetter<bool> guard(resizingFromChild, true);
             setSize(editorSize.getWidth(), totalHeight);
-            resizingFromChild = false;
 
             resized();
             repaint();
@@ -151,8 +162,11 @@ public:
             footer.setBounds(footerBounds.reduced(margin, 0).withTrimmedBottom(margin));
         }
 
-        if (editor != nullptr && !resizingFromChild)
+        if (editor != nullptr && !resizingFromChild && editor->getBounds() != editorBounds)
+        {
+            const juce::ScopedValueSetter<bool> guard(resizingFromChild, true);
             editor->setBounds(editorBounds);
+        }
 
         checkScaleFactorChanged();
     }
@@ -165,7 +179,7 @@ public:
 
     void childBoundsChanged(juce::Component* child) override
     {
-        if (child != editor.get())
+        if (child != editor.get() || resizingFromChild)
             return;
 
         const auto size = editor != nullptr ? editor->getLocalBounds() : juce::Rectangle<int>();
@@ -174,9 +188,11 @@ public:
         if (footer.isVisible())
             totalHeight += margin + buttonHeight;
 
-        resizingFromChild = true;
+        if (size.getWidth() == getWidth() && totalHeight == getHeight())
+            return;
+
+        const juce::ScopedValueSetter<bool> guard(resizingFromChild, true);
         setSize(size.getWidth(), totalHeight);
-        resizingFromChild = false;
     }
 
 private:
@@ -199,7 +215,8 @@ private:
                     setTitleBarButtonsRequired(juce::DocumentWindow::closeButton, false);
                     setResizable(true, false);
 
-                    auto* audioComponent = new atk::AudioServerSettingsComponent(&hostProc->audioClient);
+                    auto* audioComponent =
+                        new atk::AudioServerSettingsComponent(&hostProc->audioClient);
 
                     // Configure channel info from inner plugin if loaded
                     if (auto* innerPlugin = hostProc->getInnerPlugin())
@@ -225,7 +242,8 @@ private:
                                         int chInBus = i - busStart;
                                         auto layout = busPtr->getCurrentLayout();
                                         auto channelType = layout.getTypeOfChannel(chInBus);
-                                        auto typeName = juce::AudioChannelSet::getChannelTypeName(channelType);
+                                        auto typeName =
+                                            juce::AudioChannelSet::getChannelTypeName(channelType);
                                         // Add bus name for non-main buses
                                         if (bus == 0)
                                             channelName = typeName;
@@ -257,7 +275,8 @@ private:
                                         int chInBus = i - busStart;
                                         auto layout = busPtr->getCurrentLayout();
                                         auto channelType = layout.getTypeOfChannel(chInBus);
-                                        auto typeName = juce::AudioChannelSet::getChannelTypeName(channelType);
+                                        auto typeName =
+                                            juce::AudioChannelSet::getChannelTypeName(channelType);
                                         if (bus == 0)
                                             channelName = typeName;
                                         else
@@ -282,7 +301,8 @@ private:
                         for (int i = 0; i < numMainChannels; ++i)
                         {
                             auto channelType = mainLayout.getTypeOfChannel(i);
-                            auto channelTypeName = juce::AudioChannelSet::getChannelTypeName(channelType);
+                            auto channelTypeName =
+                                juce::AudioChannelSet::getChannelTypeName(channelType);
                             obsInputChannelNames.add("OBS " + channelTypeName);
                         }
 
@@ -290,7 +310,8 @@ private:
                         for (int i = 0; i < numMainChannels; ++i)
                         {
                             auto channelType = mainLayout.getTypeOfChannel(i);
-                            auto channelTypeName = juce::AudioChannelSet::getChannelTypeName(channelType);
+                            auto channelTypeName =
+                                juce::AudioChannelSet::getChannelTypeName(channelType);
                             obsInputChannelNames.add("OBS Sidechain " + channelTypeName);
                         }
 
@@ -300,7 +321,8 @@ private:
                         for (int i = 0; i < numOutputChannels; ++i)
                         {
                             auto channelType = outputLayout.getTypeOfChannel(i);
-                            auto channelTypeName = juce::AudioChannelSet::getChannelTypeName(channelType);
+                            auto channelTypeName =
+                                juce::AudioChannelSet::getChannelTypeName(channelType);
                             obsOutputChannelNames.add("OBS " + channelTypeName);
                         }
 
@@ -310,14 +332,20 @@ private:
 
                         // Set client (plugin) channel info BEFORE setting routing matrices
                         // This ensures the grid has the right column count
-                        audioComponent
-                            ->setClientChannelInfo(inputChannelNames, outputChannelNames, innerPlugin->getName());
+                        audioComponent->setClientChannelInfo(
+                            inputChannelNames,
+                            outputChannelNames,
+                            innerPlugin->getName()
+                        );
 
                         // Restore current routing matrix from processor
                         auto currentInputMapping = hostProc->getInputChannelMapping();
                         auto currentOutputMapping = hostProc->getOutputChannelMapping();
                         if (!currentInputMapping.empty() && !currentOutputMapping.empty())
-                            audioComponent->setCompleteRoutingMatrices(currentInputMapping, currentOutputMapping);
+                            audioComponent->setCompleteRoutingMatrices(
+                                currentInputMapping,
+                                currentOutputMapping
+                            );
                     }
                     else
                     {
@@ -326,19 +354,25 @@ private:
                     }
 
                     // Set callback to apply OBS channel mapping when user clicks Apply
-                    audioComponent->onObsMappingChanged = [hostProc](
-                                                              const std::vector<std::vector<bool>>& inputMapping,
-                                                              const std::vector<std::vector<bool>>& outputMapping
-                                                          )
+                    audioComponent->onObsMappingChanged =
+                        [hostProc](
+                            const std::vector<std::vector<bool>>& inputMapping,
+                            const std::vector<std::vector<bool>>& outputMapping
+                        )
                     {
                         hostProc->setInputChannelMapping(inputMapping);
                         hostProc->setOutputChannelMapping(outputMapping);
                     };
 
                     // Set callback to get current OBS mappings for Restore button
-                    audioComponent->getCurrentObsMappings =
-                        [hostProc]() -> std::pair<std::vector<std::vector<bool>>, std::vector<std::vector<bool>>>
-                    { return {hostProc->getInputChannelMapping(), hostProc->getOutputChannelMapping()}; };
+                    audioComponent->getCurrentObsMappings = [hostProc]()
+                        -> std::pair<std::vector<std::vector<bool>>, std::vector<std::vector<bool>>>
+                    {
+                        return {
+                            hostProc->getInputChannelMapping(),
+                            hostProc->getOutputChannelMapping()
+                        };
+                    };
 
                     setContentOwned(audioComponent, true);
 
@@ -450,7 +484,8 @@ private:
         if (processor == nullptr)
             return;
 
-        // Verify scale actually changed (prevents unnecessary recreation from stale/duplicate async calls)
+        // Verify scale actually changed (prevents unnecessary recreation from stale/duplicate async
+        // calls)
         float newScale = 0.0f;
         if (auto* peer = getPeer())
         {

@@ -21,6 +21,7 @@ public:
     void setVisible(bool visible) override;
 
     void setDockId(const std::string& id);
+    void setDockTitle(const std::string& title);
     bool isDockVisible() const;
 
     int getInnerPluginChannelCount() const;

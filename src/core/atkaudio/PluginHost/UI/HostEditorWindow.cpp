@@ -18,7 +18,8 @@ HostAudioProcessorEditor::HostAudioProcessorEditor(HostAudioProcessorImpl& owner
           owner.pluginList,
           atk::SharedPluginList::getInstance()->getPropertiesFile(),
           &owner,
-          [&owner](const PluginDescription& pd, EditorStyle editorStyle) { owner.setNewPlugin(pd, editorStyle); }
+          [&owner](const PluginDescription& pd, EditorStyle editorStyle)
+          { owner.setNewPlugin(pd, editorStyle); }
       )
     , scopedCallback(owner.pluginChanged, [this] { pluginChanged(); })
 {
@@ -112,7 +113,8 @@ void HostAudioProcessorEditor::pluginChanged()
                 return std::move(editorComponent);
 
             case EditorStyle::newWindow:
-                const auto bg = getLookAndFeel().findColour(ResizableWindow::backgroundColourId).darker();
+                const auto bg =
+                    getLookAndFeel().findColour(ResizableWindow::backgroundColourId).darker();
                 auto window = std::make_unique<SimpleDocumentWindow>(bg);
                 window->setAlwaysOnTop(true);
                 window->setContentOwned(editorComponent.release(), true);
@@ -170,7 +172,8 @@ public:
         if (auto* processor = owner.getAudioProcessor())
         {
             editor.reset(
-                processor->hasEditor() ? processor->createEditorIfNeeded() : new GenericAudioProcessorEditor(*processor)
+                processor->hasEditor() ? processor->createEditorAndMakeActive()
+                                       : new GenericAudioProcessorEditor(*processor)
             );
         }
 
@@ -187,6 +190,10 @@ public:
         if (editor != nullptr)
         {
             editor->removeComponentListener(this);
+
+            if (editor->getParentComponent() == this)
+                removeChildComponent(editor.get());
+
             if (auto* processor = owner.getAudioProcessor())
                 processor->editorBeingDeleted(editor.get());
             editor = nullptr;
@@ -230,7 +237,8 @@ private:
         {
             if (preventResizingEditor)
             {
-                const auto newPos = r.getTopLeft().toFloat().transformedBy(editor->getTransform().inverted());
+                const auto newPos =
+                    r.getTopLeft().toFloat().transformedBy(editor->getTransform().inverted());
                 editor->setTopLeftPosition(newPos.roundToInt());
             }
             else
@@ -322,7 +330,11 @@ void HostEditorComponent::childBoundsChanged(Component* child)
     }
 }
 
-void HostEditorComponent::componentMovedOrResized(Component& component, bool /*wasMoved*/, bool wasResized)
+void HostEditorComponent::componentMovedOrResized(
+    Component& component,
+    bool /*wasMoved*/,
+    bool wasResized
+)
 {
     if (wasResized && &component == editorToWatch)
     {
