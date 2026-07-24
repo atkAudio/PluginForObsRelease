@@ -202,12 +202,28 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
             }
         );
         qtWidget->setWindowTitle("atkAudio PluginHost");
-        qtWidget->setConstrainerGetter([this]() { return mainComponent->getEditorConstrainer(); });
+        qtWidget->setConstrainerGetter(
+            [this]()
+            {
+                if (!mainComponent)
+                    return (juce::ComponentBoundsConstrainer*)nullptr;
+                return mainComponent->getEditorConstrainer();
+            }
+        );
 
-        mainComponent->setIsDockedCallback([this]() { return qtWidget->isDocked(); });
+        mainComponent->setIsDockedCallback(
+            [this]()
+            {
+                if (!qtWidget)
+                    return false;
+                return qtWidget->isDocked();
+            }
+        );
         qtWidget->setDockStateChangedCallback(
             [this](bool isDocked)
             {
+                if (!mainComponent)
+                    return;
                 mainComponent->setFooterVisible(!isDocked);
                 updateDockState();
             }
@@ -219,6 +235,10 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
 
     ~Impl()
     {
+        shuttingDown.store(true, std::memory_order_release);
+
+        disconnectDockSignals();
+
         obs_frontend_remove_event_callback(frontendEventCallback, this);
 
         cancelPendingUpdate();
@@ -479,7 +499,16 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
             // If we still have pending state and parent isn't ready yet, retry after a short delay
             // (parent dock might not be set immediately by OBS)
             if ((hasPendingDockFloating || hasPendingDockGeom || hasPendingDockArea) && !qtWidget->parentWidget())
-                QTimer::singleShot(10, qtWidget, [this]() { applyPendingDockState(); });
+                QTimer::singleShot(
+                    10,
+                    qtWidget,
+                    [this]()
+                    {
+                        if (shuttingDown.load(std::memory_order_acquire))
+                            return;
+                        applyPendingDockState();
+                    }
+                );
 
             if (QWidget* parentDock = qtWidget->parentWidget())
             {
@@ -570,16 +599,49 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
         updateDockState();
 
         // Track any state changes from the dock widget
-        QObject::connect(dock, &QDockWidget::visibilityChanged, qtWidget, [this](bool) { updateDockState(); });
+        dockVisibilityConnection = QObject::connect(
+            dock,
+            &QDockWidget::visibilityChanged,
+            qtWidget,
+            [this](bool)
+            {
+                if (shuttingDown.load(std::memory_order_acquire))
+                    return;
+                updateDockState();
+            }
+        );
 
-        QObject::connect(dock, &QDockWidget::topLevelChanged, qtWidget, [this](bool) { updateDockState(); });
+        dockTopLevelConnection = QObject::connect(
+            dock,
+            &QDockWidget::topLevelChanged,
+            qtWidget,
+            [this](bool)
+            {
+                if (shuttingDown.load(std::memory_order_acquire))
+                    return;
+                updateDockState();
+            }
+        );
 
         dockSignalsConnected = true;
     }
 
+    void disconnectDockSignals()
+    {
+        if (dockVisibilityConnection)
+            QObject::disconnect(dockVisibilityConnection);
+
+        if (dockTopLevelConnection)
+            QObject::disconnect(dockTopLevelConnection);
+
+        dockVisibilityConnection = QMetaObject::Connection();
+        dockTopLevelConnection = QMetaObject::Connection();
+        dockSignalsConnected = false;
+    }
+
     void updateDockState()
     {
-        if (!qtWidget)
+        if (shuttingDown.load(std::memory_order_acquire) || !qtWidget)
             return;
 
         // Query current state from the dock widget
@@ -915,6 +977,9 @@ private:
     const char* dockId = nullptr;
     std::string dockIdStorage;
     std::string dockTitle;
+    QMetaObject::Connection dockVisibilityConnection;
+    QMetaObject::Connection dockTopLevelConnection;
+    std::atomic<bool> shuttingDown{false};
     bool obsExiting = false;
     bool dockVisible = false;
     bool dockFloating = true; // Default to floating when no state is loaded

@@ -3,9 +3,6 @@
 #include "core/atkaudio/Logging.h"
 #include "core/atkaudio/atkaudio.h"
 #include "core/atkaudio/PluginHost/PluginHost.h"
-#include <inttypes.h>
-#include <math.h>
-#include <media-io/audio-math.h>
 #include <mutex>
 #include <obs-module.h>
 #include <stdint.h>
@@ -48,7 +45,7 @@ struct pluginhost_data
 
     std::mutex sidechain_mutex;
     size_t max_sidechain_frames;
-    bool rename_signal_connected;
+    bool rename_signal_connected = false;
 
     bool hasLoadedState = false;
 };

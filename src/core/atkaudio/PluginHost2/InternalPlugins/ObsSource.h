@@ -305,8 +305,23 @@ private:
 
         if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING)
         {
+            self->sceneCollectionTransitionActive.store(true, std::memory_order_release);
             self->connectionScheduled.store(false, std::memory_order_release);
             self->removeObsAudioCaptureCallback();
+            return;
+        }
+
+        if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CLEANUP)
+        {
+            self->sceneCollectionTransitionActive.store(true, std::memory_order_release);
+            self->connectionScheduled.store(false, std::memory_order_release);
+            self->removeObsAudioCaptureCallback();
+            return;
+        }
+
+        if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED)
+        {
+            self->sceneCollectionTransitionActive.store(false, std::memory_order_release);
             self->scheduleSourceConnection();
         }
     }
@@ -332,6 +347,12 @@ public:
         if (connectionScheduled.exchange(true, std::memory_order_acq_rel))
             return;
 
+        if (sceneCollectionTransitionActive.load(std::memory_order_acquire))
+        {
+            connectionScheduled.store(false, std::memory_order_release);
+            return;
+        }
+
         juce::WeakReference<ObsSourceAudioProcessor> weakSelf(this);
         juce::Timer::callAfterDelay(
             2000,
@@ -346,6 +367,12 @@ public:
                         auto* self = weakSelf.get();
                         if (self == nullptr)
                             return;
+
+                        if (self->sceneCollectionTransitionActive.load(std::memory_order_acquire))
+                        {
+                            self->connectionScheduled.store(false, std::memory_order_release);
+                            return;
+                        }
 
                         // Check if connection already exists (acquire)
                         if (self->sourceConnected.load(std::memory_order_acquire))
@@ -586,6 +613,7 @@ private:
     juce::AudioProcessorValueTreeState apvts;
     std::atomic<bool> connectionScheduled{false};
     std::atomic<bool> sourceConnected{false};
+    std::atomic<bool> sceneCollectionTransitionActive{false};
 
     // MIDI control parameters for volume
     std::atomic<float>* midiEnabled = nullptr;

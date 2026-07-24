@@ -22,7 +22,6 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "core/atkaudio/Logging.h"
 #include "core/atkaudio/atkaudio.h"
 
-#include <chrono>
 #include <obs-frontend-api.h>
 #include <obs-module.h>
 #include <stdarg.h>
@@ -30,7 +29,6 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <stdlib.h>
 #include <string.h>
 #include <string>
-#include <thread>
 
 #ifdef ENABLE_QT
 #include <QCheckBox>

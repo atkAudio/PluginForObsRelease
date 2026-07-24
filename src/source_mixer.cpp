@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <atkaudio/FifoBuffer2.h>
 #include <deque>
-#include <iostream>
 #include <memory>
 #include <mutex>
 #include <obs-module.h>

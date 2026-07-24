@@ -111,6 +111,16 @@ public:
         auto state = apvts.copyState();
         std::unique_ptr<juce::XmlElement> xml(state.createXml());
 
+        if (xml)
+        {
+            auto helperUuid = reconnectHelperUuid;
+            if (helperUuid.isEmpty())
+                helperUuid = originalStateUuid;
+
+            if (helperUuid.isNotEmpty())
+                xml->setAttribute("helperSourceUuid", helperUuid);
+        }
+
         copyXmlToBinary(*xml, destData);
     }
 
@@ -125,7 +135,7 @@ public:
             if (xmlState->hasAttribute("helperSourceUuid"))
             {
                 originalStateUuid = xmlState->getStringAttribute("helperSourceUuid");
-                apvts.state.setProperty("helperSourceUuid", originalStateUuid, nullptr);
+                reconnectHelperUuid = originalStateUuid;
             }
         }
 
@@ -157,6 +167,8 @@ private:
     mutable std::mutex processingMutex;
     bool usingFallbackSource = false;
     juce::String originalStateUuid;
+    juce::String reconnectHelperUuid;
+    std::atomic<bool> sceneCollectionTransitionActive{false};
 
     static void frontendEventCallback(enum obs_frontend_event event, void* private_data)
     {
@@ -164,6 +176,7 @@ private:
 
         if (event == OBS_FRONTEND_EVENT_EXIT || event == OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN)
         {
+            self->sceneCollectionTransitionActive.store(true, std::memory_order_release);
             self->connectionScheduled.store(false, std::memory_order_release);
             self->releaseHelperSource();
             return;
@@ -171,14 +184,29 @@ private:
 
         if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING)
         {
+            self->sceneCollectionTransitionActive.store(true, std::memory_order_release);
             self->connectionScheduled.store(false, std::memory_order_release);
             self->releaseHelperSource();
+            return;
+        }
+
+        if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CLEANUP)
+        {
+            self->sceneCollectionTransitionActive.store(true, std::memory_order_release);
+            self->connectionScheduled.store(false, std::memory_order_release);
+            self->releaseHelperSource();
+            return;
         }
 
         if (event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED)
         {
+            self->sceneCollectionTransitionActive.store(false, std::memory_order_release);
+
             if (!self->usingFallbackSource || !self->privateSource)
+            {
+                self->scheduleHelperSourceConnection();
                 return;
+            }
 
             auto fallBackUuid = juce::String(obs_source_get_uuid(self->privateSource));
             if (fallBackUuid.isEmpty() || fallBackUuid == self->originalStateUuid)
@@ -190,7 +218,7 @@ private:
 
             obs_source_release(originalObsSource);
 
-            self->apvts.state.setProperty("helperSourceUuid", self->originalStateUuid, nullptr);
+            self->reconnectHelperUuid = self->originalStateUuid;
             self->releaseHelperSource(true);
             self->pairWithHelperByUuid(self->originalStateUuid.toStdString());
         }
@@ -201,39 +229,57 @@ private:
         if (connectionScheduled.exchange(true, std::memory_order_acq_rel))
             return;
 
+        if (sceneCollectionTransitionActive.load(std::memory_order_acquire))
+        {
+            connectionScheduled.store(false, std::memory_order_release);
+            return;
+        }
+
         if (sourceConnected.load(std::memory_order_acquire))
         {
             connectionScheduled.store(false, std::memory_order_release);
             return;
         }
 
+        juce::WeakReference<ObsOutputAudioProcessor> weakSelf(this);
+
         juce::Timer::callAfterDelay(
             2000,
-            [this]()
+            [weakSelf]()
             {
+                if (weakSelf == nullptr)
+                    return;
+
                 juce::MessageManager::callAsync(
-                    [this]()
+                    [weakSelf]()
                     {
-                        if (sourceConnected.load(std::memory_order_acquire))
+                        auto* self = weakSelf.get();
+                        if (self == nullptr)
+                            return;
+
+                        if (self->sceneCollectionTransitionActive.load(std::memory_order_acquire))
                         {
-                            connectionScheduled.store(false, std::memory_order_release);
+                            self->connectionScheduled.store(false, std::memory_order_release);
                             return;
                         }
 
-                        std::unique_ptr<juce::XmlElement> xml(apvts.state.createXml());
-                        juce::String uuidValue;
-                        if (xml && xml->hasAttribute("helperSourceUuid"))
-                            uuidValue = xml->getStringAttribute("helperSourceUuid");
+                        if (self->sourceConnected.load(std::memory_order_acquire))
+                        {
+                            self->connectionScheduled.store(false, std::memory_order_release);
+                            return;
+                        }
+
+                        auto uuidValue = self->reconnectHelperUuid;
 
                         if (uuidValue.isNotEmpty())
                         {
-                            pairWithHelperByUuid(uuidValue.toStdString());
-                            connectionScheduled.store(false, std::memory_order_release);
+                            self->pairWithHelperByUuid(uuidValue.toStdString());
+                            self->connectionScheduled.store(false, std::memory_order_release);
                             return;
                         }
 
-                        createNewHelperSource();
-                        connectionScheduled.store(false, std::memory_order_release);
+                        self->createNewHelperSource();
+                        self->connectionScheduled.store(false, std::memory_order_release);
                     }
                 );
             }
@@ -298,6 +344,9 @@ private:
         {
             privateSource = foundSource;
             usingFallbackSource = false;
+            reconnectHelperUuid = juce::String(uuid);
+            if (originalStateUuid.isEmpty())
+                originalStateUuid = reconnectHelperUuid;
             sourceConnected.store(true, std::memory_order_release);
             return;
         }
@@ -334,9 +383,14 @@ private:
 
         const char* sourceUuid = obs_source_get_uuid(privateSource);
         if (sourceUuid && sourceUuid[0] != '\0')
-            apvts.state.setProperty("helperSourceUuid", juce::String(sourceUuid), nullptr);
+        {
+            reconnectHelperUuid = juce::String(sourceUuid);
+            if (originalStateUuid.isEmpty())
+                originalStateUuid = reconnectHelperUuid;
+        }
     }
 
+    JUCE_DECLARE_WEAK_REFERENCEABLE(ObsOutputAudioProcessor)
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ObsOutputAudioProcessor)
 };
 

@@ -1,15 +1,10 @@
-#include <algorithm>
 #include "core/atkaudio/Logging.h"
 #include "core/atkaudio/atkaudio.h"
 #include "core/atkaudio/PluginHost2/PluginHost2.h"
-#include <inttypes.h>
-#include <math.h>
 #include <media-io/audio-math.h>
-#include <mutex>
 #include <obs-module.h>
 #include <stdint.h>
 #include <util/platform.h>
-#include <vector>
 
 #define FILTER_NAME "atkAudio PluginHost2"
 #define FILTER_ID "atkaudio_plugin_host2"

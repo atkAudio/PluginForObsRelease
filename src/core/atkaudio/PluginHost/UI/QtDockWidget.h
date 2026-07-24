@@ -5,6 +5,7 @@
 #include <QMainWindow>
 #include <QResizeEvent>
 #include <QPainter>
+#include <QEvent>
 #include <QWindow>
 #include <QGuiApplication>
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -134,12 +135,27 @@ public:
         if (!useWaylandMode)
             (void)winId();
 
+        if (hiddenByHostMinimize)
+        {
+            hiddenByHostMinimize = false;
+            return;
+        }
+
         QMetaObject::invokeMethod(this, [this]() { performDeferredShow(); }, Qt::QueuedConnection);
     }
 
     void hideEvent(QHideEvent* event) override
     {
         QWidget::hideEvent(event);
+
+        const bool hiddenBecauseHostMinimized = window() && window()->isMinimized();
+        if (hiddenBecauseHostMinimized)
+        {
+            hiddenByHostMinimize = true;
+            return;
+        }
+
+        hiddenByHostMinimize = false;
 
         if (useWaylandMode)
         {
@@ -409,6 +425,7 @@ private:
     OnDockStateChangedCallback onDockStateChanged;
     std::function<juce::ComponentBoundsConstrainer*()> getConstrainer;
     QDockWidget* connectedDock = nullptr;
+    bool hiddenByHostMinimize = false;
     bool resizingFromJuce = false;
     bool resizingFromQt = false;
 

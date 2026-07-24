@@ -26,9 +26,9 @@ public:
     ~InternalPlugin() override
     {
         // Clear active editor on both the wrapper and inner processor.
-        // When PluginWindow calls createEditorIfNeeded() on this wrapper,
+        // When PluginWindow requests an editor on this wrapper,
         // it sets activeEditor on the wrapper, and our createEditor() then
-        // calls inner->createEditorIfNeeded() which sets it on inner too.
+        // calls inner->createEditorAndMakeActive() which sets it on inner too.
         // Both must be cleared before their destructors run.
         if (auto* editor = getActiveEditor())
             editorBeingDeleted(editor);
@@ -63,9 +63,9 @@ public:
 
     AudioProcessorEditor* createEditor() override
     {
-        // Use createEditorIfNeeded() to properly track the editor in the inner processor,
+        // Use createEditorAndMakeActive() to properly track the editor in the inner processor,
         // following the same pattern as ARAPluginInstanceWrapper and VST3/AU plugin formats
-        return inner->createEditorIfNeeded();
+        return inner->createEditorAndMakeActive();
     }
 
     bool hasEditor() const override
