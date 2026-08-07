@@ -24,7 +24,6 @@ static const int newFile = 0x30003;
 static const int showPluginListEditor = 0x30100;
 static const int showAudioSettings = 0x30200;
 static const int showMidiSettings = 0x30210;
-static const int aboutBox = 0x30300;
 static const int allWindowsForward = 0x30400;
 static const int autoScalePluginWindows = 0x30600;
 } // namespace CommandIDs

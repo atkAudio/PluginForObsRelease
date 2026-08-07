@@ -73,14 +73,8 @@ MidiClient& MidiClient::operator=(MidiClient&& other) noexcept
         }
 
         clientId = other.clientId;
-        incomingQueue.store(
-            other.incomingQueue.exchange(nullptr, std::memory_order_acq_rel),
-            std::memory_order_release
-        );
-        outgoingQueue.store(
-            other.outgoingQueue.exchange(nullptr, std::memory_order_acq_rel),
-            std::memory_order_release
-        );
+        incomingQueue.store(other.incomingQueue.exchange(nullptr, std::memory_order_acq_rel), std::memory_order_release);
+        outgoingQueue.store(other.outgoingQueue.exchange(nullptr, std::memory_order_acq_rel), std::memory_order_release);
         other.clientId = nullptr;
     }
     return *this;
@@ -91,6 +85,13 @@ void MidiClient::getPendingMidi(juce::MidiBuffer& outBuffer, int numSamples, dou
     juce::ignoreUnused(sampleRate);
     if (auto queue = incomingQueue.load(std::memory_order_acquire))
         queue->popAll(outBuffer, numSamples);
+}
+
+void MidiClient::getPendingMidiEvents(std::vector<MidiInputEvent>& outEvents, int numSamples, double sampleRate)
+{
+    juce::ignoreUnused(sampleRate);
+    if (auto queue = incomingQueue.load(std::memory_order_acquire))
+        queue->popAllDetailed(outEvents, numSamples);
 }
 
 void MidiClient::sendMidi(const juce::MidiBuffer& messages)
@@ -289,7 +290,7 @@ void MidiServer::handleIncomingMidiMessage(juce::MidiInput* source, const juce::
 
     for (const auto& clientSnapshot : it->second)
         if (clientSnapshot.incomingMidiQueue)
-            clientSnapshot.incomingMidiQueue->push(message, 0);
+            clientSnapshot.incomingMidiQueue->push(message, 0, sourceName);
 }
 
 void MidiServer::timerCallback()

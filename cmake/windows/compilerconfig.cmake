@@ -34,9 +34,9 @@ if(CMAKE_CXX_STANDARD GREATER_EQUAL 20)
     list(APPEND _obs_msvc_cpp_options /Zc:char8_t-)
 endif()
 
-# Configure RelWithDebInfo to behave like Debug (no optimizations)
-# This makes debugging easier while still maintaining a separate configuration
-set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>:Debug>")
+# Use the DLL runtime so allocator state is shared across module boundaries.
+# RelWithDebInfo must remain a release runtime to avoid debug-heap mismatches in OBS/Qt plugin hosting.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 
 add_compile_options(
     /W3
@@ -56,7 +56,6 @@ add_compile_definitions(
     _CRT_NONSTDC_NO_WARNINGS
     $<$<CONFIG:DEBUG>:DEBUG>
     $<$<CONFIG:DEBUG>:_DEBUG>
-    $<$<CONFIG:RelWithDebInfo>:_DEBUG> # Use Debug iterator debug level for RelWithDebInfo
 )
 
 add_link_options(

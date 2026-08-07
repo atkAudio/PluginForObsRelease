@@ -14,23 +14,25 @@ BUILD_TOOLS=(
 # JUCE dependencies (from official JUCE Linux Dependencies.md)
 # These need architecture suffix for cross-compilation
 JUCE_DEPS=(
-  libasound2-dev
-  libjack-jackd2-dev
   ladspa-sdk
+  libasound2-dev
   libcurl4-openssl-dev
-  libfreetype6-dev
+  libegl-dev
   libfontconfig1-dev
+  libfreetype-dev 
+  libglu1-mesa-dev
+  libgtk-3-dev
+  libjack-jackd2-dev
+  libwebkit2gtk-4.1-dev
   libx11-dev
   libxcomposite-dev
   libxcursor-dev
   libxext-dev
+  libxi-dev
   libxinerama-dev
   libxrandr-dev
   libxrender-dev
-  libwebkit2gtk-4.1-dev
-  libglu1-mesa-dev
   mesa-common-dev
-  libgtk-3-dev
 )
 
 # OBS dependencies

@@ -1,6 +1,5 @@
 #include "MainHostWindow.h"
 
-#include "../../About.h"
 #include "../../Logging.h"
 #include "../../SandboxedPluginScanner.h"
 #include "../../SharedPluginList.h"
@@ -113,9 +112,7 @@ MainHostWindow::MainHostWindow(juce::AudioDeviceManager& deviceManagerIn)
                     const String formatName = format->getName();
                     // JUCE uses "lastPluginScanPath_" prefix for PluginListComponent
                     const String key = "lastPluginScanPath_" + formatName;
-                    FileSearchPath existingPaths(
-                        props->getValue(key, format->getDefaultLocationsToSearch().toString())
-                    );
+                    FileSearchPath existingPaths(props->getValue(key, format->getDefaultLocationsToSearch().toString()));
 
                     if (!existingPaths.toString().contains(flatpakPluginPath.getFullPathName()))
                     {
@@ -421,9 +418,6 @@ PopupMenu MainHostWindow::getMenuForIndex(int topLevelMenuIndex, const String& /
 
         if (autoScaleOptionAvailable)
             menu.addCommandItem(&getCommandManager(), CommandIDs::autoScalePluginWindows);
-
-        menu.addSeparator();
-        menu.addCommandItem(&getCommandManager(), CommandIDs::aboutBox);
     }
     else if (topLevelMenuIndex == 3)
     {
@@ -615,7 +609,6 @@ void MainHostWindow::getAllCommands(Array<CommandID>& commands)
         CommandIDs::showPluginListEditor,
         CommandIDs::showAudioSettings,
         CommandIDs::showMidiSettings,
-        CommandIDs::aboutBox,
         CommandIDs::allWindowsForward,
         CommandIDs::autoScalePluginWindows
     };
@@ -662,10 +655,6 @@ void MainHostWindow::getCommandInfo(const CommandID commandID, ApplicationComman
     case CommandIDs::showMidiSettings:
         result.setInfo("MIDI...", {}, category, 0);
         result.addDefaultKeypress('m', ModifierKeys::commandModifier);
-        break;
-
-    case CommandIDs::aboutBox:
-        result.setInfo("About...", {}, category, 0);
         break;
 
     case CommandIDs::allWindowsForward:
@@ -755,12 +744,6 @@ bool MainHostWindow::perform(const InvocationInfo& info)
         menuItemsChanged();
     }
     break;
-
-    case CommandIDs::aboutBox:
-    {
-        showAboutDialog();
-        break;
-    }
 
     case CommandIDs::allWindowsForward:
     {

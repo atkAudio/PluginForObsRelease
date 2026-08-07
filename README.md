@@ -13,11 +13,12 @@
 ## PluginHost2
 
 - Includes all features of regular PluginHost plus:
-- Use multiple plugins to create complex audio processing chains and graphs from OBS sources and audio devices
+- Use multiple plugins to create audio processing chains (or graphs) from OBS sources and audio devices
 - Always internally multithreading (no extra latency penalty)
-- Saving and loading of graphs as files
+- Saving and loading of chains/graphs as files (share and collaborate)
 - Route audio and MIDI between sources, plugins and hardware (ASIO/CoreAudio included)
 - Sample rate converting and drift compensating internal buffering for seamless audio between OBS sources and audio devices
+- Set up OBS Sources volume and mute control via MIDI
 - etc
 
 PluginHost2 can interface directly with audio and MIDI hardware, OBS audio sources, and output audio as new OBS sources, allowing for complex audio processing setups. E.g. use ASIO interface as audio device, take additional audio from OBS sources, route monitoring to ASIO outputs and/or different audio drivers/hardware, use plugins and create final mix, and output the processed audio as a new OBS source for recording and streaming. Or just create a simple soundboard with a sampler plugin and a MIDI keyboard.

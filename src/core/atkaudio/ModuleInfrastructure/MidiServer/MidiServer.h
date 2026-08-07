@@ -20,6 +20,13 @@ struct MidiClientState
     void deserialize(const juce::String& data);
 };
 
+struct MidiInputEvent
+{
+    juce::MidiMessage message;
+    int samplePosition = 0;
+    juce::String inputDeviceName;
+};
+
 class MidiMessageQueue;
 
 class MidiClient
@@ -34,6 +41,7 @@ public:
     MidiClient& operator=(MidiClient&&) noexcept;
 
     void getPendingMidi(juce::MidiBuffer& outBuffer, int numSamples, double sampleRate);
+    void getPendingMidiEvents(std::vector<MidiInputEvent>& outEvents, int numSamples, double sampleRate);
 
     void sendMidi(const juce::MidiBuffer& messages);
 
@@ -59,27 +67,13 @@ class MidiMessageQueue
 public:
     static constexpr int kDefaultQueueSize = 65536;
 
-    struct TimestampedMidiMessage
-    {
-        juce::MidiMessage message;
-        int samplePosition = 0;
-
-        TimestampedMidiMessage() = default;
-
-        TimestampedMidiMessage(const juce::MidiMessage& msg, int pos)
-            : message(msg)
-            , samplePosition(pos)
-        {
-        }
-    };
-
     explicit MidiMessageQueue(int queueSize = kDefaultQueueSize)
         : fifo(queueSize)
     {
         messages.resize(queueSize);
     }
 
-    bool push(const juce::MidiMessage& message, int samplePosition)
+    bool push(const juce::MidiMessage& message, int samplePosition, const juce::String& inputDeviceName = {})
     {
         juce::SpinLock::ScopedLockType lock(producerLock);
 
@@ -91,6 +85,7 @@ public:
             messages[start1].message = message;
             messages[start1].samplePosition =
                 (samplePosition == 0) ? autoIncrementPosition.fetch_add(1, std::memory_order_relaxed) : samplePosition;
+            messages[start1].inputDeviceName = inputDeviceName;
             fifo.finishedWrite(1);
             return true;
         }
@@ -124,6 +119,35 @@ public:
         }
     }
 
+    void popAllDetailed(std::vector<MidiInputEvent>& outEvents, int maxSamples = 65536)
+    {
+        int start1, size1, start2, size2;
+        const int numReady = fifo.getNumReady();
+
+        if (numReady <= 0)
+            return;
+
+        fifo.prepareToRead(numReady, start1, size1, start2, size2);
+        const int maxPos = (maxSamples > 0) ? maxSamples - 1 : 0;
+
+        outEvents.reserve(outEvents.size() + size1 + size2);
+
+        for (int i = 0; i < size1; ++i)
+        {
+            const auto& msg = messages[start1 + i];
+            outEvents.push_back({msg.message, std::clamp(msg.samplePosition, 0, maxPos), msg.inputDeviceName});
+        }
+
+        for (int i = 0; i < size2; ++i)
+        {
+            const auto& msg = messages[start2 + i];
+            outEvents.push_back({msg.message, std::clamp(msg.samplePosition, 0, maxPos), msg.inputDeviceName});
+        }
+
+        fifo.finishedRead(size1 + size2);
+        autoIncrementPosition.store(0, std::memory_order_relaxed);
+    }
+
     void clear()
     {
         int start1, size1, start2, size2;
@@ -144,7 +168,7 @@ private:
     juce::SpinLock producerLock;
     std::atomic<int> autoIncrementPosition{0};
     juce::AbstractFifo fifo;
-    std::vector<TimestampedMidiMessage> messages;
+    std::vector<MidiInputEvent> messages;
 };
 
 class MidiServer
