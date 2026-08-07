@@ -13,6 +13,7 @@ atk::DeviceIo::DeviceIo()
     : deviceIoApp(std::make_unique<DeviceIoApp>(MAX_CHANNELS, MAX_CHANNELS))
     , mainWindow(std::make_unique<AudioAppMainWindow>(*deviceIoApp))
 {
+    fadeDeviceOutputPointers.reserve(MAX_CHANNELS);
 }
 
 atk::DeviceIo::~DeviceIo()
@@ -44,46 +45,25 @@ void atk::DeviceIo::process(float** buffer, int numChannels, int numSamples, dou
     if (deviceIoApp == nullptr || buffer == nullptr)
         return;
 
+    auto& toObsBuffer = deviceIoApp->getToObsBuffer();
+    auto& fromObsBuffer = deviceIoApp->getFromObsBuffer();
+
     bool currentBypass = bypass.load(std::memory_order_acquire);
     float targetGain = currentBypass ? 0.0f : 1.0f;
 
     if (fadeGain.getTargetValue() != targetGain)
     {
         fadeGain.reset(sampleRate, fadeDurationSeconds.load(std::memory_order_acquire));
-
-        if (!currentBypass)
-        {
-            auto& toObsBuffer = deviceIoApp->getToObsBuffer();
-            auto& fromObsBuffer = deviceIoApp->getFromObsBuffer();
-            toObsBuffer.reset();
-            fromObsBuffer.reset();
-        }
-
         fadeGain.setTargetValue(targetGain);
-    }
-
-    if (currentBypass && !fadeGain.isSmoothing())
-        return;
-
-    if (fadeGain.isSmoothing())
-    {
-        for (int i = 0; i < numSamples; ++i)
-        {
-            float gain = fadeGain.getNextValue();
-            for (int ch = 0; ch < numChannels; ++ch)
-                buffer[ch][i] *= gain;
-        }
     }
 
     if (tempBuffer.getNumChannels() < numChannels || tempBuffer.getNumSamples() < numSamples)
         tempBuffer.setSize(numChannels, numSamples, false, false, true);
 
-    auto& toObsBuffer = deviceIoApp->getToObsBuffer();
     bool hasHardwareInput =
         toObsBuffer.read(tempBuffer.getArrayOfWritePointers(), numChannels, numSamples, sampleRate, false);
 
     juce::AudioBuffer<float> hardwareOutputBuffer;
-    auto& fromObsBuffer = deviceIoApp->getFromObsBuffer();
 
     if (hasHardwareInput)
     {
@@ -107,7 +87,6 @@ void atk::DeviceIo::process(float** buffer, int numChannels, int numSamples, dou
         }
 
         applyOutputDelay(hardwareOutputBuffer, numChannels, numSamples, sampleRate);
-        fromObsBuffer.write(hardwareOutputBuffer.getArrayOfWritePointers(), numChannels, numSamples, sampleRate);
     }
     else
     {
@@ -116,13 +95,9 @@ void atk::DeviceIo::process(float** buffer, int numChannels, int numSamples, dou
             std::copy(buffer[ch], buffer[ch] + numSamples, hardwareOutputBuffer.getWritePointer(ch));
 
         applyOutputDelay(hardwareOutputBuffer, numChannels, numSamples, sampleRate);
-        fromObsBuffer.write(hardwareOutputBuffer.getArrayOfWritePointers(), numChannels, numSamples, sampleRate);
     }
 
-    if (!hasHardwareInput)
-        return;
-
-    if (mixInput)
+    if (hasHardwareInput && mixInput)
     {
         for (int ch = 0; ch < numChannels; ++ch)
         {
@@ -132,11 +107,31 @@ void atk::DeviceIo::process(float** buffer, int numChannels, int numSamples, dou
                 dest[i] += hwInput[i];
         }
     }
-    else
+    else if (hasHardwareInput)
     {
         for (int ch = 0; ch < numChannels; ++ch)
             std::copy(tempBuffer.getReadPointer(ch), tempBuffer.getReadPointer(ch) + numSamples, buffer[ch]);
     }
+
+    int fadeChannels = std::min(numChannels, MAX_CHANNELS);
+    if ((int)fadeDeviceOutputPointers.size() < fadeChannels)
+        fadeDeviceOutputPointers.resize(fadeChannels);
+
+    for (int ch = 0; ch < fadeChannels; ++ch)
+        fadeDeviceOutputPointers[ch] = hardwareOutputBuffer.getWritePointer(ch);
+
+    bool smoothing = fadeGain.isSmoothing();
+    for (int i = 0; i < numSamples; ++i)
+    {
+        float gain = smoothing ? fadeGain.getNextValue() : fadeGain.getCurrentValue();
+        for (int ch = 0; ch < fadeChannels; ++ch)
+        {
+            buffer[ch][i] *= gain;
+            fadeDeviceOutputPointers[ch][i] *= gain;
+        }
+    }
+
+    fromObsBuffer.write(hardwareOutputBuffer.getArrayOfWritePointers(), numChannels, numSamples, sampleRate);
 }
 
 void atk::DeviceIo::setBypass(bool shouldBypass)
@@ -225,12 +220,7 @@ juce::Component* atk::DeviceIo::getWindowComponent()
     return mainWindow.get();
 }
 
-void atk::DeviceIo::applyOutputDelay(
-    juce::AudioBuffer<float>& buffer,
-    int numChannels,
-    int numSamples,
-    double sampleRate
-)
+void atk::DeviceIo::applyOutputDelay(juce::AudioBuffer<float>& buffer, int numChannels, int numSamples, double sampleRate)
 {
     if (!delayPrepared || static_cast<int>(outputDelayLines.size()) != numChannels)
         prepareOutputDelay(numChannels, numSamples, sampleRate);

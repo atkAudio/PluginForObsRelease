@@ -132,7 +132,6 @@ target_link_libraries(
         Qt6::Core
         Qt6::Widgets
 )
-target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE ENABLE_QT)
 target_compile_options(
     ${CMAKE_PROJECT_NAME}
     PRIVATE
@@ -163,6 +162,7 @@ set_target_properties(
 
 string(JSON PLUGIN_DISPLAY_NAME GET ${buildspec} displayName)
 string(JSON PLUGIN_AUTHOR GET ${buildspec} author)
+string(JSON PLUGIN_WEBSITE GET ${buildspec} website)
 string(
     JSON PLUGIN_OBS_VERSION_REQUIRED
     GET ${buildspec}

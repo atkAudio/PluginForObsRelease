@@ -28,6 +28,23 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(juce)
 
+function(suppress_juce_target_warnings target_name)
+    target_compile_options(
+        ${target_name}
+        PRIVATE
+            $<$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang>:-Wno-range-loop-bind-reference>
+            $<$<COMPILE_LANG_AND_ID:C,Clang,AppleClang>:-Wno-ambiguous-macro>
+            $<$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang>:-Wno-ambiguous-macro>
+            $<$<COMPILE_LANG_AND_ID:OBJC,Clang,AppleClang>:-Wno-arc-repeated-use-of-weak>
+            $<$<COMPILE_LANG_AND_ID:OBJCXX,Clang,AppleClang>:-Wno-arc-repeated-use-of-weak>
+    )
+endfunction()
+
+# JUCE module targets are INTERFACE targets, so suppress their known upstream
+# diagnostics on each concrete target that compiles the module implementation
+# units.
+suppress_juce_target_warnings(${PROJECT_NAME})
+
 target_link_libraries(
     ${PROJECT_NAME}
     PRIVATE
@@ -122,7 +139,6 @@ if(WIN32)
 endif()
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE JUCE_ASIO=1)
-target_compile_definitions(${PROJECT_NAME} PRIVATE ENABLE_QT)
 
 file(COPY_FILE ${CMAKE_SOURCE_DIR}/LICENSE ${CMAKE_BINARY_DIR}/INSTALLER-LICENSE)
 

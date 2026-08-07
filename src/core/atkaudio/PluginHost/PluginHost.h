@@ -19,6 +19,8 @@ public:
     void getState(std::string& s) override;
     void setState(std::string& s) override;
     void setVisible(bool visible) override;
+    void setParentSource(void* parentSource);
+    void setOwnerFilterName(const std::string& filterName);
 
     void setDockId(const std::string& id);
     void setDockTitle(const std::string& title);

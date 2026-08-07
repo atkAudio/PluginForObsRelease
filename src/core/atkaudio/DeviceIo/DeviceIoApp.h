@@ -77,22 +77,26 @@ public:
         juce::String currentDeviceName = currentDevice ? currentDevice->getName() : juce::String();
 
         // Check if we had a device that's now gone
-        if (currentDevice != nullptr) {
+        if (currentDevice != nullptr)
+        {
             bool deviceStillExists = false;
-            for (auto* type : deviceManager.getAvailableDeviceTypes()) {
+            for (auto* type : deviceManager.getAvailableDeviceTypes())
+            {
                 auto outputDevices = type->getDeviceNames(false);
                 auto inputDevices = type->getDeviceNames(true);
 
-                if (outputDevices.contains(currentDeviceName)
-                    || inputDevices.contains(currentDeviceName)) {
+                if (outputDevices.contains(currentDeviceName) || inputDevices.contains(currentDeviceName))
+                {
                     deviceStillExists = true;
                     break;
                 }
             }
 
-            if (!deviceStillExists) {
+            if (!deviceStillExists)
+            {
                 // Save current state for restoration later
-                if (!currentDeviceName.isEmpty()) {
+                if (!currentDeviceName.isEmpty())
+                {
                     pendingDeviceName = currentDeviceName;
                     pendingStateXml = getStateXml();
                     atk::logging::warning(
@@ -110,7 +114,8 @@ public:
         }
 
         // Check if we have a pending device to restore
-        if (currentDevice == nullptr && !pendingDeviceName.isEmpty()) {
+        if (currentDevice == nullptr && !pendingDeviceName.isEmpty())
+        {
             atk::logging::info(
                 "DeviceIoApp::audioServerDeviceListChanged",
                 "attempting to restore pending device \"" + pendingDeviceName + "\""
@@ -128,7 +133,8 @@ public:
         const juce::AudioIODeviceCallbackContext&
     ) override
     {
-        if (needsBufferClear.exchange(false)) {
+        if (needsBufferClear.exchange(false))
+        {
             toObsBuffer.reset();
             fromObsBuffer.reset();
             toObsBuffer.clearPrepared();
@@ -138,7 +144,8 @@ public:
         if (numInputChannels > 0 && inputChannelData != nullptr)
             toObsBuffer.write(inputChannelData, numInputChannels, numSamples, currentSampleRate);
 
-        if (numOutputChannels > 0 && outputChannelData != nullptr) {
+        if (numOutputChannels > 0 && outputChannelData != nullptr)
+        {
             // Clear output first to ensure silence if read fails
             for (int ch = 0; ch < numOutputChannels; ++ch)
                 juce::FloatVectorOperations::clear(outputChannelData[ch], numSamples);
@@ -149,7 +156,8 @@ public:
 
     void audioDeviceAboutToStart(juce::AudioIODevice* device) override
     {
-        if (device != nullptr) {
+        if (device != nullptr)
+        {
             currentSampleRate = device->getCurrentSampleRate();
             currentBufferSize = device->getCurrentBufferSizeSamples();
         }
@@ -176,7 +184,8 @@ public:
 
         juce::String currentDeviceName = device->getName();
 
-        if (currentDeviceName != lastDeviceName && !lastDeviceName.isEmpty()) {
+        if (currentDeviceName != lastDeviceName && !lastDeviceName.isEmpty())
+        {
             pendingDeviceName.clear();
             pendingStateXml.clear();
         }
@@ -238,7 +247,8 @@ public:
 
     void updateSize()
     {
-        if (audioSettingsComp) {
+        if (audioSettingsComp)
+        {
             int width = juce::jmax(450, audioSettingsComp->getWidth() + margin * 2);
             int height = juce::jmax(80, audioSettingsComp->getHeight() + margin * 2);
             setSize(width, height);
@@ -296,19 +306,20 @@ private:
         if (deviceManager.getCurrentAudioDevice() != nullptr)
             return;
 
-        for (auto* type : deviceManager.getAvailableDeviceTypes()) {
+        for (auto* type : deviceManager.getAvailableDeviceTypes())
+        {
             type->scanForDevices();
 
             auto outputDevices = type->getDeviceNames(false);
             auto inputDevices = type->getDeviceNames(true);
 
-            bool deviceFound = outputDevices.contains(pendingDeviceName)
-                            || inputDevices.contains(pendingDeviceName);
+            bool deviceFound = outputDevices.contains(pendingDeviceName) || inputDevices.contains(pendingDeviceName);
 
             if (!deviceFound)
                 continue;
 
-            if (auto xml = juce::parseXML(pendingStateXml)) {
+            if (auto xml = juce::parseXML(pendingStateXml))
+            {
                 // DEVICESETUP might be the root element or a child element
                 juce::XmlElement* deviceSetup = nullptr;
                 if (xml->hasTagName("DEVICESETUP"))
@@ -316,15 +327,16 @@ private:
                 else
                     deviceSetup = xml->getChildByName("DEVICESETUP");
 
-                if (deviceSetup != nullptr) {
+                if (deviceSetup != nullptr)
+                {
                     isRestoringState = true;
-                    auto error =
-                        deviceManager
-                            .initialise(maxInputChannels, maxOutputChannels, deviceSetup, false);
+                    auto error = deviceManager.initialise(maxInputChannels, maxOutputChannels, deviceSetup, false);
                     isRestoringState = false;
 
-                    if (auto* device = deviceManager.getCurrentAudioDevice()) {
-                        if (device->getName() == pendingDeviceName) {
+                    if (auto* device = deviceManager.getCurrentAudioDevice())
+                    {
+                        if (device->getName() == pendingDeviceName)
+                        {
                             atk::logging::info(
                                 "DeviceIoApp::tryRestorePendingDevice",
                                 "restored pending device \"" + pendingDeviceName + "\""
@@ -369,9 +381,7 @@ public:
     AudioAppMainWindow(DeviceIoApp& app)
         : juce::DocumentWindow(
               "DeviceIo Audio Settings",
-              juce::LookAndFeel::getDefaultLookAndFeel().findColour(
-                  juce::ResizableWindow::backgroundColourId
-              ),
+              juce::LookAndFeel::getDefaultLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId),
               DocumentWindow::allButtons
           )
         , deviceIoApp(app)

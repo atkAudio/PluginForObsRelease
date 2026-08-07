@@ -6,6 +6,8 @@ using namespace juce;
 #include "Editor/PluginWindow.h"
 #include "../AudioProcessorGraphMT/AudioProcessorGraphMT.h"
 
+#include <unordered_map>
+
 // Using AudioProcessorGraphMT from atk namespace
 using atk::AudioProcessorGraphMT;
 
@@ -57,6 +59,7 @@ public:
     Point<double> getNodePosition(NodeID) const;
 
     void clear();
+    void refreshLastTouchedTrackerOwnership();
 
     PluginWindow* getOrCreateWindowFor(AudioProcessorGraphMT::Node*, PluginWindow::Type);
     bool closeAnyOpenPluginWindows();
@@ -116,6 +119,7 @@ private:
     NodeID getNextUID() noexcept;
 
     void createNodeFromXml(const XmlElement&);
+    void syncLastTouchedTracker();
     void addPluginCallback(
         std::unique_ptr<AudioPluginInstance>,
         const String& error,
@@ -123,6 +127,10 @@ private:
         PluginDescriptionAndPreference::UseARA useARA
     );
     void changeListenerCallback(ChangeBroadcaster*) override;
+
+    std::unordered_map<uint32_t, AudioProcessor*> trackedNodeProcessors;
+    juce::String trackedOwnerSourceUuid;
+    juce::String trackedOwnerFilterName;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginGraph)
 };

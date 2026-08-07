@@ -2513,7 +2513,9 @@ public:
     {
         // Helper to check if a vector contains a value
         auto contains = [](const auto& vec, const auto& val)
-        { return std::find(vec.begin(), vec.end(), val) != vec.end(); };
+        {
+            return std::find(vec.begin(), vec.end(), val) != vec.end();
+        };
 
         // Extract parallel subgraphs
         SubgraphExtractor extractor;
@@ -2849,7 +2851,6 @@ public:
         }
 
         auto* threadPool = atk::RealtimeThreadPool::getInstance();
-        const int numWorkers = threadPool ? threadPool->getNumWorkers() : 0;
 
         useDependencyMode = false;
         if (threadPool && threadPool->isReady())
@@ -2883,7 +2884,9 @@ public:
     void routeFromSourceToChain(ChainRenderSequence* sourceChain, ChainRenderSequence* destChain, int numSamples)
     {
         auto contains = [](const auto& vec, const auto& val)
-        { return std::find(vec.begin(), vec.end(), val) != vec.end(); };
+        {
+            return std::find(vec.begin(), vec.end(), val) != vec.end();
+        };
 
         for (const auto& conn : connectionsVec)
         {
@@ -2944,7 +2947,9 @@ public:
     {
         // Helper to check if a vector contains a value
         auto contains = [](const auto& vec, const auto& val)
-        { return std::find(vec.begin(), vec.end(), val) != vec.end(); };
+        {
+            return std::find(vec.begin(), vec.end(), val) != vec.end();
+        };
 
         const int numSamples = audio.getNumSamples();
 

@@ -51,6 +51,8 @@ public:
     bool isPluginLoaded() const;
     std::unique_ptr<juce::AudioProcessorEditor> createInnerEditor() const;
     EditorStyle getEditorStyle() const noexcept;
+    void setParentSourceUuid(const juce::String& sourceUuid);
+    void setOwnerFilterName(const juce::String& filterName);
 
     juce::AudioPluginInstance* getInnerPlugin() const;
 
@@ -96,6 +98,8 @@ private:
 
     juce::CriticalSection innerMutex;
     std::unique_ptr<juce::AudioPluginInstance> inner;
+    juce::String parentSourceUuid;
+    juce::String ownerFilterName;
     EditorStyle editorStyle = EditorStyle::thisWindow;
     bool active = false;
     juce::ScopedMessageBox messageBox;

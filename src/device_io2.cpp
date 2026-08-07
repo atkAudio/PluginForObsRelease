@@ -1,4 +1,5 @@
 #include "core/atkaudio/DeviceIo2/DeviceIo2.h"
+#include "core/atkaudio/DeviceIo2/DeviceIo2ObsControl.h"
 #include <atomic>
 #include <obs-frontend-api.h>
 #include <obs-module.h>
@@ -32,11 +33,14 @@ struct adio2_data
 
     std::atomic_bool followSourceVolume = false;
     std::atomic_bool followScene = true;
-    std::atomic<float> inputGain = 1.0f;
-    std::atomic<float> outputGain = 1.0f;
+    std::atomic<float> inputGainDb = 0.0f;
+    std::atomic<float> outputGainDb = 0.0f;
     std::atomic<float> outputDelay = 0.0f;
     std::atomic<double> fadeTimeSeconds = 0.5;
-    std::atomic_bool shouldBypass = false;
+    bool hasDesiredBypass = false;
+    bool desiredBypass = true;
+    std::atomic<float> sourceVolume = 1.0f;
+    std::atomic_bool sourceMuted = false;
 
     atk::DeviceIo2 deviceIo2;
 
@@ -78,16 +82,14 @@ static void deviceio2_update(void* data, obs_data_t* s)
     adio->followScene.store(obs_data_get_bool(s, FOLLOW_SCENE_ID), std::memory_order_release);
 
     auto inputGain = (float)obs_data_get_double(s, IG_ID);
-    inputGain = obs_db_to_mul(inputGain);
-    adio->inputGain.store(inputGain, std::memory_order_release);
+    adio->inputGainDb.store(inputGain, std::memory_order_release);
 
     auto outputDelay = (float)obs_data_get_double(s, OUTPUT_DELAY_ID);
     adio->outputDelay.store(outputDelay, std::memory_order_release);
     adio->deviceIo2.setOutputDelay(outputDelay);
 
-    // auto outputGain = (float)obs_data_get_double(s, OG_ID);
-    // outputGain = obs_db_to_mul(outputGain);
-    // adio->outputGain.store(outputGain, std::memory_order_release);
+    auto outputGain = (float)obs_data_get_double(s, OG_ID);
+    adio->outputGainDb.store(outputGain, std::memory_order_release);
 }
 
 static void* deviceio2_create(obs_data_t* settings, obs_source_t* filter)
@@ -150,8 +152,8 @@ static obs_properties_t* deviceio2_properties(void* data)
 {
     obs_properties_t* props = obs_properties_create();
 
-    obs_properties_add_button(props, OPEN_DEVICE_SETTINGS, OPEN_DEVICE_TEXT, open_editor_button_clicked);
-    obs_properties_add_button(props, CLOSE_DEVICE_SETTINGS, CLOSE_DEVICE_TEXT, close_editor_button_clicked);
+    obs_properties_add_button2(props, OPEN_DEVICE_SETTINGS, OPEN_DEVICE_TEXT, open_editor_button_clicked, data);
+    obs_properties_add_button2(props, CLOSE_DEVICE_SETTINGS, CLOSE_DEVICE_TEXT, close_editor_button_clicked, data);
 
     bool open_settings_vis = true;
     bool close_settings_vis = false;
@@ -192,27 +194,19 @@ static struct obs_audio_data* deviceio2_filter(void* data, struct obs_audio_data
     auto frames = audio->frames;
     float** adata = (float**)audio->data;
 
-    auto outputGain = adio->outputGain.load(std::memory_order_acquire);
-    for (int i = 0; i < channels; i++)
-        for (size_t j = 0; j < frames; j++)
-            adata[i][j] *= outputGain;
-
-    if (adio->followScene.load(std::memory_order_acquire))
-    {
-        adio->deviceIo2.setFadeTime(adio->fadeTimeSeconds.load(std::memory_order_acquire));
-        adio->deviceIo2.setBypass(adio->shouldBypass.load(std::memory_order_acquire));
-    }
-    else
-    {
-        adio->deviceIo2.setBypass(false);
-    }
+    atk::DeviceIo2::WrapperControlState controlState;
+    controlState.followSourceVolume = adio->followSourceVolume.load(std::memory_order_acquire);
+    controlState.followScene = adio->followScene.load(std::memory_order_acquire);
+    controlState.inputGainDb = adio->inputGainDb.load(std::memory_order_acquire);
+    controlState.outputGainDb = adio->outputGainDb.load(std::memory_order_acquire);
+    controlState.sourceVolume = adio->sourceVolume.load(std::memory_order_acquire);
+    controlState.sourceMuted = adio->sourceMuted.load(std::memory_order_acquire);
+    controlState.fadeTimeSeconds = adio->fadeTimeSeconds.load(std::memory_order_acquire);
+    controlState.hasDesiredBypass = adio->hasDesiredBypass;
+    controlState.desiredBypass = adio->desiredBypass;
+    adio->deviceIo2.setWrapperControlState(controlState);
 
     adio->deviceIo2.process(adata, channels, frames, adio->sampleRate);
-
-    auto inputGain = adio->inputGain.load(std::memory_order_acquire);
-    for (int i = 0; i < channels; i++)
-        for (size_t j = 0; j < frames; j++)
-            adata[i][j] *= inputGain;
 
     return audio;
 }
@@ -229,13 +223,14 @@ static void save(void* data, obs_data_t* settings)
 static void tick(void* data, float seconds)
 {
     struct adio2_data* adio = (struct adio2_data*)data;
-    auto* settings = adio->settings;
 
     // Cache transition duration from frontend API (called on main thread)
     if (adio->followScene.load(std::memory_order_acquire))
     {
-        int transitionDurationMs = obs_frontend_get_transition_duration();
-        adio->fadeTimeSeconds.store(transitionDurationMs / 1000.0, std::memory_order_release);
+        adio->fadeTimeSeconds.store(
+            atk::deviceIo2ObsControl::getCurrentTransitionFadeSeconds(),
+            std::memory_order_release
+        );
     }
 
     // Compute bypass state on main thread for audio thread to read
@@ -244,57 +239,48 @@ static void tick(void* data, float seconds)
     bool bypass = false;
     if (adio->followScene.load(std::memory_order_acquire) && parent)
     {
-        bypass = !obs_source_active(parent);
+        bool desiredBypass = true;
+        auto* parentUuid = obs_source_get_uuid(parent);
+        std::string parentUuidString = parentUuid ? parentUuid : "";
 
-        // Early fade-out: detect if parent is fading OUT during an active transition
-        constexpr float kTransitionEpsilon = 0.001f;
-        obs_source_t* transition = obs_frontend_get_current_transition();
-        if (transition != nullptr)
+        if (atk::deviceIo2ObsControl::resolveDesiredBypass(parentUuidString, desiredBypass))
         {
-            float transitionTime = obs_transition_get_time(transition);
-            if (transitionTime > kTransitionEpsilon)
-            {
-                // Transition is in progress - check if parent is in destination scene
-                obs_source_t* destSceneSrc = obs_transition_get_source(transition, OBS_TRANSITION_SOURCE_B);
-                if (destSceneSrc != nullptr)
-                {
-                    obs_scene_t* destScene = obs_scene_from_source(destSceneSrc);
-                    if (destScene != nullptr)
-                    {
-                        const char* parentName = obs_source_get_name(parent);
-                        obs_sceneitem_t* item = obs_scene_find_source(destScene, parentName);
-                        if (item == nullptr)
-                        {
-                            // Parent not in destination scene - fade out now
-                            bypass = true;
-                        }
-                    }
-                    obs_source_release(destSceneSrc);
-                }
-            }
-            obs_source_release(transition);
+            adio->desiredBypass = desiredBypass;
+            adio->hasDesiredBypass = true;
         }
-    }
-    adio->shouldBypass.store(bypass, std::memory_order_release);
 
-    auto outputGain = adio->outputGain.load(std::memory_order_acquire);
-    if (settings)
-        outputGain = (float)obs_data_get_double(settings, OG_ID);
-    outputGain = obs_db_to_mul(outputGain);
+        bypass = adio->hasDesiredBypass ? adio->desiredBypass : true;
+    }
+    else
+    {
+        adio->hasDesiredBypass = false;
+        adio->desiredBypass = true;
+        bypass = false;
+    }
+    adio->desiredBypass = bypass;
 
     if (adio->followSourceVolume.load(std::memory_order_acquire) && parent)
     {
-        bool obsMuted = obs_source_muted(parent);
-        int monitoringType = (int)obs_source_get_monitoring_type(parent);
-        bool effectiveMuted = obsMuted || (monitoringType == OBS_MONITORING_TYPE_MONITOR_ONLY);
+        auto* parentUuid = obs_source_get_uuid(parent);
+        std::string parentUuidString = parentUuid ? parentUuid : "";
 
-        auto fader = obs_source_get_volume(parent);
-        if (effectiveMuted)
-            fader = 0.0f;
-        outputGain *= fader;
+        atk::deviceIo2ObsControl::SourceLevelState sourceLevelState;
+        if (atk::deviceIo2ObsControl::readSourceLevelState(parentUuidString, sourceLevelState))
+        {
+            adio->sourceMuted.store(sourceLevelState.sourceMuted, std::memory_order_release);
+            adio->sourceVolume.store(sourceLevelState.sourceVolume, std::memory_order_release);
+        }
+        else
+        {
+            adio->sourceMuted.store(false, std::memory_order_release);
+            adio->sourceVolume.store(1.0f, std::memory_order_release);
+        }
     }
-
-    adio->outputGain.store(outputGain, std::memory_order_release);
+    else
+    {
+        adio->sourceMuted.store(false, std::memory_order_release);
+        adio->sourceVolume.store(1.0f, std::memory_order_release);
+    }
 
     UNUSED_PARAMETER(seconds);
 }

@@ -9,7 +9,6 @@ namespace atk
 
 class MidiServerSettingsComponent
     : public juce::Component
-    , private juce::MidiInputCallback
     , private juce::MidiKeyboardState::Listener
     , private juce::Timer
 {
@@ -28,13 +27,10 @@ private:
     void updateDeviceLists();
     void updateSubscriptions();
     void sendMidiPanic();
-
-    void handleIncomingMidiMessage(juce::MidiInput* source, const juce::MidiMessage& message) override;
+    void timerCallback() override;
 
     void handleNoteOn(juce::MidiKeyboardState* source, int midiChannel, int midiNoteNumber, float velocity) override;
     void handleNoteOff(juce::MidiKeyboardState* source, int midiChannel, int midiNoteNumber, float velocity) override;
-
-    void timerCallback() override;
 
     MidiClient* client;
     MidiServer* server;
@@ -56,8 +52,6 @@ private:
 
     juce::Label monitorLabel;
     std::unique_ptr<juce::TextEditor> monitorTextEditor;
-
-    juce::CriticalSection monitorMutex;
     juce::StringArray pendingMonitorMessages;
     int maxMonitorLines = 100;
 

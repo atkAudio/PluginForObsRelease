@@ -99,6 +99,16 @@ public:
         return parentSourceUuid;
     }
 
+    void setOwnerFilterName(const std::string& name)
+    {
+        ownerFilterName = name;
+    }
+
+    const std::string& getOwnerFilterName() const
+    {
+        return ownerFilterName;
+    }
+
     std::unique_ptr<GraphDocumentComponent> graphHolder;
 
     ApplicationCommandManager commandManager;
@@ -232,6 +242,7 @@ private:
 
     // Parent OBS source UUID (not ref-counted, just the UUID string)
     std::string parentSourceUuid;
+    std::string ownerFilterName;
 
     std::function<float()> runtimeCpuLoadProvider;
 

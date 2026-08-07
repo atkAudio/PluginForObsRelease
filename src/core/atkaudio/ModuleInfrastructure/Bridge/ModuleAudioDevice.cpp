@@ -23,7 +23,7 @@ ModuleOBSAudioDevice::ModuleOBSAudioDevice(
     auto* obsAudio = obs_get_audio();
     if (obsAudio)
     {
-        obsChannelCount = audio_output_get_channels(obsAudio);
+        obsChannelCount = static_cast<int>(audio_output_get_channels(obsAudio));
         obsSampleRate = audio_output_get_sample_rate(obsAudio);
     }
 }

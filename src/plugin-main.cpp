@@ -8,8 +8,8 @@ It is distributed under the AGPLv3 license. See the LICENSE file for details.
 #include "core/atkaudio/About.h"
 #include "core/atkaudio/GlobalSettings.h"
 #include "core/atkaudio/Logging.h"
-#include "core/atkaudio/midi_obs_controller.h"
-#include "core/atkaudio/midi_to_obs_dialog.h"
+#include "core/atkaudio/midi_control/midi_control_controller.h"
+#include "core/atkaudio/midi_control/midi_control_dialog.h"
 #include "core/atkaudio/atkaudio.h"
 
 #include <obs-frontend-api.h>
@@ -20,15 +20,7 @@ It is distributed under the AGPLv3 license. See the LICENSE file for details.
 #include <string.h>
 #include <string>
 
-#ifdef ENABLE_QT
-#include <QCheckBox>
-#include <QDialog>
-#include <QDialogButtonBox>
-#include <QFrame>
-#include <QLabel>
-#include <QVBoxLayout>
-#include <QWidget>
-#endif
+#include <QtWidgets>
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
@@ -54,8 +46,7 @@ void obs_log(int log_level, const char* format, ...);
 
 namespace
 {
-#ifdef ENABLE_QT
-atk::MidiToObsDialog* g_midiToObsDialog = nullptr;
+atk::MidiControlDialog* g_midiToObsDialog = nullptr;
 bool g_obsFrontendExiting = false;
 
 void onFrontendShutdownEvent(enum obs_frontend_event event, void* private_data)
@@ -73,13 +64,11 @@ void onFrontendShutdownEvent(enum obs_frontend_event event, void* private_data)
         g_midiToObsDialog = nullptr;
     }
 }
-#endif
 
 void openGlobalSettingsDialog(void* private_data)
 {
     UNUSED_PARAMETER(private_data);
 
-#ifdef ENABLE_QT
     auto* parent = static_cast<QWidget*>(obs_frontend_get_main_window());
 
     QDialog dialog(parent);
@@ -108,9 +97,10 @@ void openGlobalSettingsDialog(void* private_data)
     aboutHeading.setStyleSheet("font-weight: bold;");
     layout.addWidget(&aboutHeading);
 
-    QLabel aboutText(QString::fromUtf8(atk::about::getAboutText().c_str()));
-    aboutText.setTextFormat(Qt::PlainText);
-    aboutText.setTextInteractionFlags(Qt::TextSelectableByMouse);
+    QLabel aboutText(QString::fromUtf8(atk::about::getAboutRichText().c_str()));
+    aboutText.setTextFormat(Qt::RichText);
+    aboutText.setOpenExternalLinks(true);
+    aboutText.setTextInteractionFlags(Qt::TextBrowserInteraction);
     aboutText.setWordWrap(true);
     layout.addWidget(&aboutText);
 
@@ -126,21 +116,17 @@ void openGlobalSettingsDialog(void* private_data)
         atk::settings::setLoggingEnabled(loggingEnabled);
         blog(LOG_INFO, "[atkAudio][SETTINGS] logging %s", loggingEnabled ? "enabled" : "disabled");
     }
-#else
-    blog(LOG_WARNING, "[atkAudio][SETTINGS] Qt not available, settings dialog disabled");
-#endif
 }
 
-void openMidiToObsDialog(void* private_data)
+void openMidiControlDialog(void* private_data)
 {
     UNUSED_PARAMETER(private_data);
 
-#ifdef ENABLE_QT
     auto* parent = static_cast<QWidget*>(obs_frontend_get_main_window());
 
     if (g_midiToObsDialog == nullptr)
     {
-        g_midiToObsDialog = new atk::MidiToObsDialog(parent);
+        g_midiToObsDialog = new atk::MidiControlDialog(parent);
         g_midiToObsDialog->setAttribute(Qt::WA_DeleteOnClose, true);
         QObject::connect(g_midiToObsDialog, &QObject::destroyed, [](QObject*) { g_midiToObsDialog = nullptr; });
     }
@@ -148,9 +134,6 @@ void openMidiToObsDialog(void* private_data)
     g_midiToObsDialog->show();
     g_midiToObsDialog->raise();
     g_midiToObsDialog->activateWindow();
-#else
-    blog(LOG_WARNING, "[atkAudio][MIDI-OBS] Qt not available, MIDI to OBS dialog disabled");
-#endif
 }
 } // namespace
 
@@ -198,18 +181,16 @@ bool obs_module_load(void)
 
     atk::update();
 
-#ifdef ENABLE_QT
     g_obsFrontendExiting = false;
     obs_frontend_add_event_callback(onFrontendShutdownEvent, nullptr);
-#endif
 
-    if (auto* midiObsController = atk::MidiObsController::getInstance())
+    if (auto* midiObsController = atk::MidiControlController::getInstance())
         midiObsController->initialize();
 
     // OBS frontend API does not expose extending File->Settings tabs directly.
     // Tools menu item is the supported plugin-level global settings entry point.
     obs_frontend_add_tools_menu_item("atkAudio Plugin", openGlobalSettingsDialog, nullptr);
-    obs_frontend_add_tools_menu_item("atkAudio MIDI to OBS", openMidiToObsDialog, nullptr);
+    obs_frontend_add_tools_menu_item("atkAudio MIDI Control", openMidiControlDialog, nullptr);
     atk::logging::info("OBS_API", "Registered tools menu item for global atkAudio settings");
 
     obs_register_source(&delay_filter);
@@ -229,7 +210,6 @@ void obs_module_unload(void)
 {
     atk::logging::info("OBS_API", "obs_module_unload called");
 
-#ifdef ENABLE_QT
     obs_frontend_remove_event_callback(onFrontendShutdownEvent, nullptr);
 
     if (!g_obsFrontendExiting && g_midiToObsDialog != nullptr)
@@ -237,9 +217,8 @@ void obs_module_unload(void)
         g_midiToObsDialog->close();
         g_midiToObsDialog = nullptr;
     }
-#endif
 
-    if (auto* midiObsController = atk::MidiObsController::getInstanceWithoutCreating())
+    if (auto* midiObsController = atk::MidiControlController::getInstanceWithoutCreating())
     {
         midiObsController->shutdown();
         delete midiObsController;

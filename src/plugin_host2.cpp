@@ -93,6 +93,9 @@ static void* pluginhost2_create(obs_data_t* settings, obs_source_t* filter)
     ph->context = filter;
     ph->parent = obs_filter_get_parent(filter);
     ph->pluginHost2 = std::make_unique<atk::PluginHost2>();
+    const char* filterName = obs_source_get_name(filter);
+    if (filterName && *filterName)
+        ph->pluginHost2->setOwnerFilterName(filterName);
     ph->pluginHost2->setParentSource(ph->parent);
 
     pluginhost2_update(ph, settings);
@@ -180,8 +183,8 @@ static obs_properties_t* pluginhost2_properties(void* data)
     if (ph)
         parent = obs_filter_get_parent(ph->context);
 
-    obs_properties_add_button(props, OPEN_PLUGIN_SETTINGS, OPEN_PLUGIN_TEXT, open_editor_button_clicked);
-    obs_properties_add_button(props, CLOSE_PLUGIN_SETTINGS, CLOSE_PLUGIN_TEXT, close_editor_button_clicked);
+    obs_properties_add_button2(props, OPEN_PLUGIN_SETTINGS, OPEN_PLUGIN_TEXT, open_editor_button_clicked, data);
+    obs_properties_add_button2(props, CLOSE_PLUGIN_SETTINGS, CLOSE_PLUGIN_TEXT, close_editor_button_clicked, data);
 
     bool open_settings_vis = true;
     bool close_settings_vis = false;
@@ -201,6 +204,9 @@ static void pluginhost2_filter_add(void* data, obs_source_t* source)
     atk::logging::debug("OBS_API.PluginHost2.filter_add", "called");
 
     ph->parent = source;
+    const char* filterName = obs_source_get_name(ph->context);
+    if (filterName && *filterName)
+        ph->pluginHost2->setOwnerFilterName(filterName);
     ph->pluginHost2->setParentSource(source);
 }
 

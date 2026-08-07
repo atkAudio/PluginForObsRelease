@@ -1,5 +1,6 @@
 # atkAudio Plugin for OBS
 
+
 ## PluginHost
 
 - VST3 plugin host for OBS
@@ -35,6 +36,30 @@ Develop your own audio processing plugins and integrate them into `PluginHost2` 
 
 - Mix audio from OBS sources into a new OBS audio source
 - Can be used as 'dummy' source to host filters, e.g. PluginHost2
+
+## MIDI Control
+
+- In Tools menu
+- Use MIDI controller to control OBS
+  - Source Volume, Monitoring and Mute
+  - Scene switching
+  - Transitions
+  - Effect parameters, also in PluginHost(2)
+    - Last Touched, with history
+  - ...
+- Internal Bank/Preset model
+  - Use MIDI controller to switch between banks/presets
+  - Build your own virtual MIDI control surface
+- Some tips
+  - There is no one "correct" solution
+  - Put motorized controller into MIDI mode
+  - Absolute for faders/limited range knobs
+  - Toggle for buttons
+    - Absolute for push functions
+  - Inc/Dec(2) for endless encoders
+    - Lower scale to add more precision
+  - Feedback delay to "calm down" MIDI controller
+  - Controlling TBar with a fader is similar to mouse; after full transition, pull back to 0.
 
 ## Usage examples
 

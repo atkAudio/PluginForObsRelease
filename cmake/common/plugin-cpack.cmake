@@ -367,21 +367,44 @@ set(CPACK_NSIS_UNINSTALL_NAME "Uninstall ${DISPLAYNAME}")
 set(CPACK_NSIS_INSTALL_ROOT "$COMMONPROGRAMDATA\\obs-studio\\plugins")
 set(CPACK_NSIS_BRANDING_TEXT " ")
 set(CPACK_NSIS_COMPRESSOR "/SOLID lzma")
-file(TO_NATIVE_PATH "${CPACK_NSIS_INSTALL_ROOT}" CPACK_NSIS_INSTALL_ROOT)
-string(REPLACE "\\" "\\\\" CPACK_NSIS_INSTALL_ROOT "${CPACK_NSIS_INSTALL_ROOT}")
+file(
+    TO_NATIVE_PATH
+    "${CPACK_NSIS_INSTALL_ROOT}"
+    CPACK_NSIS_INSTALL_ROOT
+)
+string(
+    REPLACE "\\"
+    "\\\\"
+    CPACK_NSIS_INSTALL_ROOT
+    "${CPACK_NSIS_INSTALL_ROOT}"
+)
 
 set(ICON_PATH "${CMAKE_SOURCE_DIR}/assets/icon.ico")
-file(TO_CMAKE_PATH "${ICON_PATH}" ICON_PATH)
-file(TO_NATIVE_PATH "${ICON_PATH}" ICON_PATH)
-string(REPLACE "\\" "\\\\" ICON_PATH "${ICON_PATH}")
+file(
+    TO_CMAKE_PATH
+    "${ICON_PATH}"
+    ICON_PATH
+)
+file(
+    TO_NATIVE_PATH
+    "${ICON_PATH}"
+    ICON_PATH
+)
+string(
+    REPLACE "\\"
+    "\\\\"
+    ICON_PATH
+    "${ICON_PATH}"
+)
 set(CPACK_NSIS_MUI_ICON "${ICON_PATH}")
 set(CPACK_NSIS_MUI_UNIICON "${ICON_PATH}")
-set(CPACK_NSIS_INSTALLED_ICON_NAME "${CMAKE_SOURCE_DIR}/assets/icon.ico")
+set(CPACK_NSIS_INSTALLED_ICON_NAME "icon.ico")
 set(CPACK_PACKAGE_ICON "${ICON_PATH}")
 
 if(WIN32)
     set(CPACK_GENERATOR "NSIS")
     set(CPACK_PACKAGE_INSTALL_DIRECTORY " ") # for some reason this is required for NSIS
+    set(CPACK_PACKAGE_INSTALL_REGISTRY_KEY "${PROJECT_NAME}")
     set(CPACK_PACKAGE_EXTENSION "exe")
 
     # Configure NSIS for specific architectures
@@ -399,6 +422,29 @@ if(WIN32)
     else()
         # No strict architecture check for x64 (compatible with ARM64 via emulation)
         set(CPACK_NSIS_EXTRA_PREINSTALL_COMMANDS "")
+    endif()
+
+    # CPack NSIS does not reliably populate ARP DisplayIcon from icon settings alone.
+    # Install icon.ico and write DisplayIcon explicitly for Control Panel uninstall list.
+    if(EXISTS "${CMAKE_SOURCE_DIR}/assets/icon.ico")
+        set(_nsis_icon_install_commands
+            "
+            File \\\"${ICON_PATH}\\\"
+            WriteRegStr SHCTX \\\"Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\${CPACK_PACKAGE_INSTALL_REGISTRY_KEY}\\\" \\\"DisplayIcon\\\" \\\"\$INSTDIR\\\\icon.ico\\\""
+        )
+
+        if(CPACK_NSIS_EXTRA_INSTALL_COMMANDS)
+            string(APPEND CPACK_NSIS_EXTRA_INSTALL_COMMANDS "\n${_nsis_icon_install_commands}")
+        else()
+            set(CPACK_NSIS_EXTRA_INSTALL_COMMANDS "${_nsis_icon_install_commands}")
+        endif()
+
+        set(_nsis_icon_uninstall_commands "Delete \\\"\$INSTDIR\\\\icon.ico\\\"")
+        if(CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS)
+            string(APPEND CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS "\n${_nsis_icon_uninstall_commands}")
+        else()
+            set(CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS "${_nsis_icon_uninstall_commands}")
+        endif()
     endif()
 elseif(APPLE)
     set(CPACK_GENERATOR "productbuild")
@@ -651,8 +697,7 @@ if(APPLE AND TARGET ${TARGET_NAME}_scanner)
         TARGET ${TARGET_NAME}
         POST_BUILD
         COMMAND
-            ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:${TARGET_NAME}_scanner>
+            ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:${TARGET_NAME}_scanner>
             "$<TARGET_BUNDLE_DIR:${TARGET_NAME}>/Contents/MacOS/"
         COMMAND
             codesign --force --sign "${_sign_identity}" --deep --timestamp -o runtime

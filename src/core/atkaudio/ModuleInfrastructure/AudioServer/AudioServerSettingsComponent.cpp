@@ -52,6 +52,8 @@ void AudioServerSettingsComponent::DeviceChannelTreeItem::paintItem(juce::Graphi
 
 void AudioServerSettingsComponent::DeviceChannelTreeItem::itemClicked(const juce::MouseEvent& e)
 {
+    juce::ignoreUnused(e);
+
     if (itemType == ItemType::Channel)
     {
         setSubscribed(!subscribed);
@@ -138,6 +140,7 @@ void AudioServerSettingsComponent::ChannelMappingMatrix::paintRowBackground(
     bool rowIsSelected
 )
 {
+    juce::ignoreUnused(g, rowNumber, width, height, rowIsSelected);
 }
 
 void AudioServerSettingsComponent::ChannelMappingMatrix::paintCell(
@@ -149,6 +152,8 @@ void AudioServerSettingsComponent::ChannelMappingMatrix::paintCell(
     bool rowIsSelected
 )
 {
+    juce::ignoreUnused(rowIsSelected);
+
     int totalRows = numFixedTopRows + static_cast<int>(subscribedChannels.size());
     if (rowNumber >= totalRows)
         return;
@@ -201,6 +206,8 @@ void AudioServerSettingsComponent::ChannelMappingMatrix::cellClicked(
     const juce::MouseEvent& e
 )
 {
+    juce::ignoreUnused(e);
+
     if (columnId >= 2) // Only client channel cells are clickable
     {
         int clientChannel = columnId - 2;
@@ -607,10 +614,7 @@ AudioServerSettingsComponent::AudioServerSettingsComponent(AudioClient* audioCli
     outputTreeView->setRootItem(outputRootItem.get());
     outputTreeView->setRootItemVisible(false);
     outputTreeView->setDefaultOpenness(false); // Control openness explicitly per item
-    outputTreeView->setColour(
-        juce::TreeView::backgroundColourId,
-        findColour(juce::ResizableWindow::backgroundColourId)
-    );
+    outputTreeView->setColour(juce::TreeView::backgroundColourId, findColour(juce::ResizableWindow::backgroundColourId));
     outputTreeView->setColour(juce::TreeView::linesColourId, juce::Colours::grey);
     addAndMakeVisible(outputTreeView.get());
 
@@ -948,6 +952,12 @@ void AudioServerSettingsComponent::setSubscriptionState(const AudioClientState& 
     auto markSubscribedAndExpand =
         [expandToSubscriptions](DeviceChannelTreeItem* root, const std::vector<ChannelSubscription>& subscriptions)
     {
+        auto matchesDevice =
+            [](const ChannelSubscription& sub, const juce::String& deviceType, const juce::String& deviceName)
+        {
+            return sub.deviceName == deviceName && (sub.deviceType.isEmpty() || sub.deviceType == deviceType);
+        };
+
         for (int i = 0; i < root->getNumSubItems(); ++i)
         {
             auto* typeItem = dynamic_cast<DeviceChannelTreeItem*>(root->getSubItem(i));
@@ -971,7 +981,7 @@ void AudioServerSettingsComponent::setSubscriptionState(const AudioClientState& 
                     // Check if this device has any subscriptions before expanding
                     for (const auto& sub : subscriptions)
                     {
-                        if (sub.deviceType == deviceType && sub.deviceName == deviceItem->getDeviceName())
+                        if (matchesDevice(sub, deviceType, deviceItem->getDeviceName()))
                         {
                             deviceItem->setOpen(true); // Trigger lazy load
                             break;
@@ -989,8 +999,7 @@ void AudioServerSettingsComponent::setSubscriptionState(const AudioClientState& 
                     bool subscribed = false;
                     for (const auto& sub : subscriptions)
                     {
-                        if (sub.deviceType == deviceType
-                            && sub.deviceName == channelItem->getDeviceName()
+                        if (matchesDevice(sub, deviceType, channelItem->getDeviceName())
                             && sub.channelIndex == channelItem->getChannelIndex())
                         {
                             subscribed = true;

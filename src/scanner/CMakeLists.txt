@@ -26,6 +26,8 @@ target_compile_definitions(
         JUCE_WEB_BROWSER=0
 )
 
+suppress_juce_target_warnings(${CMAKE_PROJECT_NAME}_scanner)
+
 if(UNIX AND NOT APPLE)
     target_compile_definitions(
         ${CMAKE_PROJECT_NAME}_scanner

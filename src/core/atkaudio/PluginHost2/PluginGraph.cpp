@@ -3,6 +3,8 @@
 #include "Editor/GraphEditorPanel.h"
 #include "Editor/MainHostWindow.h"
 #include "InternalPlugins/InternalPlugins.h"
+#include <atkaudio/ObsAudioChannelSet.h>
+#include <atkaudio/midi_control/last_touched_parameter_tracker.h>
 
 // Initialize static instance counter
 std::atomic<int> PluginGraph::activeInstanceCount{0};
@@ -11,6 +13,36 @@ static std::unique_ptr<ScopedDPIAwarenessDisabler> makeDPIAwarenessDisablerForPl
 {
     // return std::make_unique<ScopedDPIAwarenessDisabler>();
     return nullptr;
+}
+
+static void applyObsDefaultLayoutToNewNode(AudioPluginInstance& instance)
+{
+    auto preferredLayout = getDefaultObsAudioChannelSet();
+    auto currentLayout = instance.getBusesLayout();
+    auto layoutChanged = false;
+
+    auto updateMainBus = [&](bool isInput)
+    {
+        if (instance.getBusCount(isInput) <= 0)
+            return;
+
+        auto& buses = isInput ? currentLayout.inputBuses : currentLayout.outputBuses;
+        if (buses.isEmpty())
+            return;
+
+        auto existingLayout = instance.getChannelLayoutOfBus(isInput, 0);
+        if (existingLayout.isDisabled() || existingLayout == preferredLayout)
+            return;
+
+        buses.getReference(0) = preferredLayout;
+        layoutChanged = true;
+    };
+
+    updateMainBus(true);
+    updateMainBus(false);
+
+    if (layoutChanged && instance.checkBusesLayoutSupported(currentLayout))
+        instance.setBusesLayout(currentLayout);
 }
 
 PluginGraph::PluginGraph(MainHostWindow& mw, AudioPluginFormatManager& fm, KnownPluginList& kpl)
@@ -26,6 +58,11 @@ PluginGraph::PluginGraph(MainHostWindow& mw, AudioPluginFormatManager& fm, Known
 
 PluginGraph::~PluginGraph()
 {
+    for (const auto& entry : trackedNodeProcessors)
+        if (entry.second != nullptr)
+            atk::LastTouchedParameterTracker::getInstance().unregisterProcessor(*entry.second);
+    trackedNodeProcessors.clear();
+
     activeInstanceCount.fetch_sub(1, std::memory_order_relaxed);
     // Editor teardown owns plugin window cleanup and may already have destroyed
     // MainHostWindow before PluginGraph is deleted.
@@ -42,9 +79,57 @@ PluginGraph::NodeID PluginGraph::getNextUID() noexcept
 
 void PluginGraph::changeListenerCallback(ChangeBroadcaster*)
 {
+    syncLastTouchedTracker();
     changed();
 
     mainHostWindow.pruneStalePluginWindows(graph);
+}
+
+void PluginGraph::refreshLastTouchedTrackerOwnership()
+{
+    syncLastTouchedTracker();
+}
+
+void PluginGraph::syncLastTouchedTracker()
+{
+    std::unordered_map<uint32_t, AudioProcessor*> currentProcessors;
+    const auto ownerSourceUuid = juce::String(mainHostWindow.getParentSourceUuid());
+    const auto ownerFilterName = juce::String(mainHostWindow.getOwnerFilterName());
+    const auto ownerChanged = trackedOwnerSourceUuid != ownerSourceUuid || trackedOwnerFilterName != ownerFilterName;
+
+    for (auto* node : graph.getNodes())
+    {
+        if (node == nullptr)
+            continue;
+
+        auto* processor = node->getProcessor();
+        if (processor == nullptr)
+            continue;
+
+        if (processor->getParameters().isEmpty())
+            continue;
+
+        currentProcessors.emplace(node->nodeID.uid, processor);
+    }
+
+    for (const auto& trackedEntry : trackedNodeProcessors)
+    {
+        auto current = currentProcessors.find(trackedEntry.first);
+        if (ownerChanged || current == currentProcessors.end() || current->second != trackedEntry.second)
+            atk::LastTouchedParameterTracker::getInstance().unregisterProcessor(*trackedEntry.second);
+    }
+
+    for (const auto& currentEntry : currentProcessors)
+    {
+        auto tracked = trackedNodeProcessors.find(currentEntry.first);
+        if (ownerChanged || tracked == trackedNodeProcessors.end() || tracked->second != currentEntry.second)
+            atk::LastTouchedParameterTracker::getInstance()
+                .registerProcessor(*currentEntry.second, ownerSourceUuid, ownerFilterName);
+    }
+
+    trackedNodeProcessors = std::move(currentProcessors);
+    trackedOwnerSourceUuid = ownerSourceUuid;
+    trackedOwnerFilterName = ownerFilterName;
 }
 
 AudioProcessorGraphMT::Node::Ptr PluginGraph::getNodeForName(const String& name) const
@@ -96,6 +181,7 @@ void PluginGraph::addPluginCallback(
         setParentSourceUuidOnInternalPlugin(instance.get(), mainHostWindow.getParentSourceUuid());
 
         instance->enableAllBuses();
+        applyObsDefaultLayoutToNewNode(*instance);
 
         if (auto node = graph.addNode(std::move(instance)))
         {
@@ -105,6 +191,7 @@ void PluginGraph::addPluginCallback(
             // graph.updateTopology(); // Not available on base AudioProcessorGraphMT
             // Note: Don't reallocate buffers here - plugins aren't prepared yet!
             // Buffers will be allocated in prepareToPlay() after graph.prepareToPlay() configures everything
+            syncLastTouchedTracker();
             changed();
         }
     }
@@ -131,6 +218,7 @@ void PluginGraph::clear()
 {
     closeAnyOpenPluginWindows();
     graph.clear();
+    syncLastTouchedTracker();
     // graph.updateTopology(); // Not available on base AudioProcessorGraphMT
     changed();
 }

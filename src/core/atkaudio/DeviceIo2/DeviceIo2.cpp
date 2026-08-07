@@ -10,8 +10,15 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_dsp/juce_dsp.h>
 
+#include <cmath>
+
 namespace
 {
+float dbToGain(float db)
+{
+    return std::pow(10.0f, db / 20.0f);
+}
+
 class SettingsWindow : public juce::DocumentWindow
 {
 public:
@@ -61,6 +68,7 @@ atk::DeviceIo2::DeviceIo2()
     );
     moduleDeviceManager->initialize();
     routingMatrix.initializeDefaultMapping(2);
+    fadeDeviceOutputPointers.reserve(256);
 }
 
 atk::DeviceIo2::~DeviceIo2()
@@ -222,30 +230,54 @@ void atk::DeviceIo2::applyOutputDelay(
 
 void atk::DeviceIo2::process(float** buffer, int numChannels, int numSamples, double sampleRate)
 {
+    float wrapperOutputGain = dbToGain(outputGainDb.load(std::memory_order_acquire));
+    if (followSourceVolume.load(std::memory_order_acquire))
+    {
+        bool muted = sourceMuted.load(std::memory_order_acquire);
+        float parentVolume = sourceVolume.load(std::memory_order_acquire);
+        wrapperOutputGain *= muted ? 0.0f : parentVolume;
+    }
+
+    float wrapperInputGain = dbToGain(inputGainDb.load(std::memory_order_acquire));
+
+    if (gainSmoothingSampleRate != sampleRate)
+    {
+        outputGainSmooth.reset(sampleRate, 0.05);
+        inputGainSmooth.reset(sampleRate, 0.05);
+        outputGainSmooth.setCurrentAndTargetValue(wrapperOutputGain);
+        inputGainSmooth.setCurrentAndTargetValue(wrapperInputGain);
+        gainSmoothingSampleRate = sampleRate;
+    }
+
+    outputGainSmooth.setTargetValue(wrapperOutputGain);
+    inputGainSmooth.setTargetValue(wrapperInputGain);
+
+    for (int j = 0; j < numSamples; j++)
+    {
+        float smoothGain = outputGainSmooth.getNextValue();
+        for (int i = 0; i < numChannels; i++)
+            buffer[i][j] *= smoothGain;
+    }
+
+    if (followScene.load(std::memory_order_acquire))
+    {
+        setFadeTime(fadeDurationSeconds.load(std::memory_order_acquire));
+        setBypass(
+            hasDesiredBypass.load(std::memory_order_acquire) ? desiredBypass.load(std::memory_order_acquire) : true
+        );
+    }
+    else
+    {
+        setBypass(false);
+    }
+
     bool currentBypass = bypass.load(std::memory_order_acquire);
     float targetGain = currentBypass ? 0.0f : 1.0f;
 
     if (fadeGain.getTargetValue() != targetGain)
     {
         fadeGain.reset(sampleRate, fadeDurationSeconds.load(std::memory_order_acquire));
-
-        if (!currentBypass)
-            audioClient.clearBuffers();
-
         fadeGain.setTargetValue(targetGain);
-    }
-
-    if (currentBypass && !fadeGain.isSmoothing())
-        return;
-
-    if (fadeGain.isSmoothing())
-    {
-        for (int i = 0; i < numSamples; ++i)
-        {
-            float gain = fadeGain.getNextValue();
-            for (int ch = 0; ch < numChannels; ++ch)
-                buffer[ch][i] *= gain;
-        }
     }
 
     bool needsReconfiguration =
@@ -293,13 +325,36 @@ void atk::DeviceIo2::process(float** buffer, int numChannels, int numSamples, do
     audioClient.pullSubscribedInputs(deviceInputBuffer, numSamples, sampleRate);
 
     routingMatrix.applyInputRouting(buffer, deviceInputBuffer, internalBuffer, numChannels, numSamples, numInputSubs);
-    routingMatrix
-        .applyOutputRouting(internalBuffer, buffer, deviceOutputBuffer, numChannels, numSamples, numOutputSubs);
+    routingMatrix.applyOutputRouting(internalBuffer, buffer, deviceOutputBuffer, numChannels, numSamples, numOutputSubs);
 
     if (numOutputSubs > 0)
         applyOutputDelay(deviceOutputBuffer, numOutputSubs, numSamples, sampleRate);
 
+    if ((int)fadeDeviceOutputPointers.size() < numOutputSubs)
+        fadeDeviceOutputPointers.resize(numOutputSubs);
+
+    for (int outCh = 0; outCh < numOutputSubs; ++outCh)
+        fadeDeviceOutputPointers[outCh] = deviceOutputBuffer.getWritePointer(outCh);
+
+    bool smoothing = fadeGain.isSmoothing();
+    for (int i = 0; i < numSamples; ++i)
+    {
+        float gain = smoothing ? fadeGain.getNextValue() : fadeGain.getCurrentValue();
+        for (int ch = 0; ch < numChannels; ++ch)
+            buffer[ch][i] *= gain;
+
+        for (int outCh = 0; outCh < numOutputSubs; ++outCh)
+            fadeDeviceOutputPointers[outCh][i] *= gain;
+    }
+
     audioClient.pushSubscribedOutputs(deviceOutputBuffer, numSamples, sampleRate);
+
+    for (int j = 0; j < numSamples; j++)
+    {
+        float smoothGain = inputGainSmooth.getNextValue();
+        for (int i = 0; i < numChannels; i++)
+            buffer[i][j] *= smoothGain;
+    }
 }
 
 void atk::DeviceIo2::setBypass(bool shouldBypass)
@@ -345,6 +400,19 @@ void atk::DeviceIo2::setOutputChannelMapping(const std::vector<std::vector<bool>
 std::vector<std::vector<bool>> atk::DeviceIo2::getOutputChannelMapping() const
 {
     return routingMatrix.getOutputMapping();
+}
+
+void atk::DeviceIo2::setWrapperControlState(const WrapperControlState& state)
+{
+    followSourceVolume.store(state.followSourceVolume, std::memory_order_release);
+    followScene.store(state.followScene, std::memory_order_release);
+    inputGainDb.store(state.inputGainDb, std::memory_order_release);
+    outputGainDb.store(state.outputGainDb, std::memory_order_release);
+    sourceVolume.store(state.sourceVolume, std::memory_order_release);
+    sourceMuted.store(state.sourceMuted, std::memory_order_release);
+    fadeDurationSeconds.store(state.fadeTimeSeconds, std::memory_order_release);
+    hasDesiredBypass.store(state.hasDesiredBypass, std::memory_order_release);
+    desiredBypass.store(state.desiredBypass, std::memory_order_release);
 }
 
 void atk::DeviceIo2::getState(std::string& s)
@@ -513,7 +581,9 @@ juce::Component* atk::DeviceIo2::getWindowComponent()
 
             audioComponent->getCurrentObsMappings =
                 [this]() -> std::pair<std::vector<std::vector<bool>>, std::vector<std::vector<bool>>>
-            { return {getInputChannelMapping(), getOutputChannelMapping()}; };
+            {
+                return {getInputChannelMapping(), getOutputChannelMapping()};
+            };
 
             audioComponent->setCompleteRoutingMatrices(getInputChannelMapping(), getOutputChannelMapping());
         }
@@ -544,7 +614,9 @@ juce::Component* atk::DeviceIo2::createEmbeddableSettingsComponent()
 
     audioComponent->getCurrentObsMappings =
         [this]() -> std::pair<std::vector<std::vector<bool>>, std::vector<std::vector<bool>>>
-    { return {getInputChannelMapping(), getOutputChannelMapping()}; };
+    {
+        return {getInputChannelMapping(), getOutputChannelMapping()};
+    };
 
     audioComponent->setCompleteRoutingMatrices(getInputChannelMapping(), getOutputChannelMapping());
     return audioComponent;

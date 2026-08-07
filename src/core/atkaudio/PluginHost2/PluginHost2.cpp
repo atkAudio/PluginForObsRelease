@@ -47,7 +47,8 @@ public:
     {
         const juce::ScopedLock lock(callbackLock);
 
-        if (device != nullptr) {
+        if (device != nullptr)
+        {
             sampleRate = device->getCurrentSampleRate();
             blockSize = device->getCurrentBufferSizeSamples();
         }
@@ -69,7 +70,8 @@ public:
     {
         const juce::ScopedLock lock(callbackLock);
 
-        if (isPrepared) {
+        if (isPrepared)
+        {
             graph.releaseResources();
             isPrepared = false;
         }
@@ -87,7 +89,8 @@ public:
         juce::ignoreUnused(context);
 
         const juce::ScopedTryLock tryLock(callbackLock);
-        if (!tryLock.isLocked() || !isPrepared) {
+        if (!tryLock.isLocked() || !isPrepared)
+        {
             for (int i = 0; i < numOutputChannels; ++i)
                 if (outputChannelData[i] != nullptr)
                     juce::FloatVectorOperations::clear(outputChannelData[i], numSamples);
@@ -103,11 +106,7 @@ public:
 
         for (int ch = 0; ch < juce::jmin(numInputChannels, numOutputChannels); ++ch)
             if (inputChannelData[ch] != nullptr && outputChannelData[ch] != nullptr)
-                juce::FloatVectorOperations::copy(
-                    outputChannelData[ch],
-                    inputChannelData[ch],
-                    numSamples
-                );
+                juce::FloatVectorOperations::copy(outputChannelData[ch], inputChannelData[ch], numSamples);
 
         for (int ch = numInputChannels; ch < numOutputChannels; ++ch)
             if (outputChannelData[ch] != nullptr)
@@ -144,7 +143,8 @@ public:
         float currentLoad = static_cast<float>(loadMeasurer.getLoadAsProportion());
 
         auto now = juce::Time::getMillisecondCounterHiRes();
-        if (currentLoad >= peakCpuLoad || now - peakCpuTime > 3000.0) {
+        if (currentLoad >= peakCpuLoad || now - peakCpuTime > 3000.0)
+        {
             peakCpuLoad = currentLoad;
             peakCpuTime = now;
         }
@@ -214,21 +214,20 @@ atk::PluginHost2::PluginHost2()
         moduleDeviceManager->getMidiClient()
     );
 
-    mainHostWindow->setRuntimeCpuLoadProvider([callback = runtimeAudioCallback.get()]() {
-        return callback->getCpuLoad();
-    });
+    mainHostWindow->setRuntimeCpuLoadProvider([callback = runtimeAudioCallback.get()]()
+                                              { return callback->getCpuLoad(); });
 
     audioDeviceManager->addAudioCallback(runtimeAudioCallback.get());
 
     const bool initialized = moduleDeviceManager->initialize();
 
-    if (initialized) {
+    if (initialized)
+    {
         moduleDeviceManager->openOBSDevice();
-        atk::logging::info(
-            "PluginHost2::ctor",
-            "ModuleDeviceManager initialized and OBS device opened"
-        );
-    } else {
+        atk::logging::info("PluginHost2::ctor", "ModuleDeviceManager initialized and OBS device opened");
+    }
+    else
+    {
         atk::logging::warning("PluginHost2::ctor", "ModuleDeviceManager initialize failed");
     }
 
@@ -248,11 +247,8 @@ atk::PluginHost2::~PluginHost2()
     auto* audioDeviceManagerPtr = audioDeviceManager.release();
 
     atkAudioModule::destroyOnMessageThread(
-        [windowPtr,
-         graphModelPtr,
-         deviceManagerPtr,
-         runtimeAudioCallbackPtr,
-         audioDeviceManagerPtr]() {
+        [windowPtr, graphModelPtr, deviceManagerPtr, runtimeAudioCallbackPtr, audioDeviceManagerPtr]()
+        {
             atk::logging::debug("PluginHost2::dtor", "message-thread teardown begin");
 
             // Explicitly destroy the full editor shell first on the message
@@ -286,7 +282,8 @@ void atk::PluginHost2::handleAsyncUpdate()
     graphModel->clear();
 
     auto xml = juce::XmlDocument::parse(pendingStateString);
-    if (!xml) {
+    if (!xml)
+    {
         pendingStateString.clear();
         return;
     }
@@ -301,15 +298,19 @@ void atk::PluginHost2::handleAsyncUpdate()
         graphModel->restoreFromXml(*filterGraph);
 
     auto* audioServerElement = xml->getChildByName("AUDIOSERVER");
-    if (audioServerElement) {
+    if (audioServerElement)
+    {
         auto* audioServer = atk::AudioServer::getInstance();
 
         atk::logging::debug("PluginHost2::setState", "restoring AudioServer device settings");
-        for (auto* deviceElement : audioServerElement->getChildIterator()) {
-            if (deviceElement->hasTagName("DEVICE")) {
+        for (auto* deviceElement : audioServerElement->getChildIterator())
+        {
+            if (deviceElement->hasTagName("DEVICE"))
+            {
                 juce::String deviceName = deviceElement->getStringAttribute("name");
 
-                if (deviceElement->hasAttribute("sampleRate")) {
+                if (deviceElement->hasAttribute("sampleRate"))
+                {
                     double sampleRate = deviceElement->getDoubleAttribute("sampleRate");
                     atk::logging::debug(
                         "PluginHost2::setState",
@@ -318,7 +319,8 @@ void atk::PluginHost2::handleAsyncUpdate()
                     audioServer->setDeviceSampleRate(deviceName, sampleRate);
                 }
 
-                if (deviceElement->hasAttribute("bufferSize")) {
+                if (deviceElement->hasAttribute("bufferSize"))
+                {
                     int bufferSize = deviceElement->getIntAttribute("bufferSize");
                     atk::logging::debug(
                         "PluginHost2::setState",
@@ -331,7 +333,8 @@ void atk::PluginHost2::handleAsyncUpdate()
     }
 
     auto* midiElement = xml->getChildByName("MIDISTATE");
-    if (midiElement != nullptr) {
+    if (midiElement != nullptr)
+    {
         atk::MidiClientState midiState;
         midiState.deserialize(midiElement->getStringAttribute("state"));
         moduleDeviceManager->getMidiClient().setSubscriptions(midiState);
@@ -354,16 +357,19 @@ void atk::PluginHost2::getState(std::string& s)
         xml.addChildElement(state.release());
 
     auto* audioServerElement = new juce::XmlElement("AUDIOSERVER");
-    if (auto* audioServer = atk::AudioServer::getInstance()) {
+    if (auto* audioServer = atk::AudioServer::getInstance())
+    {
         // Use only already-open devices to avoid triggering a full
         // scanForDevices() on every save, which stalls the OBS main thread.
         auto openDevices = audioServer->getOpenDeviceNames();
 
-        for (const auto& deviceName : openDevices) {
+        for (const auto& deviceName : openDevices)
+        {
             double sampleRate = audioServer->getCurrentSampleRate(deviceName);
             int bufferSize = audioServer->getCurrentBufferSize(deviceName);
 
-            if (sampleRate > 0.0 || bufferSize > 0) {
+            if (sampleRate > 0.0 || bufferSize > 0)
+            {
                 auto* deviceElement = new juce::XmlElement("DEVICE");
                 deviceElement->setAttribute("name", deviceName);
                 if (sampleRate > 0.0)
@@ -412,10 +418,13 @@ juce::Component* atk::PluginHost2::getWindowComponent()
 {
     atk::logging::debug("PluginHost2::getWindowComponent", "called");
 
-    if (mainHostWindow->graphHolder == nullptr) {
+    if (mainHostWindow->graphHolder == nullptr)
+    {
         atk::logging::debug("PluginHost2::getWindowComponent", "attaching graph editor");
         mainHostWindow->attachGraph(*graphModel);
-    } else {
+    }
+    else
+    {
         atk::logging::debug("PluginHost2::getWindowComponent", "graph editor already attached");
     }
 
@@ -424,9 +433,24 @@ juce::Component* atk::PluginHost2::getWindowComponent()
 
 void atk::PluginHost2::setParentSource(void* parentSource)
 {
+    if (!mainHostWindow)
+        return;
+
     auto* source = static_cast<obs_source_t*>(parentSource);
-    if (source != nullptr) {
-        const char* uuid = obs_source_get_uuid(source);
-        mainHostWindow->setParentSourceUuid(uuid ? uuid : "");
-    }
+    const char* uuid = source != nullptr ? obs_source_get_uuid(source) : nullptr;
+    mainHostWindow->setParentSourceUuid(uuid ? uuid : "");
+
+    if (graphModel)
+        graphModel->refreshLastTouchedTrackerOwnership();
+}
+
+void atk::PluginHost2::setOwnerFilterName(const std::string& filterName)
+{
+    if (!mainHostWindow)
+        return;
+
+    mainHostWindow->setOwnerFilterName(filterName);
+
+    if (graphModel)
+        graphModel->refreshLastTouchedTrackerOwnership();
 }

@@ -18,6 +18,19 @@ class DeviceIo2
     , private juce::AsyncUpdater
 {
 public:
+    struct WrapperControlState
+    {
+        bool followSourceVolume = false;
+        bool followScene = false;
+        float inputGainDb = 0.0f;
+        float outputGainDb = 0.0f;
+        float sourceVolume = 1.0f;
+        bool sourceMuted = false;
+        double fadeTimeSeconds = 0.5;
+        bool hasDesiredBypass = false;
+        bool desiredBypass = true;
+    };
+
     DeviceIo2();
     ~DeviceIo2();
 
@@ -38,6 +51,8 @@ public:
 
     void setOutputChannelMapping(const std::vector<std::vector<bool>>& mapping);
     std::vector<std::vector<bool>> getOutputChannelMapping() const;
+
+    void setWrapperControlState(const WrapperControlState& state);
 
     void getState(std::string& s) override;
     void setState(std::string& s) override;
@@ -68,6 +83,7 @@ private:
     juce::AudioBuffer<float> deviceInputBuffer;
     juce::AudioBuffer<float> deviceOutputBuffer;
     juce::AudioBuffer<float> internalBuffer;
+    std::vector<float*> fadeDeviceOutputPointers;
 
     std::unique_ptr<juce::DocumentWindow> settingsWindow;
 
@@ -84,6 +100,18 @@ private:
     std::atomic<bool> bypass{false};
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> fadeGain{1.0f};
     std::atomic<double> fadeDurationSeconds{0.5};
+
+    std::atomic<bool> followSourceVolume{false};
+    std::atomic<bool> followScene{false};
+    std::atomic<float> inputGainDb{0.0f};
+    std::atomic<float> outputGainDb{0.0f};
+    std::atomic<float> sourceVolume{1.0f};
+    std::atomic<bool> sourceMuted{false};
+    std::atomic<bool> hasDesiredBypass{false};
+    std::atomic<bool> desiredBypass{true};
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> outputGainSmooth{1.0f};
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> inputGainSmooth{1.0f};
+    double gainSmoothingSampleRate = 0.0;
 
     std::atomic<UpdateType> pendingUpdateType{UpdateType::None};
     std::atomic<int> pendingNumChannels{0};

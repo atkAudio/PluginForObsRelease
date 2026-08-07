@@ -1,13 +1,8 @@
 #pragma once
 
-#include <QWidget>
-#include <QDockWidget>
-#include <QMainWindow>
-#include <QResizeEvent>
-#include <QPainter>
-#include <QEvent>
-#include <QWindow>
-#include <QGuiApplication>
+#include <QtCore>
+#include <QtGui>
+#include <QtWidgets>
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 #include <obs-module.h>

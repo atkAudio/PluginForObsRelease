@@ -29,6 +29,7 @@ public:
 
     // Set the parent OBS source (extracts UUID for filtering)
     void setParentSource(void* parentSource);
+    void setOwnerFilterName(const std::string& filterName);
 
 protected:
     // AudioModule interface - only need to provide the window component

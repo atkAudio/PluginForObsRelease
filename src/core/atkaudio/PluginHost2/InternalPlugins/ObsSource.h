@@ -453,7 +453,7 @@ public:
         // Process MIDI for volume control
         if (midiEnabled->load(std::memory_order_acquire) > 0.5f)
         {
-            for (const auto& metadata : midiBuffer)
+            for (auto metadata : midiBuffer)
             {
                 const juce::MidiMessage message(metadata.data, metadata.numBytes, metadata.samplePosition);
                 if (message.isController())
@@ -481,7 +481,7 @@ public:
         // MIDI Learn mode for volume
         if (midiLearn->load(std::memory_order_acquire) > 0.5f)
         {
-            for (const auto& metadata : midiBuffer)
+            for (auto metadata : midiBuffer)
             {
                 const juce::MidiMessage message(metadata.data, metadata.numBytes, metadata.samplePosition);
 
@@ -498,7 +498,7 @@ public:
         // Process MIDI for mute toggle control
         if (midiMuteEnabled->load(std::memory_order_acquire) > 0.5f)
         {
-            for (const auto& metadata : midiBuffer)
+            for (auto metadata : midiBuffer)
             {
                 const juce::MidiMessage message(metadata.data, metadata.numBytes, metadata.samplePosition);
                 if (message.isController())
@@ -520,7 +520,7 @@ public:
         // MIDI Learn mode for mute
         if (midiMuteLearn->load(std::memory_order_acquire) > 0.5f)
         {
-            for (const auto& metadata : midiBuffer)
+            for (auto metadata : midiBuffer)
             {
                 const juce::MidiMessage message(metadata.data, metadata.numBytes, metadata.samplePosition);
 
@@ -571,7 +571,7 @@ private:
         auto& fifo = processor->syncBuffer;
         auto frames = (int)audio_data->frames;
 
-        int numChannelsObs = audio_output_get_channels(obs_get_audio());
+        int numChannelsObs = static_cast<int>(audio_output_get_channels(obs_get_audio()));
         int numChannels = processor->getMainBusNumOutputChannels();
         numChannels = jmin(numChannels, numChannelsObs);
 

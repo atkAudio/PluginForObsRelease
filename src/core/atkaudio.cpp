@@ -10,13 +10,9 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
-#ifdef ENABLE_QT
-#include <QColor>
-#include <QPalette>
-#include <QScreen>
-#include <QWidget>
-#include <QWindow>
-#endif
+#include <QtCore>
+#include <QtGui>
+#include <QtWidgets>
 
 #include <obs-module.h>
 #include <obs-frontend-api.h>
@@ -27,26 +23,22 @@ UpdateCheck* updateCheck = nullptr;
 static void* g_qtMainWindowHandle = nullptr;
 static bool g_qtMainWindowInitialized = false;
 
-static juce::File getFallbackSettingsFile(const juce::String& name)
-{
-    juce::PropertiesFile::Options opts;
-    opts.applicationName = name;
-    opts.filenameSuffix = "settings";
-    opts.osxLibrarySubFolder = "Application Support";
-    opts.folderName = "atkAudio Plugin";
-    return opts.getDefaultFile();
-}
-
 juce::File atk::getSettingsFile(const juce::String& name)
 {
     auto* module = obs_current_module();
     if (module == nullptr)
-        return getFallbackSettingsFile(name);
+    {
+        atk::logging::error("SETTINGS", "Settings path resolution requires an OBS module context");
+        return {};
+    }
 
     auto filename = name + ".settings";
     char* obsPath = obs_module_get_config_path(module, filename.toRawUTF8());
     if (obsPath == nullptr)
-        return getFallbackSettingsFile(name);
+    {
+        atk::logging::error("SETTINGS", "obs_module_get_config_path returned nullptr for settings file: " + name);
+        return {};
+    }
 
     juce::File result(obsPath);
     bfree(obsPath);
@@ -162,7 +154,6 @@ void* atk::getQtMainWindowHandle()
     {
         g_qtMainWindowInitialized = true;
 
-#ifdef ENABLE_QT
         // Get Qt main window from OBS frontend API
         QWidget* mainQWidget = (QWidget*)obs_frontend_get_main_window();
         if (!mainQWidget)
@@ -202,7 +193,6 @@ void* atk::getQtMainWindowHandle()
         atk::LookAndFeel::applyColorsToInstance(bgColour, fgColour);
 
         atk::logging::debug("UI", "getQtMainWindowHandle: applied OBS theme colors");
-#endif
     }
 
     // Return the cached Qt main window handle

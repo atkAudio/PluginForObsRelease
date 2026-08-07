@@ -54,12 +54,16 @@ public:
             );
 
         if (outputChannels > 0)
+        {
+            bufferToFill.buffer->clear();
+
             deviceOutputBuffer.read(
                 bufferToFill.buffer->getArrayOfWritePointers(),
                 outputChannels,
                 bufferToFill.numSamples,
                 sampleRate
             );
+        }
     }
 
     void releaseResources() override

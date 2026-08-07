@@ -14,6 +14,11 @@ enum class Level
 
 void log(Level level, const char* scope, const juce::String& message);
 
+inline juce::String toUtf8LogString(const juce::String& text)
+{
+    return juce::String::fromUTF8(text.toRawUTF8());
+}
+
 inline void debug(const char* scope, const juce::String& message)
 {
     log(Level::debug, scope, message);

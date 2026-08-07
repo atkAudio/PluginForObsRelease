@@ -56,6 +56,9 @@ struct ChannelSubscription
 
     juce::String toString() const
     {
+        if (deviceType.isEmpty())
+            return deviceName + ":" + juce::String(channelIndex) + ":" + (isInput ? "in" : "out");
+
         return deviceType + "|" + deviceName + ":" + juce::String(channelIndex) + ":" + (isInput ? "in" : "out");
     }
 
@@ -64,11 +67,12 @@ struct ChannelSubscription
         ChannelSubscription sub;
         if (str.contains("|"))
         {
-            auto parts = juce::StringArray::fromTokens(str, "|", "");
-            if (parts.size() >= 2)
+            int separatorIndex = str.indexOf("|");
+            if (separatorIndex >= 0)
             {
-                sub.deviceType = parts[0];
-                auto tokens = juce::StringArray::fromTokens(parts[1], ":", "");
+                sub.deviceType = str.substring(0, separatorIndex);
+                auto payload = str.substring(separatorIndex + 1);
+                auto tokens = juce::StringArray::fromTokens(payload, ":", "");
                 if (tokens.size() >= 3)
                 {
                     sub.deviceName = tokens[0];
@@ -226,6 +230,7 @@ public:
     void addClientSubscription(void* clientId, const std::vector<ChannelSubscription>& subscriptions, bool isInput);
     void removeClientSubscription(void* clientId, bool isInput);
     bool hasActiveSubscriptions() const;
+    bool hasDesiredSubscriptions() const;
 
     bool registerDirectCallback(juce::AudioIODeviceCallback* callback);
     void unregisterDirectCallback(juce::AudioIODeviceCallback* callback);
@@ -257,6 +262,12 @@ private:
         std::vector<ChannelMapping> outputMappings;
     };
 
+    struct DesiredClientSubscriptions
+    {
+        bool hasInput = false;
+        bool hasOutput = false;
+    };
+
     struct DeviceSnapshot
     {
         std::unordered_map<void*, ClientBuffersSnapshot> clients;
@@ -278,6 +289,7 @@ private:
     std::unique_ptr<juce::AudioDeviceManager> deviceManager;
 
     std::unordered_map<void*, ClientBuffers> clientBuffers;
+    std::unordered_map<void*, DesiredClientSubscriptions> desiredClientSubscriptions;
     mutable std::mutex clientBuffersMutex;
     AtomicSharedPtr<DeviceSnapshot> activeSnapshot{std::make_shared<DeviceSnapshot>()};
 
@@ -289,9 +301,20 @@ private:
     std::vector<float*> rtSubscriptionPointers;
     std::vector<const float*> rtInputPointers;
 
+    juce::AudioDeviceManager::AudioDeviceSetup preferredRecoverySetup;
+    bool hasPreferredRecoverySetup = false;
+    std::atomic<bool> recoveryPending{false};
+    double lastRecoveryAttemptMs = 0.0;
+
     void rebuildSnapshotLocked();
     std::shared_ptr<DeviceSnapshot> getSnapshot() const;
     void rebuildDirectCallbackSnapshotLocked();
+    void updatePreferredRecoverySetup(const juce::AudioDeviceManager::AudioDeviceSetup& preferredSetup);
+    juce::AudioDeviceManager::AudioDeviceSetup getPreferredRecoverySetup() const;
+    bool canAttemptRecovery(double nowMs, double retryIntervalMs);
+    void markRecoveryPending();
+    void clearRecoveryPending();
+    void resetSubscriptionBuffersAfterRecovery();
 
     std::atomic<bool> isRunning{false};
 };
@@ -299,6 +322,7 @@ private:
 class AudioServer
     : public juce::DeletedAtShutdown
     , private juce::ChangeListener
+    , private juce::Timer
 {
 public:
     JUCE_DECLARE_SINGLETON(AudioServer, false)
@@ -365,17 +389,16 @@ private:
     AudioServer();
 
     void changeListenerCallback(juce::ChangeBroadcaster* source) override;
+    void timerCallback() override;
     void setupDeviceEnumeratorListeners();
+    void attemptPendingDeviceRecovery(const juce::String& reason);
+    bool shouldRecoverDevice(AudioDeviceHandler* handler) const;
 
-    void processDeviceCleanup();
-    void scheduleDeviceClose(const juce::String& deviceKey);
-    bool cancelPendingDeviceClose(const juce::String& deviceKey);
     static juce::String makeDeviceKey(const juce::String& deviceType, const juce::String& deviceName);
-    static juce::String makeDeviceKey(const ChannelSubscription& sub);
+    juce::String resolveDeviceKeyForSubscription(const ChannelSubscription& sub) const;
     juce::String findDeviceKeyByName(const juce::String& deviceName) const;
     void rebuildClientBufferSnapshot(void* clientId);
     AudioDeviceHandler* getOrCreateDeviceHandler(const juce::String& deviceKey);
-    void removeDeviceHandlerIfUnused(const juce::String& deviceKey);
     juce::AudioDeviceManager* ensureDeviceEnumerator() const;
 
     struct ClientInfo
@@ -413,19 +436,11 @@ private:
         ClientInfo& operator=(const ClientInfo&) = delete;
     };
 
-    struct PendingDeviceClose
-    {
-        juce::String deviceKey;
-        juce::int64 closeTime;
-    };
-
     mutable std::mutex clientsMutex;
     std::unordered_map<void*, ClientInfo> clients;
 
     mutable std::mutex devicesMutex;
     std::unordered_map<juce::String, std::unique_ptr<AudioDeviceHandler>> deviceHandlers;
-    std::vector<PendingDeviceClose> pendingDeviceCloses;
-    static constexpr juce::int64 DEVICE_CLOSE_DELAY_MS = 5000;
 
     mutable std::mutex deviceEnumeratorMutex;
     mutable std::unique_ptr<juce::AudioDeviceManager> deviceEnumerator;
@@ -446,6 +461,11 @@ private:
     juce::ListenerList<Listener> listeners;
 
     std::atomic<bool> initialized{false};
+
+    enum
+    {
+        recoveryRetryIntervalMs = 1000
+    };
 };
 
 } // namespace atk

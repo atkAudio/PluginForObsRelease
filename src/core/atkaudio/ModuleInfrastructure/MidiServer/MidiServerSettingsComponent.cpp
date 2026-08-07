@@ -5,6 +5,38 @@
 namespace atk
 {
 
+namespace
+{
+juce::String formatMonitorMessage(const MidiInputEvent& event)
+{
+    juce::String messageText;
+    messageText << event.inputDeviceName << ": ";
+
+    if (event.message.isNoteOn())
+        messageText
+            << "Note On: "
+            << juce::MidiMessage::getMidiNoteName(event.message.getNoteNumber(), true, true, 3)
+            << " Vel: "
+            << event.message.getVelocity();
+    else if (event.message.isNoteOff())
+        messageText << "Note Off: " << juce::MidiMessage::getMidiNoteName(event.message.getNoteNumber(), true, true, 3);
+    else if (event.message.isController())
+        messageText << "CC " << event.message.getControllerNumber() << ": " << event.message.getControllerValue();
+    else if (event.message.isProgramChange())
+        messageText << "Program Change: " << event.message.getProgramChangeNumber();
+    else if (event.message.isPitchWheel())
+        messageText << "Pitch Wheel: " << event.message.getPitchWheelValue();
+    else if (event.message.isAftertouch())
+        messageText << "Aftertouch: " << event.message.getAfterTouchValue();
+    else if (event.message.isChannelPressure())
+        messageText << "Channel Pressure: " << event.message.getChannelPressureValue();
+    else
+        messageText << "Other MIDI Message";
+
+    return messageText;
+}
+} // namespace
+
 MidiServerSettingsComponent::MidiServerSettingsComponent(MidiClient* client)
     : client(client)
     , server(MidiServer::getInstance())
@@ -46,10 +78,12 @@ MidiServerSettingsComponent::MidiServerSettingsComponent(MidiClient* client)
 
     // MIDI Panic button
     panicButton = std::make_unique<juce::TextButton>("MIDI Reset");
-    panicButton->onClick = [this] { sendMidiPanic(); };
+    panicButton->onClick = [this]
+    {
+        sendMidiPanic();
+    };
     addAndMakeVisible(panicButton.get());
 
-    // MIDI Monitor
     monitorLabel.setText("MIDI Monitor", juce::dontSendNotification);
     monitorLabel.setFont(juce::FontOptions(16.0f, juce::Font::bold));
     addAndMakeVisible(monitorLabel);
@@ -71,19 +105,6 @@ MidiServerSettingsComponent::MidiServerSettingsComponent(MidiClient* client)
         setSubscriptionState(state);
     }
 
-    // Enable all MIDI inputs for monitoring
-    if (server != nullptr)
-    {
-        auto& deviceManager = server->getAudioDeviceManager();
-        auto midiInputs = juce::MidiInput::getAvailableDevices();
-        for (const auto& device : midiInputs)
-        {
-            deviceManager.setMidiInputDeviceEnabled(device.identifier, true);
-            deviceManager.addMidiInputDeviceCallback(device.identifier, this);
-        }
-    }
-
-    // Start timer for updating monitor display
     startTimer(100);
 
     setSize(800, 600);
@@ -96,15 +117,6 @@ MidiServerSettingsComponent::~MidiServerSettingsComponent()
     // Remove keyboard listener
     if (keyboardState)
         keyboardState->removeListener(this);
-
-    // Remove MIDI input callbacks
-    if (server != nullptr)
-    {
-        auto& deviceManager = server->getAudioDeviceManager();
-        auto midiInputs = juce::MidiInput::getAvailableDevices();
-        for (const auto& device : midiInputs)
-            deviceManager.removeMidiInputDeviceCallback(device.identifier, this);
-    }
 }
 
 void MidiServerSettingsComponent::paint(juce::Graphics& g)
@@ -143,7 +155,6 @@ void MidiServerSettingsComponent::resized()
 
     bounds.removeFromTop(10);
 
-    // Monitor section (remaining space)
     monitorLabel.setBounds(bounds.removeFromTop(25));
     monitorTextEditor->setBounds(bounds);
 }
@@ -196,7 +207,10 @@ void MidiServerSettingsComponent::updateDeviceLists()
     {
         auto* toggle = inputToggles.add(new juce::ToggleButton(device));
         toggle->setBounds(5, y, 300, 24);
-        toggle->onClick = [this] { updateSubscriptions(); };
+        toggle->onClick = [this]
+        {
+            updateSubscriptions();
+        };
         inputsContainer->addAndMakeVisible(toggle);
         y += 26;
     }
@@ -208,7 +222,10 @@ void MidiServerSettingsComponent::updateDeviceLists()
     {
         auto* toggle = outputToggles.add(new juce::ToggleButton(device));
         toggle->setBounds(5, y, 300, 24);
-        toggle->onClick = [this] { updateSubscriptions(); };
+        toggle->onClick = [this]
+        {
+            updateSubscriptions();
+        };
         outputsContainer->addAndMakeVisible(toggle);
         y += 26;
     }
@@ -233,66 +250,29 @@ void MidiServerSettingsComponent::updateSubscriptions()
     client->setSubscriptions(state);
 }
 
-void MidiServerSettingsComponent::handleIncomingMidiMessage(juce::MidiInput* source, const juce::MidiMessage& message)
-{
-    // Only show messages from subscribed devices
-    if (client != nullptr)
-    {
-        auto state = client->getSubscriptions();
-        if (!state.subscribedInputDevices.contains(source->getName()))
-            return;
-    }
-
-    juce::String messageText;
-    messageText << source->getName() << ": ";
-
-    if (message.isNoteOn())
-        messageText
-            << "Note On: "
-            << juce::MidiMessage::getMidiNoteName(message.getNoteNumber(), true, true, 3)
-            << " Vel: "
-            << message.getVelocity();
-    else if (message.isNoteOff())
-        messageText << "Note Off: " << juce::MidiMessage::getMidiNoteName(message.getNoteNumber(), true, true, 3);
-    else if (message.isController())
-        messageText << "CC " << message.getControllerNumber() << ": " << message.getControllerValue();
-    else if (message.isProgramChange())
-        messageText << "Program Change: " << message.getProgramChangeNumber();
-    else if (message.isPitchWheel())
-        messageText << "Pitch Wheel: " << message.getPitchWheelValue();
-    else if (message.isAftertouch())
-        messageText << "Aftertouch: " << message.getAfterTouchValue();
-    else if (message.isChannelPressure())
-        messageText << "Channel Pressure: " << message.getChannelPressureValue();
-    else
-        messageText << "Other MIDI Message";
-
-    // Add to pending messages (will be displayed in timer callback)
-    juce::ScopedLock lock(monitorMutex);
-    pendingMonitorMessages.add(messageText);
-}
-
 void MidiServerSettingsComponent::timerCallback()
 {
-    juce::ScopedLock lock(monitorMutex);
-
-    if (pendingMonitorMessages.isEmpty())
+    if (server == nullptr || monitorTextEditor == nullptr)
         return;
 
-    juce::String currentText = monitorTextEditor->getText();
-    juce::StringArray lines = juce::StringArray::fromLines(currentText);
+    std::vector<MidiInputEvent> monitorEvents;
+    server->getPendingMonitorMidiEvents(monitorEvents, 4096);
 
-    // Add new messages
-    for (const auto& msg : pendingMonitorMessages)
-        lines.add(msg);
+    if (monitorEvents.empty())
+        return;
 
-    // Limit number of lines
+    for (const auto& event : monitorEvents)
+        pendingMonitorMessages.add(formatMonitorMessage(event));
+
+    juce::StringArray lines = juce::StringArray::fromLines(monitorTextEditor->getText());
+    for (const auto& message : pendingMonitorMessages)
+        lines.add(message);
+
     while (lines.size() > maxMonitorLines)
         lines.remove(0);
 
     monitorTextEditor->setText(lines.joinIntoString("\n"));
     monitorTextEditor->moveCaretToEnd();
-
     pendingMonitorMessages.clear();
 }
 
@@ -312,17 +292,6 @@ void MidiServerSettingsComponent::handleNoteOn(
     juce::MidiBuffer buffer;
     buffer.addEvent(message, 0);
     client->injectMidi(buffer);
-
-    // Add to monitor display
-    juce::String messageText;
-    messageText
-        << "Virtual Keyboard: Note On: "
-        << juce::MidiMessage::getMidiNoteName(midiNoteNumber, true, true, 4)
-        << " Vel: "
-        << static_cast<int>(velocity * 127.0f);
-
-    juce::ScopedLock lock(monitorMutex);
-    pendingMonitorMessages.add(messageText);
 }
 
 void MidiServerSettingsComponent::handleNoteOff(
@@ -341,12 +310,6 @@ void MidiServerSettingsComponent::handleNoteOff(
     juce::MidiBuffer buffer;
     buffer.addEvent(message, 0);
     client->injectMidi(buffer);
-
-    juce::String messageText;
-    messageText << "Virtual Keyboard: Note Off: " << juce::MidiMessage::getMidiNoteName(midiNoteNumber, true, true, 4);
-
-    juce::ScopedLock lock(monitorMutex);
-    pendingMonitorMessages.add(messageText);
 }
 
 void MidiServerSettingsComponent::sendMidiPanic()

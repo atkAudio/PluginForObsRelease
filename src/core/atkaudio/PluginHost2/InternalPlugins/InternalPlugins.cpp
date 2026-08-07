@@ -734,6 +734,9 @@ void setParentSourceUuidOnInternalPlugin(AudioPluginInstance* plugin, const std:
     {
         if (auto* obsSource = dynamic_cast<ObsSourceAudioProcessor*>(internalPlugin->getInnerProcessor()))
             obsSource->setParentSourceUuid(parentUuid);
+
+        if (auto* deviceIo2 = dynamic_cast<DeviceIo2Plugin*>(internalPlugin->getInnerProcessor()))
+            deviceIo2->setParentSourceUuid(parentUuid);
     }
 }
 

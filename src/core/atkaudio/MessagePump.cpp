@@ -4,8 +4,6 @@
 
 #include <juce_events/juce_events.h>
 
-#include <QTimer>
-
 namespace atk
 {
 

@@ -85,7 +85,7 @@ public:
 
         if (midiEnabled->load(std::memory_order_acquire) > 0.5f)
         {
-            for (const auto& metadata : midiBuffer)
+            for (auto metadata : midiBuffer)
             {
                 const juce::MidiMessage message(metadata.data, metadata.numBytes, metadata.samplePosition);
                 if (message.isController())
@@ -122,7 +122,7 @@ public:
 
         if (midiLearn->load(std::memory_order_acquire) > 0.5f)
         {
-            for (const auto& metadata : midiBuffer)
+            for (auto metadata : midiBuffer)
             {
                 const juce::MidiMessage message(metadata.data, metadata.numBytes, metadata.samplePosition);
                 if (message.isController())

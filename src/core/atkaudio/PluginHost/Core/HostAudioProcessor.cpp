@@ -1,5 +1,6 @@
 #include "HostAudioProcessor.h"
 #include "../../SharedPluginList.h"
+#include <atkaudio/midi_control/last_touched_parameter_tracker.h>
 #include "../UI/HostEditorWindow.h"
 
 #include <atkaudio/Logging.h>
@@ -7,8 +8,7 @@
 using namespace juce;
 using juce::NullCheckedInvocation;
 
-juce::Optional<juce::AudioPlayHead::PositionInfo>
-HostAudioProcessorImpl::AtkAudioPlayHead::getPosition() const
+juce::Optional<juce::AudioPlayHead::PositionInfo> HostAudioProcessorImpl::AtkAudioPlayHead::getPosition() const
 {
     return positionInfo;
 }
@@ -67,9 +67,7 @@ HostAudioProcessorImpl::HostAudioProcessorImpl(int numChannels)
                     const String formatName = format->getName();
                     // JUCE uses "lastPluginScanPath_" prefix for PluginListComponent
                     const String key = "lastPluginScanPath_" + formatName;
-                    FileSearchPath existingPaths(
-                        props->getValue(key, format->getDefaultLocationsToSearch().toString())
-                    );
+                    FileSearchPath existingPaths(props->getValue(key, format->getDefaultLocationsToSearch().toString()));
 
                     if (!existingPaths.toString().contains(flatpakPluginPath.getFullPathName()))
                     {
@@ -92,6 +90,12 @@ HostAudioProcessorImpl::HostAudioProcessorImpl(int numChannels)
 
 HostAudioProcessorImpl::~HostAudioProcessorImpl()
 {
+    {
+        const ScopedLock sl(innerMutex);
+        if (inner != nullptr)
+            atk::LastTouchedParameterTracker::getInstance().unregisterProcessor(*inner);
+    }
+
     pluginList.removeChangeListener(this);
     atk::logging::info("HostAudioProcessorImpl::dtor", "destroyed PluginHost processor");
 }
@@ -196,16 +200,13 @@ void HostAudioProcessorImpl::prepareToPlay(double sr, int bs)
     const int maxSamples = bs * 2;
     const int maxSubscriptions = 16;
 
-    if (internalBuffer.getNumChannels() < maxChannels
-        || internalBuffer.getNumSamples() < maxSamples)
+    if (internalBuffer.getNumChannels() < maxChannels || internalBuffer.getNumSamples() < maxSamples)
         internalBuffer.setSize(maxChannels, maxSamples, false, false, true);
 
-    if (deviceInputBuffer.getNumChannels() < maxSubscriptions
-        || deviceInputBuffer.getNumSamples() < maxSamples)
+    if (deviceInputBuffer.getNumChannels() < maxSubscriptions || deviceInputBuffer.getNumSamples() < maxSamples)
         deviceInputBuffer.setSize(maxSubscriptions, maxSamples, false, false, true);
 
-    if (deviceOutputBuffer.getNumChannels() < maxSubscriptions
-        || deviceOutputBuffer.getNumSamples() < maxSamples)
+    if (deviceOutputBuffer.getNumChannels() < maxSubscriptions || deviceOutputBuffer.getNumSamples() < maxSamples)
         deviceOutputBuffer.setSize(maxSubscriptions, maxSamples, false, false, true);
 
     inputMidiCopy.ensureSize(2048);
@@ -253,9 +254,8 @@ void HostAudioProcessorImpl::processBlock(AudioBuffer<float>& buffer, MidiBuffer
 
     atkPlayHead.positionInfo.setIsPlaying(true);
     atkPlayHead.positionInfo.setBpm(120.0);
-    auto pos = atkPlayHead.positionInfo.getTimeInSamples().hasValue()
-                 ? *atkPlayHead.positionInfo.getTimeInSamples()
-                 : 0;
+    auto pos =
+        atkPlayHead.positionInfo.getTimeInSamples().hasValue() ? *atkPlayHead.positionInfo.getTimeInSamples() : 0;
     atkPlayHead.positionInfo.setTimeInSamples(pos + buffer.getNumSamples());
     inner->setPlayHead(&atkPlayHead);
 
@@ -263,19 +263,15 @@ void HostAudioProcessorImpl::processBlock(AudioBuffer<float>& buffer, MidiBuffer
     int numOutputSubs = audioClient.getNumOutputSubscriptions();
 
     int pluginChannels = buffer.getNumChannels();
-    if (internalBuffer.getNumChannels() < pluginChannels
-        || internalBuffer.getNumSamples() < buffer.getNumSamples())
+    if (internalBuffer.getNumChannels() < pluginChannels || internalBuffer.getNumSamples() < buffer.getNumSamples())
         internalBuffer.setSize(pluginChannels, buffer.getNumSamples(), false, false, true);
 
-    if (deviceInputBuffer.getNumChannels() < numInputSubs
-        || deviceInputBuffer.getNumSamples() < buffer.getNumSamples())
-        deviceInputBuffer
-            .setSize(std::max(numInputSubs, 1), buffer.getNumSamples(), false, false, true);
+    if (deviceInputBuffer.getNumChannels() < numInputSubs || deviceInputBuffer.getNumSamples() < buffer.getNumSamples())
+        deviceInputBuffer.setSize(std::max(numInputSubs, 1), buffer.getNumSamples(), false, false, true);
 
     if (deviceOutputBuffer.getNumChannels() < numOutputSubs
         || deviceOutputBuffer.getNumSamples() < buffer.getNumSamples())
-        deviceOutputBuffer
-            .setSize(std::max(numOutputSubs, 1), buffer.getNumSamples(), false, false, true);
+        deviceOutputBuffer.setSize(std::max(numOutputSubs, 1), buffer.getNumSamples(), false, false, true);
 
     audioClient.pullSubscribedInputs(deviceInputBuffer, buffer.getNumSamples(), getSampleRate());
 
@@ -490,17 +486,12 @@ void HostAudioProcessorImpl::setStateInformation(const void* data, int sizeInByt
 {
     const ScopedLock sl(innerMutex);
 
-    auto xml = XmlDocument::parse(
-        String(CharPointer_UTF8(static_cast<const char*>(data)), (size_t)sizeInBytes)
-    );
+    auto xml = XmlDocument::parse(String(CharPointer_UTF8(static_cast<const char*>(data)), (size_t)sizeInBytes));
 
     if (xml->hasAttribute("audioClientState"))
     {
         auto audioStateStr = xml->getStringAttribute("audioClientState");
-        atk::logging::debug(
-            "HostAudioProcessorImpl::setStateInformation",
-            "restoring audio subscription state"
-        );
+        atk::logging::debug("HostAudioProcessorImpl::setStateInformation", "restoring audio subscription state");
         atk::AudioClientState audioState;
         audioState.deserialize(audioStateStr);
         audioClient.setSubscriptions(audioState);
@@ -616,25 +607,17 @@ void HostAudioProcessorImpl::setStateInformation(const void* data, int sizeInByt
     }
 }
 
-void HostAudioProcessorImpl::setNewPlugin(
-    const PluginDescription& pd,
-    EditorStyle where,
-    const MemoryBlock& mb
-)
+void HostAudioProcessorImpl::setNewPlugin(const PluginDescription& pd, EditorStyle where, const MemoryBlock& mb)
 {
     const ScopedLock sl(innerMutex);
 
-    const auto callback =
-        [this, where, mb](std::unique_ptr<AudioPluginInstance> instance, const String& error)
+    const auto callback = [this, where, mb](std::unique_ptr<AudioPluginInstance> instance, const String& error)
     {
         const ScopedLock sl(innerMutex);
         if (error.isNotEmpty())
         {
-            auto options = MessageBoxOptions::makeOptionsOk(
-                MessageBoxIconType::WarningIcon,
-                "Plugin Load Failed",
-                error
-            );
+            auto options =
+                MessageBoxOptions::makeOptionsOk(MessageBoxIconType::WarningIcon, "Plugin Load Failed", error);
             messageBox = AlertWindow::showScopedAsync(options, nullptr);
             return;
         }
@@ -647,8 +630,14 @@ void HostAudioProcessorImpl::setNewPlugin(
         if (innerName != instance->getPluginDescription().descriptiveName)
             needsPluginChanged = true;
 
+        if (needsPluginChanged && inner != nullptr)
+            atk::LastTouchedParameterTracker::getInstance().unregisterProcessor(*inner);
+
         if (needsPluginChanged)
             inner = std::move(instance);
+
+        if (needsPluginChanged && inner != nullptr)
+            atk::LastTouchedParameterTracker::getInstance().registerProcessor(*inner, parentSourceUuid, ownerFilterName);
 
         editorStyle = where;
 
@@ -680,6 +669,9 @@ void HostAudioProcessorImpl::clearPlugin()
     std::unique_ptr<AudioPluginInstance> pluginToDestroy;
     {
         const ScopedLock sl(innerMutex);
+        if (inner != nullptr)
+            atk::LastTouchedParameterTracker::getInstance().unregisterProcessor(*inner);
+
         pluginToDestroy = std::move(inner);
     }
 
@@ -722,6 +714,38 @@ juce::AudioPluginInstance* HostAudioProcessorImpl::getInnerPlugin() const
 {
     const ScopedLock sl(innerMutex);
     return inner.get();
+}
+
+void HostAudioProcessorImpl::setParentSourceUuid(const juce::String& sourceUuid)
+{
+    const ScopedLock sl(innerMutex);
+
+    if (parentSourceUuid == sourceUuid)
+        return;
+
+    if (inner != nullptr)
+        atk::LastTouchedParameterTracker::getInstance().unregisterProcessor(*inner);
+
+    parentSourceUuid = sourceUuid;
+
+    if (inner != nullptr)
+        atk::LastTouchedParameterTracker::getInstance().registerProcessor(*inner, parentSourceUuid, ownerFilterName);
+}
+
+void HostAudioProcessorImpl::setOwnerFilterName(const juce::String& filterName)
+{
+    const ScopedLock sl(innerMutex);
+
+    if (ownerFilterName == filterName)
+        return;
+
+    if (inner != nullptr)
+        atk::LastTouchedParameterTracker::getInstance().unregisterProcessor(*inner);
+
+    ownerFilterName = filterName;
+
+    if (inner != nullptr)
+        atk::LastTouchedParameterTracker::getInstance().registerProcessor(*inner, parentSourceUuid, ownerFilterName);
 }
 
 void HostAudioProcessorImpl::changeListenerCallback(ChangeBroadcaster* source)

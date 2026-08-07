@@ -3,10 +3,7 @@
 #include <atkaudio/SharedPluginList.h>
 #include <juce_gui_extra/juce_gui_extra.h>
 
-#ifdef ENABLE_QT
-#include <QCoreApplication>
-#include <QMetaObject>
-#endif
+#include <QtCore>
 
 using namespace juce;
 
@@ -18,8 +15,7 @@ HostAudioProcessorEditor::HostAudioProcessorEditor(HostAudioProcessorImpl& owner
           owner.pluginList,
           atk::SharedPluginList::getInstance()->getPropertiesFile(),
           &owner,
-          [&owner](const PluginDescription& pd, EditorStyle editorStyle)
-          { owner.setNewPlugin(pd, editorStyle); }
+          [&owner](const PluginDescription& pd, EditorStyle editorStyle) { owner.setNewPlugin(pd, editorStyle); }
       )
     , scopedCallback(owner.pluginChanged, [this] { pluginChanged(); })
 {
@@ -68,7 +64,6 @@ void HostAudioProcessorEditor::pluginChanged()
             &hostProcessor,
             [safeThis = Component::SafePointer<HostAudioProcessorEditor>(this)]
             {
-#ifdef ENABLE_QT
                 // Defer unload to the Qt event queue so plugin teardown happens
                 // outside the active JUCE dispatch batch.
                 if (auto* app = QCoreApplication::instance())
@@ -84,7 +79,6 @@ void HostAudioProcessorEditor::pluginChanged()
                     );
                     return;
                 }
-#endif
 
                 if (safeThis != nullptr)
                 {
@@ -113,8 +107,7 @@ void HostAudioProcessorEditor::pluginChanged()
                 return std::move(editorComponent);
 
             case EditorStyle::newWindow:
-                const auto bg =
-                    getLookAndFeel().findColour(ResizableWindow::backgroundColourId).darker();
+                const auto bg = getLookAndFeel().findColour(ResizableWindow::backgroundColourId).darker();
                 auto window = std::make_unique<SimpleDocumentWindow>(bg);
                 window->setAlwaysOnTop(true);
                 window->setContentOwned(editorComponent.release(), true);
@@ -237,8 +230,7 @@ private:
         {
             if (preventResizingEditor)
             {
-                const auto newPos =
-                    r.getTopLeft().toFloat().transformedBy(editor->getTransform().inverted());
+                const auto newPos = r.getTopLeft().toFloat().transformedBy(editor->getTransform().inverted());
                 editor->setTopLeftPosition(newPos.roundToInt());
             }
             else
@@ -330,11 +322,7 @@ void HostEditorComponent::childBoundsChanged(Component* child)
     }
 }
 
-void HostEditorComponent::componentMovedOrResized(
-    Component& component,
-    bool /*wasMoved*/,
-    bool wasResized
-)
+void HostEditorComponent::componentMovedOrResized(Component& component, bool /*wasMoved*/, bool wasResized)
 {
     if (wasResized && &component == editorToWatch)
     {

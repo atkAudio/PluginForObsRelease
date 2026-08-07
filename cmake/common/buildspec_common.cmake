@@ -33,9 +33,9 @@ function(_check_deps_version version)
         continue()
       else()
         message(
-          AUTHOR_WARNING
-          "Newer ${label} version detected in ${path}: \n"
-          "Found ${_check_version}, require ${version}"
+          STATUS
+          "Newer ${label} version detected in ${path}: "
+          "found ${_check_version}, require ${version}. Continuing with newer pre-built dependency."
         )
         set(found TRUE)
         break()
@@ -67,7 +67,7 @@ function(_setup_obs_studio)
   execute_process(
     COMMAND
       "${CMAKE_COMMAND}" -S "${dependencies_dir}/${_obs_destination}" -B
-      "${dependencies_dir}/${_obs_destination}/build_${arch}" -G ${_cmake_generator} "${_cmake_arch}"
+      "${dependencies_dir}/${_obs_destination}/build_${arch}" -G ${_cmake_generator} "${_cmake_arch}" -Wno-dev
       -DOBS_CMAKE_VERSION:STRING=3.0.0 -DENABLE_PLUGINS:BOOL=OFF -DENABLE_FRONTEND:BOOL=OFF
       -DOBS_VERSION_OVERRIDE:STRING=${_obs_version} "-DCMAKE_PREFIX_PATH='${CMAKE_PREFIX_PATH}'" ${_is_fresh}
       ${_cmake_extra}

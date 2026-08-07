@@ -9,13 +9,9 @@
 
 #include "UI/QtDockWidget.h"
 #include <obs-frontend-api.h>
-#include <QWidget>
-#include <QThread>
-#include <QCoreApplication>
-#include <QMetaObject>
-#include <QDockWidget>
-#include <QMainWindow>
-#include <QTimer>
+#include <obs-module.h>
+#include <QtCore>
+#include <QtWidgets>
 
 struct atk::PluginHost::Impl : public juce::AsyncUpdater
 {
@@ -666,6 +662,20 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
         dockIdStorage = "atkaudio_pluginhost_" + id;
     }
 
+    void setParentSourceUuid(const juce::String& sourceUuid)
+    {
+        juce::ScopedLock lock(processorLock);
+        if (auto* hostProc = hostProcessor.get())
+            hostProc->setParentSourceUuid(sourceUuid);
+    }
+
+    void setOwnerFilterName(const juce::String& filterName)
+    {
+        juce::ScopedLock lock(processorLock);
+        if (auto* hostProc = hostProcessor.get())
+            hostProc->setOwnerFilterName(filterName);
+    }
+
     bool isDockVisible() const
     {
         return dockVisible;
@@ -1110,9 +1120,24 @@ void atk::PluginHost::setDockId(const std::string& id)
     pImpl->setDockId(id);
 }
 
+void atk::PluginHost::setParentSource(void* parentSource)
+{
+    if (!pImpl)
+        return;
+
+    auto* source = static_cast<obs_source_t*>(parentSource);
+    const char* sourceUuid = source != nullptr ? obs_source_get_uuid(source) : nullptr;
+    pImpl->setParentSourceUuid(sourceUuid != nullptr ? juce::String(sourceUuid) : juce::String());
+}
+
 void atk::PluginHost::setDockTitle(const std::string& title)
 {
-    if (!pImpl || title.empty())
+    if (!pImpl)
+        return;
+
+    pImpl->setOwnerFilterName(juce::String::fromUTF8(title.c_str()));
+
+    if (title.empty())
         return;
 
     auto doUi = [this, title]()
@@ -1134,6 +1159,14 @@ bool atk::PluginHost::isDockVisible() const
     return pImpl->isDockVisible();
 }
 
+void atk::PluginHost::setOwnerFilterName(const std::string& filterName)
+{
+    if (!pImpl)
+        return;
+
+    pImpl->setOwnerFilterName(juce::String::fromUTF8(filterName.c_str()));
+}
+
 atk::PluginHost::PluginHost()
 {
     pImpl = std::make_unique<Impl>();
@@ -1145,7 +1178,6 @@ atk::PluginHost::~PluginHost()
     if (impl == nullptr)
         return;
 
-#ifdef ENABLE_QT
     if (auto* app = QCoreApplication::instance())
     {
         // Defer actual teardown to the Qt event queue so it runs outside
@@ -1153,7 +1185,6 @@ atk::PluginHost::~PluginHost()
         QMetaObject::invokeMethod(app, [impl]() { delete impl; }, Qt::QueuedConnection);
         return;
     }
-#endif
 
     if (auto* mm = juce::MessageManager::getInstanceWithoutCreating())
     {

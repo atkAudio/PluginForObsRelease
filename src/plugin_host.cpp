@@ -77,6 +77,7 @@ static void on_filter_rename(void* data, calldata_t* calldata)
     if (!filterName || !*filterName)
         return;
 
+    ph->pluginHost->setOwnerFilterName(filterName);
     ph->pluginHost->setDockTitle(filterName);
 }
 
@@ -220,6 +221,7 @@ static void* pluginhost_create(obs_data_t* settings, obs_source_t* filter)
     );
 
     ph->pluginHost = std::make_unique<atk::PluginHost>();
+    ph->pluginHost->setParentSource(parent);
 
     const char* filterUuid = obs_source_get_uuid(filter);
     if (filterUuid)
@@ -227,7 +229,10 @@ static void* pluginhost_create(obs_data_t* settings, obs_source_t* filter)
 
     const char* filterName = obs_source_get_name(filter);
     if (filterName && *filterName)
+    {
+        ph->pluginHost->setOwnerFilterName(filterName);
         ph->pluginHost->setDockTitle(filterName);
+    }
 
     signal_handler_t* signalHandler = obs_source_get_signal_handler(filter);
     if (signalHandler)
@@ -449,8 +454,8 @@ static obs_properties_t* pluginhost_properties(void* data)
     if (ph)
         parent = obs_filter_get_parent(ph->context);
 
-    obs_properties_add_button(props, OPEN_PLUGIN_SETTINGS, OPEN_PLUGIN_TEXT, open_editor_button_clicked);
-    obs_properties_add_button(props, CLOSE_PLUGIN_SETTINGS, CLOSE_PLUGIN_TEXT, close_editor_button_clicked);
+    obs_properties_add_button2(props, OPEN_PLUGIN_SETTINGS, OPEN_PLUGIN_TEXT, open_editor_button_clicked, data);
+    obs_properties_add_button2(props, CLOSE_PLUGIN_SETTINGS, CLOSE_PLUGIN_TEXT, close_editor_button_clicked, data);
 
     bool open_settings_vis = true;
     bool close_settings_vis = false;
@@ -474,6 +479,15 @@ static obs_properties_t* pluginhost_properties(void* data)
     return props;
 }
 
+static void pluginhost_filter_add(void* data, obs_source_t* source)
+{
+    auto* ph = (struct pluginhost_data*)data;
+    if (ph == nullptr || ph->pluginHost == nullptr)
+        return;
+
+    ph->pluginHost->setParentSource(source);
+}
+
 struct obs_source_info pluginhost_filter = {
     .id = FILTER_ID,
     .type = OBS_SOURCE_TYPE_FILTER,
@@ -488,4 +502,5 @@ struct obs_source_info pluginhost_filter = {
     .filter_audio = pluginhost_filter_audio,
     .save = save,
     .load = load,
+    .filter_add = pluginhost_filter_add,
 };

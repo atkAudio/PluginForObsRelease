@@ -38,7 +38,8 @@ extern "C"
     void logMessage(const juce::String& message);
 }
 
-// Return the settings file for the given name under the OBS config dir (or the JUCE default path).
+// Return the settings file for the given name under the OBS config dir. This requires a live OBS module context and
+// intentionally has no fallback path.
 juce::File getSettingsFile(const juce::String& name);
 
 } // namespace atk
