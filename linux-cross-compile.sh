@@ -42,6 +42,12 @@ echo "Container architecture: $(uname -m)"
 # Configure environment
 export DEBIAN_FRONTEND=noninteractive
 
+print_compiler_info() {
+  echo "=== Compiler toolchain versions (stock GCC) ==="
+  gcc --version | head -n 1
+  g++ --version | head -n 1
+}
+
 repair_dpkg_state() {
   if [ -d /var/lib/dpkg ] && [ -n "$(ls -A /var/lib/dpkg/updates 2>/dev/null)" ]; then
     echo "Detected interrupted dpkg state; repairing"
@@ -56,7 +62,49 @@ safe_apt_install() {
   apt-get install -y --no-install-recommends "$@"
 }
 
+cleanup_dynamic_apt_sources() {
+  # Remove ephemeral source files left by previous runs in persistent containers.
+  rm -f /etc/apt/sources.list.d/archive_uri-*.list
+}
+
+pin_apt_sources_to_amd64() {
+  local sources_file
+  local tmp_file
+
+  sources_file="/etc/apt/sources.list.d/ubuntu.sources"
+  [ -f "$sources_file" ] || return
+
+  tmp_file="${sources_file}.tmp"
+
+  # Keep exactly one Architectures field per deb822 stanza in ubuntu.sources.
+  awk '
+    /^$/ {
+      print
+      in_stanza = 0
+      next
+    }
+
+    /^Types:[[:space:]]+deb$/ {
+      print
+      print "Architectures: amd64"
+      in_stanza = 1
+      next
+    }
+
+    in_stanza && /^Architectures:/ {
+      next
+    }
+
+    {
+      print
+    }
+  ' "$sources_file" > "$tmp_file"
+
+  mv "$tmp_file" "$sources_file"
+}
+
 # Install base packages
+cleanup_dynamic_apt_sources
 apt-get update
 safe_apt_install git software-properties-common
 git config --global --add safe.directory /workspace
@@ -70,9 +118,7 @@ if [ "${CROSS_COMPILE}" = "true" ]; then
   echo "Detected Ubuntu codename: ${UBUNTU_CODENAME}"
   
   # Restrict default sources to amd64 (Ubuntu 24.04+ DEB822 format)
-  for sources_file in /etc/apt/sources.list.d/*.sources; do
-    [ -f "$sources_file" ] && sed -i '/^Types: deb$/a Architectures: amd64' "$sources_file"
-  done
+  pin_apt_sources_to_amd64
   
   # Add ports mirror for ARM64
   if [[ "${DEBIAN_ARCH}" =~ ^(arm64|armhf|ppc64el|riscv64|s390x)$ ]]; then
@@ -112,6 +158,7 @@ QT6_DEPS=$(apply_arch_suffix "${QT6_DEPS[@]}")
 
 # Install build dependencies
 safe_apt_install ${BUILD_DEPS_BASE}
+print_compiler_info
 
 # Install target architecture libraries
 if [ "${CROSS_COMPILE}" = "true" ]; then

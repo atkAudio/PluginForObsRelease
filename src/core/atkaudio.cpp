@@ -23,6 +23,29 @@ UpdateCheck* updateCheck = nullptr;
 static void* g_qtMainWindowHandle = nullptr;
 static bool g_qtMainWindowInitialized = false;
 
+namespace
+{
+void applyThemeColorsFromObsMainWindow()
+{
+    auto* mainQWidget = static_cast<QWidget*>(obs_frontend_get_main_window());
+    if (mainQWidget == nullptr)
+    {
+        atk::logging::warning("UI", "applyThemeColorsFromObsMainWindow: obs_frontend_get_main_window returned null");
+        return;
+    }
+
+    QPalette palette = mainQWidget->palette();
+    QColor bgColor = palette.color(QPalette::Window);
+    QColor fgColor = palette.color(QPalette::WindowText);
+
+    auto bgColour = juce::Colour(bgColor.red(), bgColor.green(), bgColor.blue());
+    auto fgColour = juce::Colour(fgColor.red(), fgColor.green(), fgColor.blue());
+    atk::LookAndFeel::applyColorsToInstance(bgColour, fgColour);
+
+    atk::logging::debug("UI", "applyThemeColorsFromObsMainWindow: applied OBS theme colors");
+}
+} // namespace
+
 juce::File atk::getSettingsFile(const juce::String& name)
 {
     auto* module = obs_current_module();
@@ -58,13 +81,6 @@ bool atk::create()
 
     // Initialize LookAndFeel singleton
     juce::SharedResourcePointer<atk::LookAndFeel> lookAndFeel;
-
-    // Sync OBS theme colors to JUCE LookAndFeel.
-    // Bypass only true Debug builds (_DEBUG without NDEBUG), but keep this enabled
-    // in RelWithDebInfo where _DEBUG may still be defined by toolchain settings.
-#if !(defined(_DEBUG) && !defined(NDEBUG))
-    getQtMainWindowHandle();
-#endif
 
     // Initialize MIDI server
     if (auto* midiServer = atk::MidiServer::getInstance())
@@ -145,6 +161,8 @@ void atk::update()
 {
     if (updateCheck == nullptr)
         updateCheck = new UpdateCheck(); // deleted at shutdown
+
+    updateCheck->checkForUpdateOnStartupOnce();
 }
 
 void* atk::getQtMainWindowHandle()
@@ -152,8 +170,6 @@ void* atk::getQtMainWindowHandle()
     // Fully lazy initialization: get Qt window, extract handle, and apply colors on first access
     if (!g_qtMainWindowInitialized)
     {
-        g_qtMainWindowInitialized = true;
-
         // Get Qt main window from OBS frontend API
         QWidget* mainQWidget = (QWidget*)obs_frontend_get_main_window();
         if (!mainQWidget)
@@ -183,17 +199,11 @@ void* atk::getQtMainWindowHandle()
             atk::logging::warning("UI", "getQtMainWindowHandle: failed to extract native handle");
         }
 
-        // Apply OBS theme colors to JUCE
-        QPalette palette = mainQWidget->palette();
-        QColor bgColor = palette.color(QPalette::Window);
-        QColor fgColor = palette.color(QPalette::WindowText);
-
-        auto bgColour = juce::Colour(bgColor.red(), bgColor.green(), bgColor.blue());
-        auto fgColour = juce::Colour(fgColor.red(), fgColor.green(), fgColor.blue());
-        atk::LookAndFeel::applyColorsToInstance(bgColour, fgColour);
-
-        atk::logging::debug("UI", "getQtMainWindowHandle: applied OBS theme colors");
+        g_qtMainWindowInitialized = true;
     }
+
+    // Re-apply colors whenever this is called.
+    applyThemeColorsFromObsMainWindow();
 
     // Return the cached Qt main window handle
     return g_qtMainWindowHandle;

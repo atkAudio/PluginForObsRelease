@@ -20,6 +20,8 @@
 !LICENSE*
 !*.cmake
 !linux-*.sh
+!package.json
+!package-lock.json
 !tests/
 !tests/**
 !docs/

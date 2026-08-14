@@ -5,8 +5,15 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/common/bootstrap.cmake")
 
 project(${_name} VERSION ${_version})
 
-# Set default build type to RelWithDebInfo for local development
-# RelWithDebInfo provides optimized code with debug symbols (PDB files on Windows)
+# Keep FetchContent downloads and source trees under the repository's _deps directory.
+set(FETCHCONTENT_BASE_DIR
+    "${CMAKE_SOURCE_DIR}/_deps"
+    CACHE PATH
+    "Directory for FetchContent downloads and source trees"
+    FORCE
+)
+
+# Set default build type to RelWithDebInfo
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE
         "RelWithDebInfo"
@@ -17,11 +24,19 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 
-option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" ON)
+option(ATK_ENABLE_LOCAL_POST_BUILD_INSTALL "Run local cmake --install after build for the plugin component" OFF)
+option(
+    ATK_ENABLE_LINUX_HOME_POST_BUILD_COPY
+    "Copy plugin artifacts into ~/.config/obs-studio/plugins after build on Linux"
+    OFF
+)
 
 include(compilerconfig)
 include(defaults)
 include(helpers)
+include(./cmake/common/qt_setup.cmake)
+include(./cmake/common/target_policies.cmake)
+include(./cmake/common/platform_utils.cmake)
 
 # Read buildspec.json early for Qt configuration
 file(READ "${CMAKE_SOURCE_DIR}/buildspec.json" buildspec)
@@ -37,74 +52,9 @@ string(
 # Use CMAKE_BINARY_DIR so it works with any configured build directory
 set(DEPS_DIR "${CMAKE_BINARY_DIR}/obs-deps")
 
-# Configure Qt paths for cross-compilation on Windows
+# Configure Qt package roots for Windows builds, with the ARM64-specific host-tool override.
 if(WIN32)
-    if(CMAKE_VS_PLATFORM_NAME STREQUAL "ARM64")
-        # ARM64 Cross-compilation setup
-        # x64 Qt host tools are in source-dir/_deps/x64 (persistent across builds)
-        set(QT_HOST_PATH "${CMAKE_SOURCE_DIR}/_deps/x64/obs-deps-qt6-${QT6_VERSION}-x64")
-        set(Qt6_DIR
-            "${DEPS_DIR}/obs-deps-qt6-${QT6_VERSION}-ARM64/lib/cmake/Qt6"
-            CACHE STRING
-            "Qt6 ARM64 CMake directory"
-            FORCE
-        )
-
-        message(STATUS "ARM64 Cross-compilation detected")
-        message(STATUS "QT_HOST_PATH: ${QT_HOST_PATH}")
-        message(STATUS "Qt6_DIR: ${Qt6_DIR}")
-
-        # Check if x64 Qt host tools exist
-        if(EXISTS "${QT_HOST_PATH}/bin/moc.exe")
-            message(STATUS "Found x64 Qt host tools at: ${QT_HOST_PATH}")
-        else()
-            message(
-                FATAL_ERROR
-                "x64 Qt host tools not found at: ${QT_HOST_PATH}. ARM64 cross-compilation requires both x64 and ARM64 Qt dependencies."
-            )
-        endif()
-
-        # Set Qt host tools for cross-compilation (use x64 tools for ARM64 builds)
-        set(Qt6CoreTools_DIR "${QT_HOST_PATH}/lib/cmake/Qt6CoreTools" CACHE STRING "Qt6 x64 Core Tools" FORCE)
-        set(Qt6GuiTools_DIR "${QT_HOST_PATH}/lib/cmake/Qt6GuiTools" CACHE STRING "Qt6 x64 GUI Tools" FORCE)
-        set(Qt6WidgetsTools_DIR "${QT_HOST_PATH}/lib/cmake/Qt6WidgetsTools" CACHE STRING "Qt6 x64 Widget Tools" FORCE)
-
-        # Explicitly set tool executables that AUTOMOC/AUTOUIC/AUTORCC will use
-        set(CMAKE_AUTOMOC_MOC_EXECUTABLE
-            "${QT_HOST_PATH}/bin/moc.exe"
-            CACHE FILEPATH
-            "MOC executable for ARM64 cross-compilation"
-            FORCE
-        )
-        set(CMAKE_AUTOUIC_UIC_EXECUTABLE
-            "${QT_HOST_PATH}/bin/uic.exe"
-            CACHE FILEPATH
-            "UIC executable for ARM64 cross-compilation"
-            FORCE
-        )
-        set(CMAKE_AUTORCC_RCC_EXECUTABLE
-            "${QT_HOST_PATH}/bin/rcc.exe"
-            CACHE FILEPATH
-            "RCC executable for ARM64 cross-compilation"
-            FORCE
-        )
-
-        # Also set the legacy variables for compatibility
-        set(QT_MOC_EXECUTABLE "${QT_HOST_PATH}/bin/moc.exe")
-        set(QT_RCC_EXECUTABLE "${QT_HOST_PATH}/bin/rcc.exe")
-        set(QT_UIC_EXECUTABLE "${QT_HOST_PATH}/bin/uic.exe")
-
-        message(STATUS "Set CMAKE_AUTOMOC_MOC_EXECUTABLE to: ${CMAKE_AUTOMOC_MOC_EXECUTABLE}")
-    else()
-        # x64 build - set paths to x64 Qt
-        set(Qt6_DIR
-            "${DEPS_DIR}/obs-deps-qt6-${QT6_VERSION}-x64/lib/cmake/Qt6"
-            CACHE STRING
-            "Qt6 x64 CMake directory"
-            FORCE
-        )
-        message(STATUS "x64 build detected - using x64 Qt at: ${Qt6_DIR}")
-    endif()
+    atk_configure_qt_paths(${QT6_VERSION} ${DEPS_DIR})
 endif()
 
 add_library(${CMAKE_PROJECT_NAME} MODULE)
@@ -112,11 +62,8 @@ add_library(${CMAKE_PROJECT_NAME} MODULE)
 find_package(libobs REQUIRED)
 find_package(obs-frontend-api REQUIRED)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::libobs)
-
-if(ENABLE_FRONTEND_API)
-    target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::obs-frontend-api)
-    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE ENABLE_FRONTEND_API)
-endif()
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::obs-frontend-api)
+target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE ENABLE_FRONTEND_API)
 
 # Qt is always required for proper window parenting
 find_package(
@@ -153,11 +100,14 @@ add_subdirectory(src)
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
 
+target_compile_features(${CMAKE_PROJECT_NAME} PRIVATE cxx_std_23)
 set_target_properties(
     ${CMAKE_PROJECT_NAME}
     PROPERTIES
-        CXX_STANDARD
-            23
+        CXX_STANDARD_REQUIRED
+            ON
+        CXX_EXTENSIONS
+            OFF
 )
 
 string(JSON PLUGIN_DISPLAY_NAME GET ${buildspec} displayName)
@@ -176,48 +126,11 @@ set(PLUGIN_AUTHOR "${PLUGIN_AUTHOR}")
 configure_file(src/config.h.in config.h @ONLY)
 
 include(./cmake/common/plugin-cpack.cmake)
+include(./cmake/common/install_after_build.cmake)
 
 # Build tests
 include(CTest)
 add_subdirectory(tests)
 
-# Automatically run install after build (skip in CI or when installing to system directories without permissions)
-if(NOT DEFINED ENV{CI} AND NOT DEFINED ENV{GITHUB_ACTIONS} AND NOT CMAKE_INSTALL_PREFIX MATCHES "^/usr")
-    add_custom_command(
-        TARGET ${CMAKE_PROJECT_NAME}
-        POST_BUILD
-        COMMAND
-            ${CMAKE_COMMAND} --install ${CMAKE_BINARY_DIR} --config $<CONFIG> --component plugin
-        COMMENT "Installing plugin after build..."
-    )
-endif()
-
-# On non-CI Linux builds, copy plugin and scanner to user home directory after build
-if(NOT DEFINED ENV{CI} AND NOT DEFINED ENV{GITHUB_ACTIONS} AND UNIX AND NOT APPLE)
-    message(STATUS "Configuring post-build copy to ~/.config/obs-studio/plugins/")
-    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-        set(_user_arch "64bit")
-    else()
-        set(_user_arch "32bit")
-    endif()
-
-    add_custom_command(
-        TARGET ${CMAKE_PROJECT_NAME}
-        POST_BUILD
-        COMMAND
-            ${CMAKE_COMMAND} -E make_directory "$ENV{HOME}/.config/obs-studio/plugins/${_name}/bin/${_user_arch}"
-        COMMAND
-            ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:${CMAKE_PROJECT_NAME}>"
-            "$ENV{HOME}/.config/obs-studio/plugins/${_name}/bin/${_user_arch}/"
-        COMMAND
-            ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:${CMAKE_PROJECT_NAME}_scanner>"
-            "$ENV{HOME}/.config/obs-studio/plugins/${_name}/bin/${_user_arch}/"
-        COMMAND
-            ${CMAKE_COMMAND} -E make_directory "$ENV{HOME}/.config/obs-studio/plugins/${_name}/data"
-        COMMAND
-            ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/data"
-            "$ENV{HOME}/.config/obs-studio/plugins/${_name}/data"
-        COMMENT "Copying ${_name} and scanner to user home OBS plugins directory..."
-        VERBATIM
-    )
-endif()
+atk_setup_git_hooks()
+atk_configure_local_post_build_deploy(${CMAKE_PROJECT_NAME} ${_name})

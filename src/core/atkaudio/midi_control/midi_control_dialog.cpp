@@ -1401,7 +1401,6 @@ MidiControlDialog::MidiControlDialog(QWidget* parent)
 
     setWindowTitle("atkAudio MIDI Control");
     resize(1320, 700);
-    qApp->installEventFilter(this);
 
     buildLayout();
 
@@ -1456,8 +1455,6 @@ MidiControlDialog::~MidiControlDialog()
     mappingsTable = nullptr;
     mappingsModel = nullptr;
 
-    qApp->removeEventFilter(this);
-
     if (learnStateListenerId > 0)
         if (auto* controller = MidiControlController::getInstanceWithoutCreating())
             controller->removeLearnStateListener(learnStateListenerId);
@@ -1504,6 +1501,15 @@ void MidiControlDialog::resizeEvent(QResizeEvent* event)
 
 void MidiControlDialog::keyPressEvent(QKeyEvent* event)
 {
+    if (event != nullptr && event->key() == Qt::Key_Escape)
+    {
+        if (cancelLearningIfActive())
+        {
+            event->accept();
+            return;
+        }
+    }
+
     if (event != nullptr && (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter))
     {
         event->accept();
@@ -1513,19 +1519,7 @@ void MidiControlDialog::keyPressEvent(QKeyEvent* event)
     QDialog::keyPressEvent(event);
 }
 
-bool MidiControlDialog::eventFilter(QObject* watched, QEvent* event)
-{
-    if (event != nullptr && event->spontaneous() && (event->isInputEvent() || event->type() == QEvent::ContextMenu))
-    {
-        auto* widget = qobject_cast<QWidget*>(watched);
-        if (widget != nullptr && (widget == this || isAncestorOf(widget)))
-            cancelLearningFromUiInteraction();
-    }
-
-    return QDialog::eventFilter(watched, event);
-}
-
-bool MidiControlDialog::cancelLearningFromUiInteraction()
+bool MidiControlDialog::cancelLearningIfActive()
 {
     auto* controller = MidiControlController::getInstanceWithoutCreating();
     if (controller == nullptr)
@@ -1535,8 +1529,6 @@ bool MidiControlDialog::cancelLearningFromUiInteraction()
     if (!learnState.active)
         return false;
 
-    suppressLearnStartAfterImplicitCancel = true;
-    QTimer::singleShot(0, this, [this]() { suppressLearnStartAfterImplicitCancel = false; });
     controller->cancelLearning();
     return true;
 }
@@ -1656,6 +1648,11 @@ void MidiControlDialog::buildLayout()
         }
     );
 
+    auto* topSection = new QWidget(this);
+    auto* topSectionLayout = new QVBoxLayout(topSection);
+    topSectionLayout->setContentsMargins(0, 0, 0, 0);
+    topSectionLayout->setSpacing(0);
+
     auto* subscriptionsRow = new QHBoxLayout();
 
     auto* inputSubscriptionColumn = new QVBoxLayout();
@@ -1671,7 +1668,7 @@ void MidiControlDialog::buildLayout()
     inputDeviceLayout->setSpacing(4);
     inputDeviceContainer->setLayout(inputDeviceLayout);
     inputDeviceScrollArea->setWidget(inputDeviceContainer);
-    inputDeviceScrollArea->setMinimumHeight(100);
+    inputDeviceScrollArea->setMinimumHeight(60);
     inputSubscriptionColumn->addWidget(inputDeviceScrollArea);
     subscriptionsRow->addLayout(inputSubscriptionColumn);
 
@@ -1688,15 +1685,21 @@ void MidiControlDialog::buildLayout()
     outputDeviceLayout->setSpacing(4);
     outputDeviceContainer->setLayout(outputDeviceLayout);
     outputDeviceScrollArea->setWidget(outputDeviceContainer);
-    outputDeviceScrollArea->setMinimumHeight(100);
+    outputDeviceScrollArea->setMinimumHeight(60);
     outputSubscriptionColumn->addWidget(outputDeviceScrollArea);
     subscriptionsRow->addLayout(outputSubscriptionColumn);
 
-    mainLayout->addLayout(subscriptionsRow);
+    topSectionLayout->addLayout(subscriptionsRow);
+    topSection->setLayout(topSectionLayout);
+
+    auto* mappingsSection = new QWidget(this);
+    auto* mappingsSectionLayout = new QVBoxLayout(mappingsSection);
+    mappingsSectionLayout->setContentsMargins(0, 0, 0, 0);
+    mappingsSectionLayout->setSpacing(4);
 
     auto* mappingHeading = new QLabel("Mappings", this);
     mappingHeading->setStyleSheet("font-weight: bold;");
-    mainLayout->addWidget(mappingHeading);
+    mappingsSectionLayout->addWidget(mappingHeading);
 
     mappingsTable = new QTableView(this);
     mappingsModel = new MidiControlMappingsTableModel(&dialogMappings, this);
@@ -1729,9 +1732,18 @@ void MidiControlDialog::buildLayout()
         }
     );
 
-    mainLayout->addWidget(mappingsTable, 1);
+    mappingsSectionLayout->addWidget(mappingsTable, 1);
     layoutMappingsTableColumns(mappingsTable);
     openPersistentEditorsForSelectedRow(mappingsTable, mappingsModel, -1, -1);
+
+    auto* subscriptionsAndMappingsSplitter = new QSplitter(Qt::Vertical, this);
+    subscriptionsAndMappingsSplitter->addWidget(topSection);
+    subscriptionsAndMappingsSplitter->addWidget(mappingsSection);
+    subscriptionsAndMappingsSplitter->setChildrenCollapsible(false);
+    subscriptionsAndMappingsSplitter->setStretchFactor(0, 0);
+    subscriptionsAndMappingsSplitter->setStretchFactor(1, 1);
+    subscriptionsAndMappingsSplitter->setSizes({220, 420});
+    mainLayout->addWidget(subscriptionsAndMappingsSplitter, 1);
 
     connect(
         mappingsTable,
@@ -1740,9 +1752,6 @@ void MidiControlDialog::buildLayout()
         [this](const QModelIndex& index)
         {
             if (!index.isValid())
-                return;
-
-            if (suppressLearnStartAfterImplicitCancel)
                 return;
 
             if (index.column() != midi_control_column_learn)
@@ -1755,10 +1764,17 @@ void MidiControlDialog::buildLayout()
             if (controller == nullptr)
                 return;
 
-            if (cancelLearningFromUiInteraction())
-                return;
+            auto learnState = controller->getLearnState();
+            auto mappingId = dialogMappings[size_t(index.row())].mappingId;
+            auto isLearningThisRow = learnState.active && learnState.mappingId == mappingId;
 
-            controller->beginLearning(dialogMappings[size_t(index.row())].mappingId);
+            if (isLearningThisRow)
+            {
+                controller->cancelLearning();
+                return;
+            }
+
+            controller->beginLearning(mappingId);
         }
     );
 
@@ -2054,6 +2070,26 @@ void MidiControlDialog::removeSelectedMappings()
     std::sort(rows.begin(), rows.end());
     rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
 
+    auto* controller = MidiControlController::getInstanceWithoutCreating();
+    if (controller != nullptr)
+    {
+        auto learnState = controller->getLearnState();
+        if (learnState.active)
+        {
+            for (int row : rows)
+            {
+                if (!isValidRow(row))
+                    continue;
+
+                if (dialogMappings[size_t(row)].mappingId == learnState.mappingId)
+                {
+                    controller->cancelLearning();
+                    break;
+                }
+            }
+        }
+    }
+
     if (mappingsModel != nullptr)
         mappingsModel->removeRowsSortedUnique(rows);
 
@@ -2216,6 +2252,8 @@ void MidiControlDialog::loadMappingsFromFile()
                 statusLabel->setText(QString::fromUtf8("Failed to load mappings: ") + toQString(loadError));
                 return;
             }
+
+            cancelLearningIfActive();
 
             dialogMappings = std::move(loadedMappings);
 

@@ -81,11 +81,6 @@ if(LibObs_FOUND)
         )
     endif()
 
-    # Also create OBS::libobs alias for compatibility
-    if(NOT TARGET OBS::libobs)
-        add_library(OBS::libobs ALIAS libobs)
-    endif()
-
     mark_as_advanced(
         LibObs_INCLUDE_DIR
         LibObs_LIBRARY

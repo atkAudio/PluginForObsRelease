@@ -31,7 +31,6 @@ protected:
     void changeEvent(QEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
-    bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
     void buildLayout();
@@ -48,7 +47,7 @@ private:
     void loadMappingsFromFile();
     void refreshActiveContextDisplay();
     void handleActiveContextChanged(int bank, int preset);
-    bool cancelLearningFromUiInteraction();
+    bool cancelLearningIfActive();
     void showLastTouchedHelperDialog();
     void handleLearnStateChanged(const MidiControlLearnState& learnState);
     bool isValidRow(int row) const;
@@ -83,7 +82,6 @@ private:
     int learnStateListenerId = 0;
     int activeContextListenerId = 0;
     int persistentEditorsRow = -1;
-    bool suppressLearnStartAfterImplicitCancel = false;
     bool rebuildingUi = false;
     bool shuttingDown = false;
 };

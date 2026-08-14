@@ -6,14 +6,10 @@ if(NOT TARGET juce::juce_audio_processors)
 endif()
 
 add_executable(${CMAKE_PROJECT_NAME}_scanner PluginScanner.cpp)
+atk_apply_packaging_build_flags(${CMAKE_PROJECT_NAME}_scanner)
+atk_apply_juce_recommended_flags(${CMAKE_PROJECT_NAME}_scanner)
 
-target_link_libraries(
-    ${CMAKE_PROJECT_NAME}_scanner
-    PRIVATE
-        juce::juce_audio_utils
-        juce::juce_recommended_config_flags
-        juce::juce_recommended_lto_flags
-)
+target_link_libraries(${CMAKE_PROJECT_NAME}_scanner PRIVATE juce::juce_audio_utils)
 
 target_compile_definitions(
     ${CMAKE_PROJECT_NAME}_scanner
@@ -26,7 +22,7 @@ target_compile_definitions(
         JUCE_WEB_BROWSER=0
 )
 
-suppress_juce_target_warnings(${CMAKE_PROJECT_NAME}_scanner)
+atk_suppress_juce_target_warnings(${CMAKE_PROJECT_NAME}_scanner)
 
 if(UNIX AND NOT APPLE)
     target_compile_definitions(
@@ -46,16 +42,7 @@ if(WIN32)
                 FALSE
     )
     if(MSVC)
-        set_property(TARGET ${CMAKE_PROJECT_NAME}_scanner PROPERTY CXX_SCAN_FOR_MODULES OFF)
-
-        target_compile_options(
-            ${CMAKE_PROJECT_NAME}_scanner
-            PRIVATE
-                /wd4244
-                /wd4267
-                /wd4390
-                /wd5105
-        )
+        atk_apply_msvc_juce_warning_overrides(${CMAKE_PROJECT_NAME}_scanner)
     endif()
 endif()
 
@@ -67,7 +54,8 @@ if(APPLE)
     set_target_properties(
         ${CMAKE_PROJECT_NAME}_scanner
         PROPERTIES
-            MACOSX_BUNDLE FALSE
+            MACOSX_BUNDLE
+                FALSE
     )
 
     # Note: Scanner copy and bundle re-signing is handled in cmake/common/plugin-cpack.cmake

@@ -6,77 +6,6 @@ string(JSON WEBSITE GET "${_buildspec_json}" website)
 string(JSON DISPLAYNAME GET "${_buildspec_json}" displayName)
 string(JSON PATHNAME GET "${_buildspec_json}" name)
 
-# Define ATK_CI_BUILD for CI builds
-if(DEFINED ENV{CI} OR DEFINED ENV{GITHUB_ACTIONS})
-    add_compile_definitions(ATK_CI_BUILD)
-endif()
-
-# Define ATK_DEBUG for Debug/RelWithDebInfo builds when not in CI
-if(
-    (
-        CMAKE_BUILD_TYPE
-            STREQUAL
-            "Debug"
-        OR CMAKE_BUILD_TYPE
-            STREQUAL
-            "RelWithDebInfo"
-    )
-    AND NOT DEFINED
-        ENV{CI}
-    AND NOT DEFINED
-        ENV{GITHUB_ACTIONS}
-)
-    add_compile_definitions(ATK_DEBUG)
-endif()
-
-# Match JUCE's recommended config flags for Release and RelWithDebInfo
-# while preserving standard IEEE floating-point behavior.
-if(UNIX)
-    string(APPEND CMAKE_C_FLAGS_RELEASE " -g -O3")
-    string(APPEND CMAKE_CXX_FLAGS_RELEASE " -g -O3")
-    string(APPEND CMAKE_C_FLAGS_RELWITHDEBINFO " -g -O3")
-    string(APPEND CMAKE_CXX_FLAGS_RELWITHDEBINFO " -g -O3")
-
-    if(APPLE)
-        string(APPEND CMAKE_OBJC_FLAGS_RELEASE " -g -O3")
-        string(APPEND CMAKE_OBJCXX_FLAGS_RELEASE " -g -O3")
-        string(APPEND CMAKE_OBJC_FLAGS_RELWITHDEBINFO " -g -O3")
-        string(APPEND CMAKE_OBJCXX_FLAGS_RELWITHDEBINFO " -g -O3")
-    endif()
-
-    # LTO flags (match juce_recommended_lto_flags) - only on CI for faster local builds
-    if(DEFINED ENV{CI} OR DEFINED ENV{GITHUB_ACTIONS})
-        add_compile_options($<$<CONFIG:Release>:-flto>)
-        add_link_options($<$<CONFIG:Release>:-flto>)
-        add_compile_options($<$<CONFIG:RelWithDebInfo>:-flto>)
-        add_link_options($<$<CONFIG:RelWithDebInfo>:-flto>)
-    endif()
-elseif(WIN32)
-    # Match JUCE: /Ox for Release, /Zi for debug symbols
-    add_compile_options(
-        $<$<CONFIG:Release>:/Zi>
-        $<$<CONFIG:Release>:/Ox>
-        $<$<CONFIG:Release>:/MP>
-        $<$<CONFIG:RelWithDebInfo>:/Zi>
-        $<$<CONFIG:RelWithDebInfo>:/Ox>
-        $<$<CONFIG:RelWithDebInfo>:/MP>
-    )
-
-    # LTO flags (match juce_recommended_lto_flags) - only on CI for faster local builds
-    if(DEFINED ENV{CI} OR DEFINED ENV{GITHUB_ACTIONS})
-        if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
-            add_compile_options($<$<CONFIG:Release>:/GL>)
-            add_link_options($<$<CONFIG:Release>:/LTCG>)
-            add_compile_options($<$<CONFIG:RelWithDebInfo>:/GL>)
-            add_link_options($<$<CONFIG:RelWithDebInfo>:/LTCG>)
-        else()
-            # Clang-cl
-            add_compile_options($<$<CONFIG:Release>:-flto>)
-            add_compile_options($<$<CONFIG:RelWithDebInfo>:-flto>)
-        endif()
-    endif()
-endif()
-
 file(
     CREATE_LINK
         "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
@@ -99,14 +28,9 @@ endif()
 
 # Detect Windows target architecture once for all subsequent checks
 if(WIN32)
-    if(CMAKE_GENERATOR_PLATFORM)
-        set(_win_target_arch "${CMAKE_GENERATOR_PLATFORM}")
-    elseif(CMAKE_VS_PLATFORM_NAME)
-        set(_win_target_arch "${CMAKE_VS_PLATFORM_NAME}")
-    else()
-        set(_win_target_arch "${CMAKE_SYSTEM_PROCESSOR}")
-    endif()
+    atk_get_windows_target_arch(_win_target_arch)
 endif()
+atk_get_obs_arch_dir(_obs_arch_dir)
 
 # Include architecture in package name only for Windows ARM64
 # Include build type in filename for local builds (non-CI)
@@ -167,10 +91,10 @@ if(WIN32)
     )
 
     # Install scanner alongside the main plugin
-    if(TARGET atkaudio-pluginforobs_scanner)
+    if(TARGET ${TARGET_NAME}_scanner)
         install(
             TARGETS
-                atkaudio-pluginforobs_scanner
+                ${TARGET_NAME}_scanner
             RUNTIME
                 DESTINATION "${TARGET_NAME}/bin/64bit"
                 COMPONENT plugin
@@ -216,12 +140,6 @@ elseif(APPLE)
     # No separate data directory needed (unlike Windows/Linux)
 else()
     # Linux: Install plugin to system directories
-    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-        set(_user_arch "64bit")
-    else()
-        set(_user_arch "32bit")
-    endif()
-
     # Install .so file to system obs-plugins directory
     install(
         TARGETS
@@ -232,10 +150,10 @@ else()
     )
 
     # Install scanner alongside the main plugin (Linux)
-    if(TARGET atkaudio-pluginforobs_scanner)
+    if(TARGET ${TARGET_NAME}_scanner)
         install(
             TARGETS
-                atkaudio-pluginforobs_scanner
+                ${TARGET_NAME}_scanner
             RUNTIME
                 DESTINATION ${CMAKE_INSTALL_LIBDIR}/obs-plugins
                 COMPONENT plugin
@@ -298,13 +216,7 @@ elseif(UNIX AND DEFINED ENV{CI})
 endif()
 
 # Function to create portable install pattern (flat structure for ZIP)
-function(create_portable_installs target_name)
-    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-        set(_portable_arch "64bit")
-    else()
-        set(_portable_arch "32bit")
-    endif()
-
+function(create_portable_installs target_name portable_arch_dir)
     message(STATUS "Creating portable install commands for target '${target_name}'")
 
     # Portable install uses flat obs-plugins structure regardless of platform
@@ -312,20 +224,20 @@ function(create_portable_installs target_name)
         TARGETS
             ${target_name}
         RUNTIME
-            DESTINATION obs-plugins/${_portable_arch}
+            DESTINATION obs-plugins/${portable_arch_dir}
             COMPONENT portable
         LIBRARY
-            DESTINATION obs-plugins/${_portable_arch}
+            DESTINATION obs-plugins/${portable_arch_dir}
             COMPONENT portable
     )
 
     # Install scanner for portable component
-    if(TARGET atkaudio-pluginforobs_scanner)
+    if(TARGET ${TARGET_NAME}_scanner)
         install(
             TARGETS
-                atkaudio-pluginforobs_scanner
+                ${TARGET_NAME}_scanner
             RUNTIME
-                DESTINATION obs-plugins/${_portable_arch}
+                DESTINATION obs-plugins/${portable_arch_dir}
                 COMPONENT portable
         )
     endif()
@@ -341,9 +253,9 @@ function(create_portable_installs target_name)
                 CODE
                     "
         if(DEFINED ENV{DESTDIR})
-          set(SO_FILE \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/obs-plugins/${_portable_arch}/${target_name}.so\")
+                    set(SO_FILE \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/obs-plugins/${portable_arch_dir}/${target_name}.so\")
         else()
-          set(SO_FILE \"\${CMAKE_INSTALL_PREFIX}/obs-plugins/${_portable_arch}/${target_name}.so\")
+                    set(SO_FILE \"\${CMAKE_INSTALL_PREFIX}/obs-plugins/${portable_arch_dir}/${target_name}.so\")
         endif()
         if(EXISTS \"\${SO_FILE}\")
           execute_process(COMMAND ${CMAKE_OBJCOPY} --only-keep-debug \"\${SO_FILE}\" \"${CMAKE_CURRENT_BINARY_DIR}/${target_name}.so.debug\")
@@ -358,7 +270,7 @@ function(create_portable_installs target_name)
 endfunction()
 
 # Create portable install commands
-create_portable_installs(${TARGET_NAME})
+create_portable_installs(${TARGET_NAME} ${_obs_arch_dir})
 
 set(CPACK_NSIS_CONTACT "${EMAIL}")
 set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
@@ -407,7 +319,9 @@ if(WIN32)
     set(CPACK_PACKAGE_INSTALL_REGISTRY_KEY "${PROJECT_NAME}")
     set(CPACK_PACKAGE_EXTENSION "exe")
 
-    # Configure NSIS for specific architectures
+    # Configure NSIS preinstall architecture checks.
+    set(CPACK_NSIS_EXTRA_PREINSTALL_COMMANDS "")
+
     if(_win_target_arch STREQUAL "ARM64")
         # Simple architecture check for ARM64 installer
         set(CPACK_NSIS_EXTRA_PREINSTALL_COMMANDS
@@ -419,9 +333,6 @@ if(WIN32)
       \${EndIf}
     "
         )
-    else()
-        # No strict architecture check for x64 (compatible with ARM64 via emulation)
-        set(CPACK_NSIS_EXTRA_PREINSTALL_COMMANDS "")
     endif()
 
     # CPack NSIS does not reliably populate ARP DisplayIcon from icon settings alone.
@@ -613,12 +524,7 @@ endif()
 # PORTABLE INSTALLER CONFIGURATION (Define before first CPack include)
 # ============================================================================
 
-# Detect architecture for portable installer
-if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-    set(PORTABLE_ARCH_DIR "64bit")
-else()
-    set(PORTABLE_ARCH_DIR "32bit")
-endif()
+set(PORTABLE_ARCH_DIR "${_obs_arch_dir}")
 
 # Install portable installer script for Linux only
 if(UNIX AND NOT APPLE)

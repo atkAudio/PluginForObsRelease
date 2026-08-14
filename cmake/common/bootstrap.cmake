@@ -68,13 +68,19 @@ set(PLUGIN_EMAIL ${_email})
 set(PLUGIN_VERSION ${_version})
 set(MACOS_BUNDLEID ${_bundleId})
 
-string(REPLACE "." ";" _version_canonical "${_version}")
+string(
+    REPLACE "."
+    ";"
+    _version_canonical
+    "${_version}"
+)
 list(GET _version_canonical 0 PLUGIN_VERSION_MAJOR)
 list(GET _version_canonical 1 PLUGIN_VERSION_MINOR)
 list(GET _version_canonical 2 PLUGIN_VERSION_PATCH)
 unset(_version_canonical)
 
 include(osconfig)
+include(git_hooks)
 
 # Allow selection of common build types via UI
 if(NOT CMAKE_GENERATOR MATCHES "(Xcode|Visual Studio .+)")

@@ -14,36 +14,31 @@ target_include_directories(
 # Always use JUCE modules only (no helper tools)
 set(JUCE_MODULES_ONLY ON CACHE BOOL "Only build JUCE modules" FORCE)
 
-# Store FetchContent downloads in _deps to persist across cache clears
-set(FETCHCONTENT_BASE_DIR "${CMAKE_SOURCE_DIR}/_deps" CACHE PATH "" FORCE)
+# Persist JUCE across cache resets by reusing the repository's checked-out source tree.
+set(_juce_source_dir "${CMAKE_SOURCE_DIR}/_deps/juce-src")
+if(EXISTS "${_juce_source_dir}/CMakeLists.txt")
+    set(FETCHCONTENT_SOURCE_DIR_JUCE "${_juce_source_dir}" CACHE PATH "Source directory for JUCE" FORCE)
+    message(STATUS "Using existing JUCE checkout at ${FETCHCONTENT_SOURCE_DIR_JUCE}")
+endif()
 
 include(FetchContent)
 FetchContent_Declare(
     juce
     EXCLUDE_FROM_ALL
     GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
-    GIT_TAG 9.0.0
+    GIT_TAG 9.0.1
+    GIT_SHALLOW TRUE
     PATCH_COMMAND
         ${CMAKE_COMMAND} -P "${CMAKE_SOURCE_DIR}/cmake/patches/apply-juce-patches.cmake"
 )
 FetchContent_MakeAvailable(juce)
 
-function(suppress_juce_target_warnings target_name)
-    target_compile_options(
-        ${target_name}
-        PRIVATE
-            $<$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang>:-Wno-range-loop-bind-reference>
-            $<$<COMPILE_LANG_AND_ID:C,Clang,AppleClang>:-Wno-ambiguous-macro>
-            $<$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang>:-Wno-ambiguous-macro>
-            $<$<COMPILE_LANG_AND_ID:OBJC,Clang,AppleClang>:-Wno-arc-repeated-use-of-weak>
-            $<$<COMPILE_LANG_AND_ID:OBJCXX,Clang,AppleClang>:-Wno-arc-repeated-use-of-weak>
-    )
-endfunction()
-
 # JUCE module targets are INTERFACE targets, so suppress their known upstream
 # diagnostics on each concrete target that compiles the module implementation
 # units.
-suppress_juce_target_warnings(${PROJECT_NAME})
+atk_suppress_juce_target_warnings(${PROJECT_NAME})
+atk_apply_packaging_build_flags(${PROJECT_NAME})
+atk_apply_juce_recommended_flags(${PROJECT_NAME})
 
 target_link_libraries(
     ${PROJECT_NAME}
@@ -51,9 +46,6 @@ target_link_libraries(
         juce::juce_audio_utils
         juce::juce_gui_extra
         juce::juce_dsp
-        juce::juce_recommended_config_flags
-        juce::juce_recommended_lto_flags
-        OBS::obs-frontend-api
 )
 
 target_compile_definitions(
@@ -94,22 +86,7 @@ endif()
 if(MSVC)
     # This target does not use C++ modules. Disabling MSVC's module scan avoids
     # spurious `*.module.json` warnings when multiple sources share a basename.
-    set_property(
-        TARGET
-            ${PROJECT_NAME}
-        PROPERTY
-            CXX_SCAN_FOR_MODULES
-                OFF
-    )
-
-    target_compile_options(
-        ${PROJECT_NAME}
-        PRIVATE
-            /wd4244
-            /wd4267
-            /wd4390
-            /wd5105
-    )
+    atk_apply_msvc_juce_warning_overrides(${PROJECT_NAME})
 endif()
 
 if(NOT WIN32)
@@ -123,20 +100,7 @@ if(NOT WIN32)
     )
 endif()
 
-if(WIN32)
-    file(
-        TO_CMAKE_PATH
-        "${CMAKE_INSTALL_PREFIX}"
-        _sanitized_prefix
-    )
-    string(
-        REGEX REPLACE "/$"
-        ""
-        _sanitized_prefix
-        "${_sanitized_prefix}"
-    )
-    set(CMAKE_INSTALL_PREFIX "${_sanitized_prefix}" CACHE PATH "Sanitized install prefix" FORCE)
-endif()
+atk_sanitize_windows_install_prefix()
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE JUCE_ASIO=1)
 

@@ -1,7 +1,43 @@
 #pragma once
+
+#include <cctype>
 #include <sstream>
 #include <string>
 #include <vector>
+
+inline std::string NormalizeVersionString(const std::string& version)
+{
+    auto start = version.find_first_of("0123456789");
+    if (start == std::string::npos)
+        return {};
+
+    std::string normalized;
+    bool lastWasDot = false;
+    for (size_t i = start; i < version.size(); ++i)
+    {
+        auto ch = static_cast<unsigned char>(version[i]);
+        if (std::isdigit(ch) != 0)
+        {
+            normalized.push_back(static_cast<char>(ch));
+            lastWasDot = false;
+            continue;
+        }
+
+        if (ch == '.' && !lastWasDot)
+        {
+            normalized.push_back('.');
+            lastWasDot = true;
+            continue;
+        }
+
+        break;
+    }
+
+    while (!normalized.empty() && normalized.back() == '.')
+        normalized.pop_back();
+
+    return normalized;
+}
 
 inline std::vector<int> TokenizeVersionString(const std::string& str)
 {

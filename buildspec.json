@@ -5,8 +5,8 @@
       "baseUrl": "https://github.com/obsproject/obs-studio/archive/refs/tags",
       "hashes": {
         "macos": "39751f067bacc13d44b116c5138491b5f1391f91516d3d590d874edd21292291",
-        "windows-x64": "2c8427c10b55ac6d68008df2e9a3e82f4647aaad18f105e30d4713c2de678ccf",
-        "windows-ARM64": "2c8427c10b55ac6d68008df2e9a3e82f4647aaad18f105e30d4713c2de678ccf"
+        "windows-ARM64": "2c8427c10b55ac6d68008df2e9a3e82f4647aaad18f105e30d4713c2de678ccf",
+        "windows-x64": "2c8427c10b55ac6d68008df2e9a3e82f4647aaad18f105e30d4713c2de678ccf"
       },
       "label": "OBS sources",
       "version": "31.1.1"
@@ -15,8 +15,8 @@
       "baseUrl": "https://github.com/obsproject/obs-deps/releases/download",
       "hashes": {
         "macos": "9403bb43fb0a9bb215739a5659ca274fe884dbbbcd22bd9ca781c961fb041c42",
-        "windows-x64": "8de229cff6f1981508c0eb646b35e644633a5855787b9f5d3b90ae2aeb87ffc1",
-        "windows-ARM64": "dd87ba00a6cbc153182fb62b3678a3b5021d1d11eb2730442060937a645eb97e"
+        "windows-ARM64": "dd87ba00a6cbc153182fb62b3678a3b5021d1d11eb2730442060937a645eb97e",
+        "windows-x64": "8de229cff6f1981508c0eb646b35e644633a5855787b9f5d3b90ae2aeb87ffc1"
       },
       "label": "Pre-Built obs-deps",
       "version": "2025-08-23"
@@ -24,13 +24,13 @@
     "qt6": {
       "baseUrl": "https://github.com/obsproject/obs-deps/releases/download",
       "debugSymbols": {
-        "windows-x64": "aae88a17e0211cb37db6a8602f2e20d69255be1f9700c699008ca5adbce1dde2",
-        "windows-ARM64": "6e866490277a8b29e82a87fc2f22407f93ddaf86444ea0d284370339a05511b3"
+        "windows-ARM64": "6e866490277a8b29e82a87fc2f22407f93ddaf86444ea0d284370339a05511b3",
+        "windows-x64": "aae88a17e0211cb37db6a8602f2e20d69255be1f9700c699008ca5adbce1dde2"
       },
       "hashes": {
         "macos": "990f11638b80a4509e14e8c315f6e4caa0861e37fcd3113a256fbff835ffca29",
-        "windows-x64": "c62e82483bc7c0bf199e8ac3220c66a85a6e8a0cd69a05b6d44f873b830e415f",
-        "windows-ARM64": "cc8ec983de9b7d81aa98beeb1b989d707ee3c73b85b4d41c85d94114eba81f91"
+        "windows-ARM64": "cc8ec983de9b7d81aa98beeb1b989d707ee3c73b85b4d41c85d94114eba81f91",
+        "windows-x64": "c62e82483bc7c0bf199e8ac3220c66a85a6e8a0cd69a05b6d44f873b830e415f"
       },
       "label": "Pre-Built Qt6",
       "version": "2025-08-23"
@@ -47,6 +47,6 @@
   "uuids": {
     "windowsApp": "ad885c58-5ca9-44de-8f4f-1c12676626a9"
   },
-  "version": "0.34.0",
+  "version": "0.34.1",
   "website": "https://www.atkaudio.com"
 }

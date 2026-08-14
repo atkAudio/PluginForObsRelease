@@ -48,10 +48,77 @@ namespace
 {
 atk::MidiControlDialog* g_midiToObsDialog = nullptr;
 bool g_obsFrontendExiting = false;
+bool g_updateCheckInitialized = false;
+bool g_loadConflictAlertShown = false;
+constexpr bool kForceDuplicateInstallConflictForTesting = false;
 
-void onFrontendShutdownEvent(enum obs_frontend_event event, void* private_data)
+obs_module_t* findLoadedModuleConflictByName()
+{
+    if (kForceDuplicateInstallConflictForTesting)
+        return obs_current_module();
+
+    auto* currentModule = obs_current_module();
+    auto* loadedModuleByName = obs_get_module(plugin_name);
+
+    if (loadedModuleByName == nullptr || loadedModuleByName == currentModule)
+        return nullptr;
+
+    return loadedModuleByName;
+}
+
+void showDuplicateInstallAlert(obs_module_t* loadedModule)
+{
+    if (g_loadConflictAlertShown)
+        return;
+
+    g_loadConflictAlertShown = true;
+
+    auto* parent = static_cast<QWidget*>(obs_frontend_get_main_window());
+
+    const char* loadedBinaryPath = loadedModule ? obs_get_module_binary_path(loadedModule) : nullptr;
+    const char* loadedFileName = loadedModule ? obs_get_module_file_name(loadedModule) : nullptr;
+
+    const QString message = QString::fromUtf8(
+                                "Another PluginForObs installation is already loaded in this OBS session.\n\n"
+                                "Plugin name: %1\n"
+                                "Attempted version: %2\n"
+                                "Loaded module file: %3\n"
+                                "Loaded module path: %4\n"
+                                "Attempted module path: %5\n\n"
+                                "OBS will skip loading this plugin to avoid duplicate registration.\n"
+                                "Please keep only one PluginForObs installation/version and restart OBS."
+    )
+                                .arg(QString::fromUtf8(plugin_name))
+                                .arg(PLUGIN_VERSION)
+                                .arg(QString::fromUtf8(loadedFileName ? loadedFileName : "(unknown)"))
+                                .arg(QString::fromUtf8(loadedBinaryPath ? loadedBinaryPath : "(unknown)"))
+                                .arg(QString::fromUtf8(obs_get_module_binary_path(obs_current_module())));
+
+    QMessageBox::critical(parent, "atkAudio Plugin Load Error", message, QMessageBox::Ok);
+}
+
+void onFrontendEvent(enum obs_frontend_event event, void* private_data)
 {
     UNUSED_PARAMETER(private_data);
+
+    if (event == OBS_FRONTEND_EVENT_THEME_CHANGED)
+    {
+        atk::getQtMainWindowHandle();
+
+        return;
+    }
+
+    if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING)
+    {
+        atk::getQtMainWindowHandle();
+
+        if (!g_updateCheckInitialized)
+        {
+            g_updateCheckInitialized = true;
+            atk::update();
+        }
+        return;
+    }
 
     if (event != OBS_FRONTEND_EVENT_EXIT && event != OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN)
         return;
@@ -142,6 +209,29 @@ bool obs_module_load(void)
     atk::settings::initialize();
     atk::logging::info("OBS_API", "obs_module_load called");
 
+    auto* loadedModuleConflict = findLoadedModuleConflictByName();
+    if (loadedModuleConflict != nullptr)
+    {
+        const char* loadedBinaryPath = obs_get_module_binary_path(loadedModuleConflict);
+        const char* loadedFileName = obs_get_module_file_name(loadedModuleConflict);
+
+        obs_log(
+            LOG_ERROR,
+            "Detected existing loaded module for plugin name '%s' (file='%s', path='%s'). "
+            "Refusing to load PluginForObs version %s to prevent duplicate installations.",
+            plugin_name,
+            loadedFileName ? loadedFileName : "(unknown)",
+            loadedBinaryPath ? loadedBinaryPath : "(unknown)",
+            PLUGIN_VERSION
+        );
+
+        showDuplicateInstallAlert(loadedModuleConflict);
+
+        atk::logging::error("OBS_API", "obs_module_load failed due duplicate atkAudio installation detection");
+        atk::settings::shutdown();
+        return false;
+    }
+
     std::string obsCurrentVersion = obs_get_version_string();
     std::string requiredVersion = PLUGIN_OBS_VERSION_REQUIRED;
 
@@ -179,10 +269,9 @@ bool obs_module_load(void)
         return false;
     }
 
-    atk::update();
-
     g_obsFrontendExiting = false;
-    obs_frontend_add_event_callback(onFrontendShutdownEvent, nullptr);
+    g_updateCheckInitialized = false;
+    obs_frontend_add_event_callback(onFrontendEvent, nullptr);
 
     if (auto* midiObsController = atk::MidiControlController::getInstance())
         midiObsController->initialize();
@@ -210,7 +299,7 @@ void obs_module_unload(void)
 {
     atk::logging::info("OBS_API", "obs_module_unload called");
 
-    obs_frontend_remove_event_callback(onFrontendShutdownEvent, nullptr);
+    obs_frontend_remove_event_callback(onFrontendEvent, nullptr);
 
     if (!g_obsFrontendExiting && g_midiToObsDialog != nullptr)
     {
