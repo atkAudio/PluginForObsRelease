@@ -766,7 +766,7 @@ void ObsFilterLastTouchedTracker::poll()
 
         if (hadStaleEntries)
         {
-            persistHistoryLocked();
+            schedulePersistHistoryLocked();
             parameterKeyCacheDirty = true;
         }
     }
@@ -940,6 +940,9 @@ bool ObsFilterLastTouchedTracker::setParameterNormalizedValue(ObsFilterLastTouch
 
 void ObsFilterLastTouchedTracker::noteParameterTouched(ObsFilterLastTouchedEntry entry)
 {
+    if (!LastTouchedParameterTracker::getInstance().isTrackingEnabled())
+        return;
+
     auto shouldNotify = false;
 
     if (entry.identity.isEmpty())
@@ -975,7 +978,7 @@ void ObsFilterLastTouchedTracker::noteParameterTouched(ObsFilterLastTouchedEntry
     if (int(recentParameters.size()) > kMaxRecentParameters)
         recentParameters.resize(size_t(kMaxRecentParameters));
 
-    persistHistoryLocked();
+    schedulePersistHistoryLocked();
     shouldNotify = true;
 
     if (shouldNotify)
@@ -1066,7 +1069,7 @@ bool ObsFilterLastTouchedTracker::getParameterAtOffsetForLane(
     return false;
 }
 
-void ObsFilterLastTouchedTracker::persistHistoryLocked() const
+void ObsFilterLastTouchedTracker::persistHistoryLocked()
 {
     if (persistenceSuspended)
         return;
@@ -1083,6 +1086,33 @@ void ObsFilterLastTouchedTracker::persistHistoryLocked() const
     }
 
     settings::setObsFilterLastTouchedHistoryForCollection(activeCollectionId, identities);
+}
+
+void ObsFilterLastTouchedTracker::schedulePersistHistoryLocked()
+{
+    if (persistenceSuspended)
+        return;
+
+    if (juce::MessageManager::getInstanceWithoutCreating() == nullptr)
+    {
+        persistHistoryLocked();
+        return;
+    }
+
+    // Polling can report many touches in a row; coalesce them into a single settings write.
+    if (persistFlushPending.exchange(true))
+        return;
+
+    juce::MessageManager::callAsync(
+        []
+        {
+            auto& tracker = getInstance();
+            tracker.persistFlushPending = false;
+
+            const juce::ScopedLock lock(tracker.trackerLock);
+            tracker.persistHistoryLocked();
+        }
+    );
 }
 
 } // namespace atk

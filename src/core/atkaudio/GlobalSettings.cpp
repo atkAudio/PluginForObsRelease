@@ -20,6 +20,7 @@ constexpr const char* kMidiControlDelayedFeedbackOutputEnabledKey =
 constexpr const char* kMidiControlParameterAutoSyncEnabledKey =
     "global.midi_control.feedback.parameter_auto_sync_enabled";
 constexpr const char* kMidiControlMatchByNameEnabledKey = "global.midi_control.match_by_name_enabled";
+constexpr const char* kMidiControlLastTouchedTrackingEnabledKey = "global.midi_control.last_touched.enabled";
 constexpr const char* kMidiControlDelayedFeedbackOutputIdleMsKey =
     "global.midi_control.feedback.delayed_output_idle_ms";
 constexpr const char* kObsFilterLastTouchedHistoryByCollectionKey =
@@ -57,6 +58,7 @@ atk::MidiClientState g_midiObsSubscriptions;
 bool g_midiObsDelayedFeedbackOutputEnabled = true;
 bool g_midiObsParameterAutoSyncEnabled = true;
 bool g_midiObsMatchByNameEnabled = true;
+bool g_midiObsLastTouchedTrackingEnabled = false;
 int g_midiObsDelayedFeedbackOutputIdleMs = kMidiControlDelayedFeedbackOutputDefaultIdleMs;
 std::unordered_map<std::string, std::vector<juce::String>> g_obsFilterLastTouchedHistoryByCollection;
 std::unordered_map<std::string, std::vector<juce::String>> g_pluginLastTouchedHistoryByCollection;
@@ -223,6 +225,8 @@ void ensureSettingsLoaded()
         g_settingsFile->getBoolValue(kMidiControlDelayedFeedbackOutputEnabledKey, true);
     g_midiObsParameterAutoSyncEnabled = g_settingsFile->getBoolValue(kMidiControlParameterAutoSyncEnabledKey, true);
     g_midiObsMatchByNameEnabled = g_settingsFile->getBoolValue(kMidiControlMatchByNameEnabledKey, true);
+    g_midiObsLastTouchedTrackingEnabled =
+        g_settingsFile->getBoolValue(kMidiControlLastTouchedTrackingEnabledKey, false);
     g_midiObsDelayedFeedbackOutputIdleMs = juce::jlimit(
         kMidiControlDelayedFeedbackOutputMinIdleMs,
         kMidiControlDelayedFeedbackOutputMaxIdleMs,
@@ -439,6 +443,32 @@ void atk::settings::setMidiControlMatchByNameEnabled(bool enabled)
     if (g_settingsFile != nullptr)
     {
         g_settingsFile->setValue(kMidiControlMatchByNameEnabledKey, g_midiObsMatchByNameEnabled);
+        g_settingsFile->saveIfNeeded();
+    }
+}
+
+bool atk::settings::isMidiControlLastTouchedTrackingEnabled()
+{
+    std::lock_guard<std::mutex> lock(g_settingsMutex);
+
+    ensureSettingsLoaded();
+    return g_midiObsLastTouchedTrackingEnabled;
+}
+
+void atk::settings::setMidiControlLastTouchedTrackingEnabled(bool enabled)
+{
+    std::lock_guard<std::mutex> lock(g_settingsMutex);
+
+    g_midiObsLastTouchedTrackingEnabled = enabled;
+
+    if (g_settingsLifecycleState == SettingsLifecycleState::shutdown)
+        return;
+
+    ensureSettingsLoaded();
+
+    if (g_settingsFile != nullptr)
+    {
+        g_settingsFile->setValue(kMidiControlLastTouchedTrackingEnabledKey, g_midiObsLastTouchedTrackingEnabled);
         g_settingsFile->saveIfNeeded();
     }
 }

@@ -1,5 +1,5 @@
 {
-  "version": 8,
+  "version": 12,
   "cmakeMinimumRequired": {
     "major": 3,
     "minor": 28,
@@ -36,7 +36,6 @@
       },
       "generator": "Ninja",
       "warnings": {
-        "dev": true,
         "deprecated": true
       },
       "cacheVariables": {
@@ -61,7 +60,6 @@
       },
       "generator": "Xcode",
       "warnings": {
-        "dev": true,
         "deprecated": true
       },
       "cacheVariables": {
@@ -99,7 +97,6 @@
       "generator": "Visual Studio 18 2026",
       "architecture": "x64",
       "warnings": {
-        "dev": true,
         "deprecated": true
       },
       "cacheVariables": {
@@ -125,13 +122,12 @@
       "binaryDir": "${sourceDir}/build_arm64",
       "condition": {
         "type": "equals",
-        "lhs": "${hostSystemName}",
-        "rhs": "Windows"
+        "rhs": "Windows",
+        "lhs": "${hostSystemName}"
       },
       "generator": "Visual Studio 18 2026",
       "architecture": "ARM64",
       "warnings": {
-        "dev": true,
         "deprecated": true
       },
       "cacheVariables": {

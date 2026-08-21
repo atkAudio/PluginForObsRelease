@@ -1567,6 +1567,7 @@ void MidiControlDialog::buildLayout()
     parameterAutoSyncCheckBox = new QCheckBox("Disable parameter auto-sync", this);
     delayedFeedbackOutputCheckBox = new QCheckBox("Delayed MIDI feedback output", this);
     matchByNameCheckBox = new QCheckBox("Match by name", this);
+    lastTouchedTrackingCheckBox = new QCheckBox("Last touched parameter tracking", this);
     delayedFeedbackOutputIdleMsSpinBox = new QSpinBox(this);
     delayedFeedbackOutputIdleMsSpinBox->setRange(50, 5000);
     delayedFeedbackOutputIdleMsSpinBox->setSuffix(" ms");
@@ -1577,6 +1578,7 @@ void MidiControlDialog::buildLayout()
     delayedOutputRow->addWidget(parameterAutoSyncCheckBox);
     delayedOutputRow->addWidget(delayedFeedbackOutputCheckBox);
     delayedOutputRow->addWidget(delayedFeedbackOutputIdleMsSpinBox);
+    delayedOutputRow->addWidget(lastTouchedTrackingCheckBox);
     delayedOutputRow->addStretch(1);
     mainLayout->addLayout(delayedOutputRow);
 
@@ -1628,6 +1630,23 @@ void MidiControlDialog::buildLayout()
                 return;
 
             controller->setMatchByNameEnabled(enabled);
+        }
+    );
+
+    connect(
+        lastTouchedTrackingCheckBox,
+        &QCheckBox::toggled,
+        this,
+        [this](bool enabled)
+        {
+            if (rebuildingUi)
+                return;
+
+            auto* controller = MidiControlController::getInstance();
+            if (controller == nullptr)
+                return;
+
+            controller->setLastTouchedTrackingEnabled(enabled);
         }
     );
 
@@ -1847,16 +1866,19 @@ void MidiControlDialog::reloadFromController()
         if (parameterAutoSyncCheckBox != nullptr
             && matchByNameCheckBox != nullptr
             && delayedFeedbackOutputCheckBox != nullptr
+            && lastTouchedTrackingCheckBox != nullptr
             && delayedFeedbackOutputIdleMsSpinBox != nullptr)
         {
             QSignalBlocker autoSyncBlocker(parameterAutoSyncCheckBox);
             QSignalBlocker matchByNameBlocker(matchByNameCheckBox);
             QSignalBlocker enabledBlocker(delayedFeedbackOutputCheckBox);
+            QSignalBlocker lastTouchedTrackingBlocker(lastTouchedTrackingCheckBox);
             QSignalBlocker delayBlocker(delayedFeedbackOutputIdleMsSpinBox);
 
             parameterAutoSyncCheckBox->setChecked(!controller->isParameterAutoSyncEnabled());
             delayedFeedbackOutputCheckBox->setChecked(controller->isDelayedFeedbackOutputEnabled());
             matchByNameCheckBox->setChecked(controller->isMatchByNameEnabled());
+            lastTouchedTrackingCheckBox->setChecked(controller->isLastTouchedTrackingEnabled());
             delayedFeedbackOutputIdleMsSpinBox->setValue(controller->getDelayedFeedbackOutputIdleMs());
         }
     }

@@ -1,6 +1,4 @@
 # Plugin Scanner - Sandboxed executable for safe plugin scanning
-cmake_minimum_required(VERSION 3.28)
-
 if(NOT TARGET juce::juce_audio_processors)
     message(FATAL_ERROR "JUCE must be available. Build from parent CMakeLists.txt")
 endif()

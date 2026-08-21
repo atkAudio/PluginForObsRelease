@@ -105,6 +105,7 @@ public:
     bool isParameterAutoSyncEnabled() const;
     bool isDelayedFeedbackOutputEnabled() const;
     bool isMatchByNameEnabled() const;
+    bool isLastTouchedTrackingEnabled() const;
     int getDelayedFeedbackOutputIdleMs() const;
     int getActiveBank() const;
     int getActivePreset() const;
@@ -113,6 +114,7 @@ public:
     void setParameterAutoSyncEnabled(bool enabled);
     void setDelayedFeedbackOutputEnabled(bool enabled);
     void setMatchByNameEnabled(bool enabled);
+    void setLastTouchedTrackingEnabled(bool enabled);
     void setDelayedFeedbackOutputIdleMs(int delayMs);
     void stopRuntimeResources();
     void resumeRuntimeResources();
@@ -214,6 +216,7 @@ private:
     bool initialStateRestorePending = false;
     bool parameterAutoSyncEnabled = true;
     bool matchByNameEnabled = true;
+    bool lastTouchedTrackingEnabled = false;
     bool feedbackSyncPending = false;
     double feedbackSyncDeadlineMs = 0.0;
     bool delayedFeedbackOutputEnabled = true;

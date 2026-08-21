@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.28...3.30)
+cmake_minimum_required(VERSION 3.28)
 
 include(./cmake/common/preconfig.cmake)
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/common/bootstrap.cmake")

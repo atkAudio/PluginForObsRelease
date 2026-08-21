@@ -1,6 +1,4 @@
 # Apply JUCE patches - skips if already applied
-cmake_minimum_required(VERSION 3.16)
-
 find_package(Git REQUIRED)
 
 # Get the directory containing the patches (this script's directory)

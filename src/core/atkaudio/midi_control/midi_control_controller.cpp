@@ -1295,6 +1295,8 @@ void MidiControlController::initialize()
     parameterAutoSyncEnabled = atk::settings::isMidiControlParameterAutoSyncEnabled();
     delayedFeedbackOutputEnabled = atk::settings::isMidiControlDelayedFeedbackOutputEnabled();
     matchByNameEnabled = atk::settings::isMidiControlMatchByNameEnabled();
+    lastTouchedTrackingEnabled = atk::settings::isMidiControlLastTouchedTrackingEnabled();
+    LastTouchedParameterTracker::getInstance().setTrackingEnabled(lastTouchedTrackingEnabled);
     delayedFeedbackOutputIdleMs =
         clampDelayedFeedbackOutputIdleMs(atk::settings::getMidiControlDelayedFeedbackOutputIdleMs());
     midiClient.setSubscriptions(subscriptions);
@@ -1463,6 +1465,11 @@ bool MidiControlController::isMatchByNameEnabled() const
     return matchByNameEnabled;
 }
 
+bool MidiControlController::isLastTouchedTrackingEnabled() const
+{
+    return lastTouchedTrackingEnabled;
+}
+
 int MidiControlController::getDelayedFeedbackOutputIdleMs() const
 {
     return delayedFeedbackOutputIdleMs;
@@ -1540,6 +1547,16 @@ void MidiControlController::setMatchByNameEnabled(bool enabled)
     }
 
     atk::settings::setMidiControlMatchByNameEnabled(enabled);
+}
+
+void MidiControlController::setLastTouchedTrackingEnabled(bool enabled)
+{
+    if (lastTouchedTrackingEnabled == enabled)
+        return;
+
+    lastTouchedTrackingEnabled = enabled;
+    LastTouchedParameterTracker::getInstance().setTrackingEnabled(enabled);
+    atk::settings::setMidiControlLastTouchedTrackingEnabled(enabled);
 }
 
 void MidiControlController::setDelayedFeedbackOutputIdleMs(int delayMs)

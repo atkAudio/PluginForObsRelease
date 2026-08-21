@@ -2,6 +2,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <unordered_map>
@@ -52,6 +53,8 @@ public:
     void setHistoryHoldEnabled(bool enabled);
     bool isHistoryHoldEnabled() const;
     bool toggleHistoryHoldEnabled();
+    void setTrackingEnabled(bool enabled);
+    bool isTrackingEnabled() const;
     void setActiveCollectionId(const juce::String& collectionId);
     juce::String getActiveCollectionId() const;
     void setPersistenceSuspended(bool suspended);
@@ -88,7 +91,9 @@ private:
         const juce::String& ownerFilterName
     );
     void ensurePersistenceLoaded();
-    void persistHistoryLocked() const;
+    bool isInternalWriteInProgress(juce::AudioProcessor& processor, int parameterIndex) const;
+    void persistHistoryLocked();
+    void schedulePersistHistoryLocked();
     void notifyTouchListeners();
     juce::String
     createIdentity(const juce::String& ownerSourceUuid, const juce::String& ownerFilterName, int parameterIndex) const;
@@ -104,9 +109,11 @@ private:
     std::vector<std::pair<int, std::function<void()>>> touchListeners;
     uint64_t nextTouchSequence = 0;
     bool historyHoldEnabled = false;
+    bool trackingEnabled = false;
     juce::String activeCollectionId = "default";
     bool persistenceSuspended = false;
     bool persistenceLoaded = false;
+    std::atomic<bool> persistFlushPending{false};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(LastTouchedParameterTracker)
 };

@@ -2,6 +2,7 @@
 
 #include <juce_core/juce_core.h>
 
+#include <atomic>
 #include <functional>
 #include <cstdint>
 #include <unordered_map>
@@ -83,7 +84,8 @@ private:
     void notifyTouchListeners();
     bool getParameterAtOffsetForLane(int offset, uint32_t laneFlag, ObsFilterLastTouchedEntry& entry) const;
     void ensurePersistenceLoaded();
-    void persistHistoryLocked() const;
+    void persistHistoryLocked();
+    void schedulePersistHistoryLocked();
 
     mutable juce::CriticalSection trackerLock;
     std::unordered_map<std::string, ParameterState> parameterStateByIdentity;
@@ -100,6 +102,7 @@ private:
     juce::String activeCollectionId = "default";
     bool persistenceSuspended = false;
     bool persistenceLoaded = false;
+    std::atomic<bool> persistFlushPending{false};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ObsFilterLastTouchedTracker)
 };

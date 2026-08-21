@@ -28,6 +28,16 @@ juce::String normalizeCollectionId(const juce::String& collectionId)
 
     return normalized;
 }
+
+// Plug-ins can re-enter parameter callbacks from within their own value-change handling; only the
+// outermost touch is meaningful and doing work at every level can exhaust the stack.
+thread_local int g_parameterTouchDepth = 0;
+
+// Meters and other read-only parameters change on their own and can never be a user target.
+bool isTrackableParameter(const juce::AudioProcessorParameter& parameter)
+{
+    return parameter.isAutomatable() && !parameter.isMetaParameter();
+}
 } // namespace
 
 namespace atk
@@ -52,7 +62,7 @@ public:
 
         for (auto* parameter : parameters)
         {
-            if (parameter == nullptr)
+            if (parameter == nullptr || !isTrackableParameter(*parameter))
                 continue;
 
             observedParameters.push_back(parameter);
@@ -72,9 +82,10 @@ private:
     {
         juce::ignoreUnused(newValue);
 
-        if (gestureBackedParameters.find(parameterIndex) != gestureBackedParameters.end())
+        // Plug-ins that automate their own parameters do so without gestures, so once a plug-in has
+        // shown it reports gestures, only gesture-wrapped changes count as user edits.
+        if (processorReportsGestures)
         {
-            // For gesture-aware parameters, allow continuous updates only while a gesture is active.
             if (activeGestureParameters.find(parameterIndex) == activeGestureParameters.end())
                 return;
 
@@ -91,7 +102,12 @@ private:
 
     void parameterGestureChanged(int parameterIndex, bool gestureIsStarting) override
     {
-        gestureBackedParameters.insert(parameterIndex);
+        // Our own writes wrap the value change in a gesture; treating those as plug-in gestures
+        // would wrongly classify a gesture-less plug-in as gesture-reporting.
+        if (owner.isInternalWriteInProgress(processor, parameterIndex))
+            return;
+
+        processorReportsGestures = true;
 
         if (!gestureIsStarting)
         {
@@ -107,8 +123,8 @@ private:
     LastTouchedParameterTracker& owner;
     juce::AudioProcessor& processor;
     std::vector<juce::AudioProcessorParameter*> observedParameters;
-    std::unordered_set<int> gestureBackedParameters;
     std::unordered_set<int> activeGestureParameters;
+    bool processorReportsGestures = false;
     juce::String ownerSourceUuid;
     juce::String ownerFilterName;
 };
@@ -349,6 +365,18 @@ bool LastTouchedParameterTracker::toggleHistoryHoldEnabled()
     return historyHoldEnabled;
 }
 
+void LastTouchedParameterTracker::setTrackingEnabled(bool enabled)
+{
+    const juce::ScopedLock lock(trackerLock);
+    trackingEnabled = enabled;
+}
+
+bool LastTouchedParameterTracker::isTrackingEnabled() const
+{
+    const juce::ScopedLock lock(trackerLock);
+    return trackingEnabled;
+}
+
 void LastTouchedParameterTracker::setActiveCollectionId(const juce::String& collectionId)
 {
     const juce::ScopedLock lock(trackerLock);
@@ -406,6 +434,18 @@ void LastTouchedParameterTracker::endInternalWrite(juce::AudioProcessorParameter
     }
 }
 
+bool LastTouchedParameterTracker::isInternalWriteInProgress(juce::AudioProcessor& processor, int parameterIndex) const
+{
+    const juce::ScopedLock lock(trackerLock);
+
+    auto& parameters = processor.getParameters();
+    if (parameterIndex < 0 || parameterIndex >= parameters.size())
+        return false;
+
+    auto it = internalWriteStateByParameter.find(parameters[parameterIndex]);
+    return it != internalWriteStateByParameter.end() && it->second.depth > 0;
+}
+
 void LastTouchedParameterTracker::noteParameterTouched(
     juce::AudioProcessor& processor,
     int parameterIndex,
@@ -413,6 +453,15 @@ void LastTouchedParameterTracker::noteParameterTouched(
     const juce::String& ownerFilterName
 )
 {
+    if (!isTrackingEnabled())
+        return;
+
+    if (g_parameterTouchDepth > 0)
+        return;
+
+    ++g_parameterTouchDepth;
+    const juce::ScopeGuard depthGuard{[] { --g_parameterTouchDepth; }};
+
     auto shouldNotify = false;
 
     {
@@ -497,7 +546,7 @@ void LastTouchedParameterTracker::noteParameterTouched(
             if (int(recentParameters.size()) > kMaxRecentParameters)
                 recentParameters.resize(size_t(kMaxRecentParameters));
 
-            persistHistoryLocked();
+            schedulePersistHistoryLocked();
             shouldNotify = true;
         }
     }
@@ -558,7 +607,7 @@ void LastTouchedParameterTracker::updateProcessorParameterState(
     for (int parameterIndex = 0; parameterIndex < parameters.size(); ++parameterIndex)
     {
         auto* parameter = parameters[parameterIndex];
-        if (parameter == nullptr)
+        if (parameter == nullptr || !isTrackableParameter(*parameter))
             continue;
 
         auto identity = createIdentity(ownerSourceUuid, ownerFilterName, parameterIndex);
@@ -602,7 +651,7 @@ void LastTouchedParameterTracker::ensurePersistenceLoaded()
     persistenceLoaded = true;
 }
 
-void LastTouchedParameterTracker::persistHistoryLocked() const
+void LastTouchedParameterTracker::persistHistoryLocked()
 {
     if (persistenceSuspended)
         return;
@@ -615,6 +664,33 @@ void LastTouchedParameterTracker::persistHistoryLocked() const
             identities.push_back(entry.identity);
 
     settings::setPluginLastTouchedHistoryForCollection(activeCollectionId, identities);
+}
+
+void LastTouchedParameterTracker::schedulePersistHistoryLocked()
+{
+    if (persistenceSuspended)
+        return;
+
+    if (juce::MessageManager::getInstanceWithoutCreating() == nullptr)
+    {
+        persistHistoryLocked();
+        return;
+    }
+
+    // Coalesce the bursts of touches a plug-in can emit into a single settings write.
+    if (persistFlushPending.exchange(true))
+        return;
+
+    juce::MessageManager::callAsync(
+        []
+        {
+            auto& tracker = getInstance();
+            tracker.persistFlushPending = false;
+
+            const juce::ScopedLock lock(tracker.trackerLock);
+            tracker.persistHistoryLocked();
+        }
+    );
 }
 
 juce::String LastTouchedParameterTracker::createIdentity(
