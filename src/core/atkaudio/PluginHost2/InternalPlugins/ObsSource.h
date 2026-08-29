@@ -608,7 +608,7 @@ private:
         return {params.begin(), params.end()};
     }
 
-    SyncBuffer syncBuffer;
+    SyncBuffer syncBuffer{"ObsSource"};
     obs_source_t* currentObsSource = nullptr;
     juce::AudioProcessorValueTreeState apvts;
     std::atomic<bool> connectionScheduled{false};

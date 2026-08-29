@@ -42,7 +42,7 @@ struct source_data
     bool postMute;
     bool postFader;
 
-    SyncBuffer syncBuffer;
+    SyncBuffer syncBuffer{"SourceMixer"};
     std::vector<std::vector<float>> writeBuffer;
     std::vector<float*> writePtrs;
     std::vector<std::vector<float>> readBuffer;

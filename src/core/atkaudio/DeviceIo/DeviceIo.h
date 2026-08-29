@@ -33,6 +33,10 @@ public:
     void setOutputDelay(float delayMs);
     float getOutputDelay() const;
 
+    // Linear gains; only affect the audioserver device signal, never the OBS chain
+    void setInputGain(float linearGain);
+    void setOutputGain(float linearGain);
+
     void getState(std::string& s) override;
     void setState(std::string& s) override;
 
@@ -58,5 +62,11 @@ private:
     std::atomic<bool> bypass{false};
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> fadeGain{1.0f};
     std::atomic<double> fadeDurationSeconds{0.5};
+
+    std::atomic<float> inputGain{1.0f};
+    std::atomic<float> outputGain{1.0f};
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> inputGainSmooth{1.0f};
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> outputGainSmooth{1.0f};
+    double gainSmoothSampleRate = 0.0;
 };
 } // namespace atk

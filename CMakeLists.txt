@@ -24,13 +24,6 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 
-option(ATK_ENABLE_LOCAL_POST_BUILD_INSTALL "Run local cmake --install after build for the plugin component" OFF)
-option(
-    ATK_ENABLE_LINUX_HOME_POST_BUILD_COPY
-    "Copy plugin artifacts into ~/.config/obs-studio/plugins after build on Linux"
-    OFF
-)
-
 include(compilerconfig)
 include(defaults)
 include(helpers)

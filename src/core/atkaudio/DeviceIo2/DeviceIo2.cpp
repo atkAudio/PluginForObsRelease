@@ -252,13 +252,6 @@ void atk::DeviceIo2::process(float** buffer, int numChannels, int numSamples, do
     outputGainSmooth.setTargetValue(wrapperOutputGain);
     inputGainSmooth.setTargetValue(wrapperInputGain);
 
-    for (int j = 0; j < numSamples; j++)
-    {
-        float smoothGain = outputGainSmooth.getNextValue();
-        for (int i = 0; i < numChannels; i++)
-            buffer[i][j] *= smoothGain;
-    }
-
     if (followScene.load(std::memory_order_acquire))
     {
         setFadeTime(fadeDurationSeconds.load(std::memory_order_acquire));
@@ -324,8 +317,25 @@ void atk::DeviceIo2::process(float** buffer, int numChannels, int numSamples, do
 
     audioClient.pullSubscribedInputs(deviceInputBuffer, numSamples, sampleRate);
 
+    // Input gain only affects audio sourced from the audioserver device, before it mixes into the OBS chain.
+    for (int j = 0; j < numSamples; j++)
+    {
+        float smoothGain = inputGainSmooth.getNextValue();
+        for (int ch = 0; ch < numInputSubs; ch++)
+            deviceInputBuffer.getWritePointer(ch)[j] *= smoothGain;
+    }
+
     routingMatrix.applyInputRouting(buffer, deviceInputBuffer, internalBuffer, numChannels, numSamples, numInputSubs);
     routingMatrix.applyOutputRouting(internalBuffer, buffer, deviceOutputBuffer, numChannels, numSamples, numOutputSubs);
+
+    // Output gain only affects audio sent to the audioserver device, applied after routing so the OBS output is
+    // untouched.
+    for (int j = 0; j < numSamples; j++)
+    {
+        float smoothGain = outputGainSmooth.getNextValue();
+        for (int ch = 0; ch < numOutputSubs; ch++)
+            deviceOutputBuffer.getWritePointer(ch)[j] *= smoothGain;
+    }
 
     if (numOutputSubs > 0)
         applyOutputDelay(deviceOutputBuffer, numOutputSubs, numSamples, sampleRate);
@@ -348,13 +358,6 @@ void atk::DeviceIo2::process(float** buffer, int numChannels, int numSamples, do
     }
 
     audioClient.pushSubscribedOutputs(deviceOutputBuffer, numSamples, sampleRate);
-
-    for (int j = 0; j < numSamples; j++)
-    {
-        float smoothGain = inputGainSmooth.getNextValue();
-        for (int i = 0; i < numChannels; i++)
-            buffer[i][j] *= smoothGain;
-    }
 }
 
 void atk::DeviceIo2::setBypass(bool shouldBypass)

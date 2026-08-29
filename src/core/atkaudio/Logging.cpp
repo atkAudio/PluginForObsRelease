@@ -26,7 +26,9 @@ int toObsLogLevel(atk::logging::Level level)
 
 void atk::logging::log(Level level, const char* scope, const juce::String& message)
 {
-    if (!atk::settings::isLoggingEnabled())
+    // Errors must reach the OBS log even with verbose logging off, or failures like settings
+    // path/save errors become undiagnosable for users who never enabled the toggle.
+    if (level != Level::error && !atk::settings::isLoggingEnabled())
         return;
 
     const char* tag = (scope != nullptr && scope[0] != '\0') ? scope : "GENERAL";

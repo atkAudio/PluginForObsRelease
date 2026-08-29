@@ -48,6 +48,21 @@ void atk::DeviceIo::process(float** buffer, int numChannels, int numSamples, dou
     auto& toObsBuffer = deviceIoApp->getToObsBuffer();
     auto& fromObsBuffer = deviceIoApp->getFromObsBuffer();
 
+    auto inputGainTarget = inputGain.load(std::memory_order_acquire);
+    auto outputGainTarget = outputGain.load(std::memory_order_acquire);
+
+    if (gainSmoothSampleRate != sampleRate)
+    {
+        inputGainSmooth.reset(sampleRate, 0.05);
+        outputGainSmooth.reset(sampleRate, 0.05);
+        inputGainSmooth.setCurrentAndTargetValue(inputGainTarget);
+        outputGainSmooth.setCurrentAndTargetValue(outputGainTarget);
+        gainSmoothSampleRate = sampleRate;
+    }
+
+    inputGainSmooth.setTargetValue(inputGainTarget);
+    outputGainSmooth.setTargetValue(outputGainTarget);
+
     bool currentBypass = bypass.load(std::memory_order_acquire);
     float targetGain = currentBypass ? 0.0f : 1.0f;
 
@@ -62,6 +77,21 @@ void atk::DeviceIo::process(float** buffer, int numChannels, int numSamples, dou
 
     bool hasHardwareInput =
         toObsBuffer.read(tempBuffer.getArrayOfWritePointers(), numChannels, numSamples, sampleRate, false);
+
+    // Input gain only affects audio sourced from the audioserver device, before it mixes into the OBS chain.
+    if (hasHardwareInput)
+    {
+        for (int i = 0; i < numSamples; ++i)
+        {
+            float gain = inputGainSmooth.getNextValue();
+            for (int ch = 0; ch < numChannels; ++ch)
+                tempBuffer.getWritePointer(ch)[i] *= gain;
+        }
+    }
+    else
+    {
+        inputGainSmooth.skip(numSamples);
+    }
 
     juce::AudioBuffer<float> hardwareOutputBuffer;
 
@@ -124,10 +154,11 @@ void atk::DeviceIo::process(float** buffer, int numChannels, int numSamples, dou
     for (int i = 0; i < numSamples; ++i)
     {
         float gain = smoothing ? fadeGain.getNextValue() : fadeGain.getCurrentValue();
+        float outGain = outputGainSmooth.getNextValue();
         for (int ch = 0; ch < fadeChannels; ++ch)
         {
             buffer[ch][i] *= gain;
-            fadeDeviceOutputPointers[ch][i] *= gain;
+            fadeDeviceOutputPointers[ch][i] *= gain * outGain;
         }
     }
 
@@ -154,6 +185,16 @@ void atk::DeviceIo::setMixInput(bool shouldMixInput)
     mixInput = shouldMixInput;
 }
 
+void atk::DeviceIo::setInputGain(float linearGain)
+{
+    inputGain.store(linearGain, std::memory_order_release);
+}
+
+void atk::DeviceIo::setOutputGain(float linearGain)
+{
+    outputGain.store(linearGain, std::memory_order_release);
+}
+
 void atk::DeviceIo::setOutputDelay(float delayMs)
 {
     outputDelayMs.store(delayMs, std::memory_order_release);
@@ -178,12 +219,12 @@ void atk::DeviceIo::getState(std::string& s)
     auto& dm = deviceIoApp->getDeviceManager();
     auto setup = dm.getAudioDeviceSetup();
 
+    // Device selection and this instance's own channel subset are plugin-specific;
+    // rate/buffer are shared per-device state owned by AudioServer (see AudioDeviceHandler::setSetup).
     auto* deviceSetup = new juce::XmlElement("DEVICESETUP");
     deviceSetup->setAttribute("deviceType", dm.getCurrentAudioDeviceType());
     deviceSetup->setAttribute("audioOutputDeviceName", setup.outputDeviceName);
     deviceSetup->setAttribute("audioInputDeviceName", setup.inputDeviceName);
-    deviceSetup->setAttribute("audioDeviceRate", setup.sampleRate);
-    deviceSetup->setAttribute("audioDeviceBufferSize", setup.bufferSize);
     deviceSetup->setAttribute("audioDeviceInChans", setup.inputChannels.toString(2));
     deviceSetup->setAttribute("audioDeviceOutChans", setup.outputChannels.toString(2));
     state.addChildElement(deviceSetup);

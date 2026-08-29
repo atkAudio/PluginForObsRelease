@@ -59,12 +59,31 @@ juce::File atk::getSettingsFile(const juce::String& name)
     char* obsPath = obs_module_get_config_path(module, filename.toRawUTF8());
     if (obsPath == nullptr)
     {
-        atk::logging::error("SETTINGS", "obs_module_get_config_path returned nullptr for settings file: " + name);
+        const char* binaryPath = obs_get_module_binary_path(module);
+        atk::logging::error(
+            "SETTINGS",
+            "obs_module_get_config_path returned nullptr for settings file: "
+                + name
+                + ", moduleBinaryPath="
+                + juce::String(binaryPath ? binaryPath : "(unknown)")
+        );
         return {};
     }
 
     juce::File result(obsPath);
     bfree(obsPath);
+
+    auto parentDir = result.getParentDirectory();
+    if (!parentDir.exists() && !parentDir.createDirectory())
+    {
+        atk::logging::error(
+            "SETTINGS",
+            "failed to create settings directory for \"" + name + "\"; path=\"" + parentDir.getFullPathName() + "\""
+        );
+    }
+
+    // No info-level log here: this runs while GlobalSettings' bootstrap holds g_settingsMutex,
+    // and info logging calls isLoggingEnabled(), which re-locks that same non-recursive mutex.
     return result;
 }
 

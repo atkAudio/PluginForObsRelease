@@ -96,8 +96,8 @@ private:
     int outputChannels = 0;
     double sampleRate = 0.0;
 
-    SyncBuffer deviceInputBuffer;
-    SyncBuffer deviceOutputBuffer;
+    SyncBuffer deviceInputBuffer{"DeviceIo2App in"};
+    SyncBuffer deviceOutputBuffer{"DeviceIo2App out"};
 
     DeviceIo2SettingsComponent settingsComponent;
 

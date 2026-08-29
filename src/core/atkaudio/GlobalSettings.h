@@ -69,4 +69,9 @@ void setRestoreMidiControlActiveContextDock(bool enabled);
 
 bool shouldRestoreMidiControlLastTouchedDock();
 void setRestoreMidiControlLastTouchedDock(bool enabled);
+
+// deviceKey is the AudioServer composite key ("deviceType|deviceName"); xml mirrors
+// juce::AudioDeviceManager::createStateXml() attributes for that one device.
+juce::String getAudioServerDeviceSetupXml(const juce::String& deviceKey);
+void setAudioServerDeviceSetupXml(const juce::String& deviceKey, const juce::String& xml);
 } // namespace atk::settings

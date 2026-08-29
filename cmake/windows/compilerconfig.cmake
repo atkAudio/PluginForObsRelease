@@ -52,6 +52,7 @@ add_compile_options(
 add_compile_definitions(
     UNICODE
     _UNICODE
+    NOMINMAX
     _CRT_SECURE_NO_WARNINGS
     _CRT_NONSTDC_NO_WARNINGS
     $<$<CONFIG:DEBUG>:DEBUG>

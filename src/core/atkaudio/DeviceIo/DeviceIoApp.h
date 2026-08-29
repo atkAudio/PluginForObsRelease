@@ -369,8 +369,8 @@ private:
     juce::AudioDeviceManager deviceManager;
     std::unique_ptr<juce::AudioDeviceSelectorComponent> audioSettingsComp;
 
-    SyncBuffer toObsBuffer;
-    SyncBuffer fromObsBuffer;
+    SyncBuffer toObsBuffer{"DeviceIo toObs"};
+    SyncBuffer fromObsBuffer{"DeviceIo fromObs"};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DeviceIoApp)
 };

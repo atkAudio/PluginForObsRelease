@@ -36,11 +36,6 @@ struct adio_data
     std::atomic_bool mixInput = false;
     std::atomic_bool followSourceVolume = false;
     std::atomic_bool followScene = true;
-    std::atomic<float> inputGain = 1.0f;
-    std::atomic<float> outputGain = 1.0f;
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> outputGainSmooth{1.0f};
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> inputGainSmooth{1.0f};
-    double gainSmoothSampleRate = 0.0;
     std::atomic<float> outputDelay = 0.0f;
     std::atomic<double> fadeTimeSeconds = 0.5;
     std::atomic_bool shouldBypass = false;
@@ -89,15 +84,15 @@ static void devio_update(void* data, obs_data_t* s)
 
     auto inputGain = (float)obs_data_get_double(s, IG_ID);
     inputGain = obs_db_to_mul(inputGain);
-    adio->inputGain.store(inputGain, std::memory_order_release);
+    adio->deviceIo->setInputGain(inputGain);
 
     auto outputDelay = (float)obs_data_get_double(s, OUTPUT_DELAY_ID);
     adio->outputDelay.store(outputDelay, std::memory_order_release);
     adio->deviceIo->setOutputDelay(outputDelay);
 
-    // auto outputGain = (float)obs_data_get_double(s, OG_ID);
-    // outputGain = obs_db_to_mul(outputGain);
-    // adio->outputGain.store(outputGain, std::memory_order_release);
+    auto outputGain = (float)obs_data_get_double(s, OG_ID);
+    outputGain = obs_db_to_mul(outputGain);
+    adio->deviceIo->setOutputGain(outputGain);
 }
 
 static void* devio_create(obs_data_t* settings, obs_source_t* filter)
@@ -207,28 +202,6 @@ static struct obs_audio_data* devio_filter(void* data, struct obs_audio_data* au
     auto frames = audio->frames;
     float** adata = (float**)audio->data;
 
-    auto outputGain = adio->outputGain.load(std::memory_order_acquire);
-    auto inputGain = adio->inputGain.load(std::memory_order_acquire);
-
-    if (adio->gainSmoothSampleRate != adio->sampleRate)
-    {
-        adio->outputGainSmooth.reset(adio->sampleRate, 0.05);
-        adio->inputGainSmooth.reset(adio->sampleRate, 0.05);
-        adio->outputGainSmooth.setCurrentAndTargetValue(outputGain);
-        adio->inputGainSmooth.setCurrentAndTargetValue(inputGain);
-        adio->gainSmoothSampleRate = adio->sampleRate;
-    }
-
-    adio->outputGainSmooth.setTargetValue(outputGain);
-    adio->inputGainSmooth.setTargetValue(inputGain);
-
-    for (size_t j = 0; j < frames; j++)
-    {
-        auto smoothGain = adio->outputGainSmooth.getNextValue();
-        for (int i = 0; i < channels; i++)
-            adata[i][j] *= smoothGain;
-    }
-
     if (adio->followScene.load(std::memory_order_acquire))
     {
         adio->deviceIo->setFadeTime(adio->fadeTimeSeconds.load(std::memory_order_acquire));
@@ -241,13 +214,6 @@ static struct obs_audio_data* devio_filter(void* data, struct obs_audio_data* au
 
     adio->deviceIo->setMixInput(adio->mixInput.load(std::memory_order_acquire));
     adio->deviceIo->process(adata, channels, frames, adio->sampleRate);
-
-    for (size_t j = 0; j < frames; j++)
-    {
-        auto smoothGain = adio->inputGainSmooth.getNextValue();
-        for (int i = 0; i < channels; i++)
-            adata[i][j] *= smoothGain;
-    }
 
     return audio;
 }
@@ -480,24 +446,25 @@ static void tick(void* data, float seconds)
     }
     adio->shouldBypass.store(bypass, std::memory_order_release);
 
-    auto outputGain = adio->outputGain.load(std::memory_order_acquire);
     if (settings)
-        outputGain = (float)obs_data_get_double(settings, OG_ID);
-    outputGain = obs_db_to_mul(outputGain);
-
-    if (adio->followSourceVolume.load(std::memory_order_acquire) && parent)
     {
-        bool obsMuted = obs_source_muted(parent);
-        int monitoringType = (int)obs_source_get_monitoring_type(parent);
-        bool effectiveMuted = obsMuted || (monitoringType == OBS_MONITORING_TYPE_MONITOR_ONLY);
+        auto outputGain = (float)obs_data_get_double(settings, OG_ID);
+        outputGain = obs_db_to_mul(outputGain);
 
-        auto fader = obs_source_get_volume(parent);
-        if (effectiveMuted)
-            fader = 0.0f;
-        outputGain *= fader;
+        if (adio->followSourceVolume.load(std::memory_order_acquire) && parent)
+        {
+            bool obsMuted = obs_source_muted(parent);
+            int monitoringType = (int)obs_source_get_monitoring_type(parent);
+            bool effectiveMuted = obsMuted || (monitoringType == OBS_MONITORING_TYPE_MONITOR_ONLY);
+
+            auto fader = obs_source_get_volume(parent);
+            if (effectiveMuted)
+                fader = 0.0f;
+            outputGain *= fader;
+        }
+
+        adio->deviceIo->setOutputGain(outputGain);
     }
-
-    adio->outputGain.store(outputGain, std::memory_order_release);
 
     UNUSED_PARAMETER(seconds);
 }

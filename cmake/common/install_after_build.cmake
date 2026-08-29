@@ -3,16 +3,12 @@
 include_guard(GLOBAL)
 
 function(atk_configure_local_post_build_deploy target_name plugin_name)
-    if(
-        ATK_ENABLE_LOCAL_POST_BUILD_INSTALL
-        AND NOT DEFINED
-            ENV{CI}
-        AND NOT DEFINED
-            ENV{GITHUB_ACTIONS}
-        AND NOT CMAKE_INSTALL_PREFIX
-            MATCHES
-            "^/usr"
-    )
+    # Local builds must always land in the OBS plugins directory, otherwise OBS keeps
+    # loading a stale binary. On Linux the system prefix (/usr) requires root, so skip
+    # this step there in favor of the unconditional user-home copy below.
+    if(NOT DEFINED ENV{CI} AND NOT DEFINED ENV{GITHUB_ACTIONS} AND NOT (UNIX AND NOT APPLE))
+        message(STATUS "Configuring post-build install to ${CMAKE_INSTALL_PREFIX}")
+
         add_custom_command(
             TARGET ${target_name}
             POST_BUILD
@@ -22,15 +18,7 @@ function(atk_configure_local_post_build_deploy target_name plugin_name)
         )
     endif()
 
-    if(
-        ATK_ENABLE_LINUX_HOME_POST_BUILD_COPY
-        AND NOT DEFINED
-            ENV{CI}
-        AND NOT DEFINED
-            ENV{GITHUB_ACTIONS}
-        AND UNIX
-        AND NOT APPLE
-    )
+    if(NOT DEFINED ENV{CI} AND NOT DEFINED ENV{GITHUB_ACTIONS} AND UNIX AND NOT APPLE)
         message(STATUS "Configuring post-build copy to ~/.config/obs-studio/plugins/")
         atk_get_obs_arch_dir(_user_arch)
 

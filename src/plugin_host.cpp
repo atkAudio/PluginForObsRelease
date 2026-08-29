@@ -31,7 +31,7 @@ struct pluginhost_data
     std::vector<std::vector<float>> sidechainTempBuffer;
     std::vector<float*> pointersToProcess;
     std::vector<const float*> sidechainWritePtrs;
-    SyncBuffer sidechain_sync;
+    SyncBuffer sidechain_sync{"PluginHost sidechain"};
 
     size_t envelope_buf_len;
 

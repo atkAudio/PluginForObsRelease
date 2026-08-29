@@ -25,6 +25,9 @@ public:
     static juce::StringArray getDeviceChannelNames(const juce::String& deviceName, bool isInput);
     static juce::Array<double> getAvailableSampleRates(const juce::String& deviceName);
     static juce::Array<int> getAvailableBufferSizes(const juce::String& deviceName);
+    static bool getCurrentHardwareSetup(const juce::String& deviceName, double& sampleRate, int& bufferSize);
+
+    static void shutdown();
 
 private:
     static juce::AudioDeviceManager* ensureEnumerator();
@@ -208,7 +211,7 @@ class AudioDeviceHandler
     friend class AudioServer;
 
 public:
-    AudioDeviceHandler(const juce::String& deviceName);
+    AudioDeviceHandler(const juce::String& deviceName, const juce::String& deviceKey);
     ~AudioDeviceHandler() override;
 
     bool openDevice(const juce::AudioDeviceManager::AudioDeviceSetup& preferredSetup);
@@ -244,6 +247,8 @@ public:
     int getNumChannels() const;
     double getSampleRate() const;
     int getBufferSize() const;
+
+    void reportNegotiatedSetup(const juce::String& context) const;
 
 private:
     struct ClientBuffers
@@ -282,10 +287,11 @@ private:
 
     struct DirectCallbackSnapshot
     {
-        std::vector<DirectCallbackInfo*> callbacks;
+        std::vector<std::shared_ptr<DirectCallbackInfo>> callbacks;
     };
 
     juce::String deviceName;
+    juce::String deviceKey;
     std::unique_ptr<juce::AudioDeviceManager> deviceManager;
 
     std::unordered_map<void*, ClientBuffers> clientBuffers;
@@ -293,7 +299,7 @@ private:
     mutable std::mutex clientBuffersMutex;
     AtomicSharedPtr<DeviceSnapshot> activeSnapshot{std::make_shared<DeviceSnapshot>()};
 
-    std::unordered_map<juce::AudioIODeviceCallback*, DirectCallbackInfo> directCallbacks;
+    std::unordered_map<juce::AudioIODeviceCallback*, std::shared_ptr<DirectCallbackInfo>> directCallbacks;
     mutable std::mutex directCallbackMutex;
     AtomicSharedPtr<DirectCallbackSnapshot> directCallbackSnapshot{std::make_shared<DirectCallbackSnapshot>()};
 
@@ -309,12 +315,18 @@ private:
     void rebuildSnapshotLocked();
     std::shared_ptr<DeviceSnapshot> getSnapshot() const;
     void rebuildDirectCallbackSnapshotLocked();
+    void prepareDirectCallback(DirectCallbackInfo& info, juce::AudioIODevice& device);
     void updatePreferredRecoverySetup(const juce::AudioDeviceManager::AudioDeviceSetup& preferredSetup);
     juce::AudioDeviceManager::AudioDeviceSetup getPreferredRecoverySetup() const;
     bool canAttemptRecovery(double nowMs, double retryIntervalMs);
     void markRecoveryPending();
     void clearRecoveryPending();
     void resetSubscriptionBuffersAfterRecovery();
+
+    // Global per-device setup, shared across all AudioServer consumers.
+    juce::String buildSetupXml() const;
+    void setSetup() const;
+    bool getSetup(juce::AudioDeviceManager::AudioDeviceSetup& outSetup) const;
 
     std::atomic<bool> isRunning{false};
 };
@@ -358,6 +370,7 @@ public:
     juce::StringArray getDeviceChannelNames(const juce::String& deviceName, bool isInput) const;
     juce::Array<double> getAvailableSampleRates(const juce::String& deviceName) const;
     juce::Array<int> getAvailableBufferSizes(const juce::String& deviceName) const;
+    int getDefaultBufferSize(const juce::String& deviceName) const;
 
     bool setDeviceSampleRate(const juce::String& deviceName, double newSampleRate);
     bool setDeviceBufferSize(const juce::String& deviceName, int newBufferSize);

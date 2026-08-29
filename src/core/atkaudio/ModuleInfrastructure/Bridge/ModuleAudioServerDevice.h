@@ -78,7 +78,7 @@ public:
     {
         if (auto* server = AudioServer::getInstanceWithoutCreating())
             return server->getAvailableSampleRates(actualDeviceName);
-        return {44100.0, 48000.0};
+        return {};
     }
 
     juce::Array<int> getAvailableBufferSizes() override
@@ -90,8 +90,9 @@ public:
 
     int getDefaultBufferSize() override
     {
-        auto sizes = getAvailableBufferSizes();
-        return sizes.isEmpty() ? 512 : sizes[0];
+        if (auto* server = AudioServer::getInstanceWithoutCreating())
+            return server->getDefaultBufferSize(actualDeviceName);
+        return 0;
     }
 
     juce::String open(
@@ -113,8 +114,6 @@ public:
             }
         }
 
-        // Always update channel configuration when open() is called, even if device is already open
-        // Channel changes don't require device reopen - the audio callback will use the new config
         {
             const juce::ScopedLock sl(lock);
 
@@ -126,10 +125,10 @@ public:
                 actualOutputChannelCount = server->getDeviceNumChannels(actualDeviceName, false);
             }
 
-            // Preserve requested channel masks even if probing channel counts temporarily fails
-            // during restore/hotplug. We only clamp when actual counts are known.
-            activeInputChannels = inputChannels;
-            activeOutputChannels = outputChannels;
+            requestedInputChannels = inputChannels;
+            requestedOutputChannels = outputChannels;
+            activeInputChannels = requestedInputChannels;
+            activeOutputChannels = requestedOutputChannels;
 
             if (actualInputChannelCount > 0)
             {
@@ -150,12 +149,11 @@ public:
         {
             juce::AudioDeviceManager::AudioDeviceSetup currentSetup;
             bool hasCurrentSetup = false;
+            if (auto* server = AudioServer::getInstanceWithoutCreating())
+                hasCurrentSetup = server->getCurrentDeviceSetup(actualDeviceName, currentSetup);
+
             if (needsReopen)
-            {
-                if (auto* server = AudioServer::getInstanceWithoutCreating())
-                    hasCurrentSetup = server->getCurrentDeviceSetup(actualDeviceName, currentSetup);
                 close();
-            }
 
             if (!isOpen_)
             {
@@ -163,23 +161,17 @@ public:
                 {
                     juce::AudioDeviceManager::AudioDeviceSetup setup;
 
-                    if (needsReopen && hasCurrentSetup)
+                    if (hasCurrentSetup)
                     {
-                        setup.sampleRate = (sampleRate > 0.0 && !juce::exactlyEqual(currentSampleRate, sampleRate))
-                                             ? sampleRate
-                                             : currentSetup.sampleRate;
-                        setup.bufferSize = (bufferSizeSamples > 0 && currentBufferSize != bufferSizeSamples)
-                                             ? bufferSizeSamples
-                                             : currentSetup.bufferSize;
+                        setup.sampleRate = needsReopen && sampleRate > 0.0 ? sampleRate : currentSetup.sampleRate;
+                        setup.bufferSize =
+                            needsReopen && bufferSizeSamples > 0 ? bufferSizeSamples : currentSetup.bufferSize;
                     }
                     else
                     {
                         setup.sampleRate = 0.0;
                         setup.bufferSize = 0;
                     }
-
-                    // Don't pass channel config - AudioServer opens with all channels,
-                    // and ModuleAudioServerDevice filters to active ones in the callback
 
                     if (!server->registerDirectCallback(actualDeviceName, this, setup))
                         return "Failed to register with AudioServer";
@@ -231,6 +223,12 @@ public:
             const juce::ScopedLock sl(lock);
             userCallback = newCallback;
             isPlaying_ = true;
+
+            auto inputCapacity = activeInputChannels.countNumberOfSetBits();
+            auto outputCapacity = activeOutputChannels.countNumberOfSetBits();
+            tempOutputBuffer.setSize(outputCapacity, currentBufferSize, false, false, true);
+            activeOutputPtrs.resize(outputCapacity);
+            activeInputPtrs.reserve(inputCapacity);
         }
 
         if (userCallback != nullptr)
@@ -370,30 +368,31 @@ private:
             if (activeOutputChannels[ch])
                 ++numActiveOutputs;
 
-        // Resize temp output buffer if needed
-        if (tempOutputBuffer.getNumChannels() < numActiveOutputs || tempOutputBuffer.getNumSamples() < numSamples)
-            tempOutputBuffer.setSize(numActiveOutputs, numSamples, false, false, true);
+        if (tempOutputBuffer.getNumChannels() < numActiveOutputs
+            || tempOutputBuffer.getNumSamples() < numSamples
+            || static_cast<int>(activeOutputPtrs.size()) < numActiveOutputs
+            || static_cast<int>(activeInputPtrs.capacity()) < numActiveInputs)
+        {
+            return clearOutputs();
+        }
 
         // Build filtered input pointers
-        activeInputPtrs.clearQuick();
+        activeInputPtrs.clear();
         for (int ch = 0; ch < numInputChannels; ++ch)
             if (activeInputChannels[ch] && inputChannelData != nullptr && inputChannelData[ch] != nullptr)
-                activeInputPtrs.add(inputChannelData[ch]);
+                activeInputPtrs.push_back(inputChannelData[ch]);
 
         // Channel count mismatch - skip (will resync on next audioDeviceAboutToStart)
         if (activeInputPtrs.size() != numActiveInputs)
             return clearOutputs();
 
         // Build output pointers from temp buffer
-        if (static_cast<int>(activeOutputPtrs.size()) < numActiveOutputs)
-            activeOutputPtrs.resize(numActiveOutputs);
-
         for (int i = 0; i < numActiveOutputs; ++i)
             activeOutputPtrs[i] = tempOutputBuffer.getWritePointer(i);
 
         // Call user callback
         userCallback->audioDeviceIOCallbackWithContext(
-            activeInputPtrs.getRawDataPointer(),
+            activeInputPtrs.data(),
             numActiveInputs,
             activeOutputPtrs.data(),
             numActiveOutputs,
@@ -424,14 +423,22 @@ private:
 
             if (device != nullptr)
             {
-                // Clamp active channels to device capabilities
+                // Restore active channels from this instance's requested masks on every start.
                 auto deviceInputs = device->getActiveInputChannels();
                 auto deviceOutputs = device->getActiveOutputChannels();
+                activeInputChannels = requestedInputChannels;
+                activeOutputChannels = requestedOutputChannels;
                 activeInputChannels &= deviceInputs;
                 activeOutputChannels &= deviceOutputs;
 
                 currentSampleRate = device->getCurrentSampleRate();
                 currentBufferSize = device->getCurrentBufferSizeSamples();
+
+                auto inputCapacity = deviceInputs.countNumberOfSetBits();
+                auto outputCapacity = deviceOutputs.countNumberOfSetBits();
+                tempOutputBuffer.setSize(outputCapacity, currentBufferSize, false, false, true);
+                activeOutputPtrs.resize(outputCapacity);
+                activeInputPtrs.reserve(inputCapacity);
             }
 
             callbackToNotify = userCallback;
@@ -456,6 +463,8 @@ private:
     juce::String actualDeviceName;
     juce::String deviceType;
     juce::AudioIODeviceCallback* userCallback = nullptr;
+    juce::BigInteger requestedInputChannels;
+    juce::BigInteger requestedOutputChannels;
     juce::BigInteger activeInputChannels;
     juce::BigInteger activeOutputChannels;
     double currentSampleRate = 0.0;
@@ -467,7 +476,7 @@ private:
     juce::CriticalSection lock;
 
     juce::AudioBuffer<float> tempOutputBuffer;
-    juce::Array<const float*> activeInputPtrs;
+    std::vector<const float*> activeInputPtrs;
     std::vector<float*> activeOutputPtrs{32};
 };
 

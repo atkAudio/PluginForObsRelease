@@ -297,41 +297,6 @@ void atk::PluginHost2::handleAsyncUpdate()
     if (filterGraph != nullptr)
         graphModel->restoreFromXml(*filterGraph);
 
-    auto* audioServerElement = xml->getChildByName("AUDIOSERVER");
-    if (audioServerElement)
-    {
-        auto* audioServer = atk::AudioServer::getInstance();
-
-        atk::logging::debug("PluginHost2::setState", "restoring AudioServer device settings");
-        for (auto* deviceElement : audioServerElement->getChildIterator())
-        {
-            if (deviceElement->hasTagName("DEVICE"))
-            {
-                juce::String deviceName = deviceElement->getStringAttribute("name");
-
-                if (deviceElement->hasAttribute("sampleRate"))
-                {
-                    double sampleRate = deviceElement->getDoubleAttribute("sampleRate");
-                    atk::logging::debug(
-                        "PluginHost2::setState",
-                        "restore sample rate for " + deviceName + " -> " + juce::String(sampleRate)
-                    );
-                    audioServer->setDeviceSampleRate(deviceName, sampleRate);
-                }
-
-                if (deviceElement->hasAttribute("bufferSize"))
-                {
-                    int bufferSize = deviceElement->getIntAttribute("bufferSize");
-                    atk::logging::debug(
-                        "PluginHost2::setState",
-                        "restore buffer size for " + deviceName + " -> " + juce::String(bufferSize)
-                    );
-                    audioServer->setDeviceBufferSize(deviceName, bufferSize);
-                }
-            }
-        }
-    }
-
     auto* midiElement = xml->getChildByName("MIDISTATE");
     if (midiElement != nullptr)
     {
@@ -355,44 +320,6 @@ void atk::PluginHost2::getState(std::string& s)
     auto state = audioDeviceManager->createStateXml();
     if (state != nullptr)
         xml.addChildElement(state.release());
-
-    auto* audioServerElement = new juce::XmlElement("AUDIOSERVER");
-    if (auto* audioServer = atk::AudioServer::getInstance())
-    {
-        // Use only already-open devices to avoid triggering a full
-        // scanForDevices() on every save, which stalls the OBS main thread.
-        auto openDevices = audioServer->getOpenDeviceNames();
-
-        for (const auto& deviceName : openDevices)
-        {
-            double sampleRate = audioServer->getCurrentSampleRate(deviceName);
-            int bufferSize = audioServer->getCurrentBufferSize(deviceName);
-
-            if (sampleRate > 0.0 || bufferSize > 0)
-            {
-                auto* deviceElement = new juce::XmlElement("DEVICE");
-                deviceElement->setAttribute("name", deviceName);
-                if (sampleRate > 0.0)
-                    deviceElement->setAttribute("sampleRate", sampleRate);
-                if (bufferSize > 0)
-                    deviceElement->setAttribute("bufferSize", bufferSize);
-
-                audioServerElement->addChildElement(deviceElement);
-
-                atk::logging::debug(
-                    "PluginHost2::getState",
-                    "saved device settings for "
-                        + deviceName
-                        + " (sr="
-                        + juce::String(sampleRate)
-                        + ", bs="
-                        + juce::String(bufferSize)
-                        + ")"
-                );
-            }
-        }
-    }
-    xml.addChildElement(audioServerElement);
 
     if (auto filterGraph = graphModel->createXml())
         xml.addChildElement(filterGraph.release());
