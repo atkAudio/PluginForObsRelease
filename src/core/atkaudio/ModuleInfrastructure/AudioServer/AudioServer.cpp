@@ -261,9 +261,14 @@ bool AudioDeviceEnumerator::getCurrentHardwareSetup(const juce::String& deviceNa
     // Deliberately uncached: these are live hardware values that the user can change at any time.
     for (auto* type : mgr->getAvailableDeviceTypes())
     {
-        if (type->getDeviceNames(false).contains(deviceName) || type->getDeviceNames(true).contains(deviceName))
+        bool isOutput = type->getDeviceNames(false).contains(deviceName);
+        bool isInput = type->getDeviceNames(true).contains(deviceName);
+
+        if (isOutput || isInput)
         {
-            std::unique_ptr<juce::AudioIODevice> device(type->createDevice(deviceName, deviceName));
+            std::unique_ptr<juce::AudioIODevice> device(
+                type->createDevice(isOutput ? deviceName : juce::String(), isInput ? deviceName : juce::String())
+            );
             if (device)
             {
                 sampleRate = device->getCurrentSampleRate();
@@ -273,8 +278,10 @@ bool AudioDeviceEnumerator::getCurrentHardwareSetup(const juce::String& deviceNa
                 {
                     juce::BigInteger inputChannels;
                     juce::BigInteger outputChannels;
-                    inputChannels.setRange(0, 256, true);
-                    outputChannels.setRange(0, 256, true);
+                    if (isInput)
+                        inputChannels.setRange(0, 256, true);
+                    if (isOutput)
+                        outputChannels.setRange(0, 256, true);
 
                     auto openError = device->open(inputChannels, outputChannels, 0.0, 0);
                     if (openError.isEmpty())
@@ -553,8 +560,8 @@ void AudioClient::ensureTempBufferCapacity(int numChannels, int numSamples)
 AudioDeviceHandler::AudioDeviceHandler(const juce::String& name, const juce::String& key)
     : deviceName(name)
     , deviceKey(key)
+    , device(nullptr)
 {
-    deviceManager = std::make_unique<juce::AudioDeviceManager>();
 }
 
 AudioDeviceHandler::~AudioDeviceHandler()
@@ -570,19 +577,33 @@ bool AudioDeviceHandler::openDevice(const juce::AudioDeviceManager::AudioDeviceS
 
     if (wasAlreadyOpen)
     {
-        // Ensure callback is registered (safe to call multiple times)
-        deviceManager->addAudioCallback(this);
+        // Device already open, nothing to do
         clearRecoveryPending();
         return true;
     }
 
     atk::logging::debug("AudioDeviceHandler::openDevice", "opening device \"" + deviceName + "\"");
 
-    // Add callback BEFORE opening device (important!)
-    deviceManager->addAudioCallback(this);
+    // Get the enumerator to find device type
+    auto* server = AudioServer::getInstanceWithoutCreating();
+    if (!server)
+    {
+        atk::logging::warning("AudioDeviceHandler::openDevice", "AudioServer instance not available");
+        markRecoveryPending();
+        return false;
+    }
 
+    auto* enumerator = AudioDeviceEnumerator::ensureEnumerator();
+    if (!enumerator)
+    {
+        atk::logging::warning("AudioDeviceHandler::openDevice", "device enumerator not available");
+        markRecoveryPending();
+        return false;
+    }
+
+    // Find device type that has this device
     juce::AudioIODeviceType* deviceType = nullptr;
-    for (auto* type : deviceManager->getAvailableDeviceTypes())
+    for (auto* type : enumerator->getAvailableDeviceTypes())
     {
         if (type->getDeviceNames(true).contains(deviceName) || type->getDeviceNames(false).contains(deviceName))
         {
@@ -595,70 +616,53 @@ bool AudioDeviceHandler::openDevice(const juce::AudioDeviceManager::AudioDeviceS
     {
         atk::logging::warning("AudioDeviceHandler::openDevice", "device type not found for \"" + deviceName + "\"");
         markRecoveryPending();
-        deviceManager->removeAudioCallback(this);
         return false;
     }
 
-    deviceManager->setCurrentAudioDeviceType(deviceType->getTypeName(), true);
+    // Check that device exists in the selected type
+    auto inputDevices = deviceType->getDeviceNames(true);
+    auto outputDevices = deviceType->getDeviceNames(false);
+    bool isInput = inputDevices.contains(deviceName);
+    bool isOutput = outputDevices.contains(deviceName);
 
-    auto options = getPreferredRecoverySetup();
-
-    // initialise() ignores preferredDefaultDeviceName whenever setup options are supplied,
-    // so the device names have to be carried in the options themselves.
-    options.inputDeviceName =
-        AudioDeviceEnumerator::getAvailableInputDevices().contains(deviceName) ? deviceName : juce::String();
-    options.outputDeviceName =
-        AudioDeviceEnumerator::getAvailableOutputDevices().contains(deviceName) ? deviceName : juce::String();
-
-    if (options.inputDeviceName.isEmpty() && options.outputDeviceName.isEmpty())
+    if (!isInput && !isOutput)
     {
         atk::logging::warning("AudioDeviceHandler::openDevice", "device not found for \"" + deviceName + "\"");
         markRecoveryPending();
-        deviceManager->removeAudioCallback(this);
         return false;
     }
 
+    // Get sample rate and buffer size from explicit setup or current hardware.
+    auto options = getPreferredRecoverySetup();
+
     if (options.sampleRate <= 0.0 || options.bufferSize <= 0)
     {
-        juce::AudioDeviceManager::AudioDeviceSetup persisted;
-        if (getSetup(persisted))
+        double hardwareSampleRate = 0.0;
+        int hardwareBufferSize = 0;
+        if (AudioDeviceEnumerator::getCurrentHardwareSetup(deviceName, hardwareSampleRate, hardwareBufferSize))
         {
-            if (options.sampleRate <= 0.0)
-                options.sampleRate = persisted.sampleRate;
+            if (options.sampleRate <= 0.0 && hardwareSampleRate > 0.0)
+                options.sampleRate = hardwareSampleRate;
 
-            if (options.bufferSize <= 0)
-                options.bufferSize = persisted.bufferSize;
+            if (options.bufferSize <= 0 && hardwareBufferSize > 0)
+                options.bufferSize = hardwareBufferSize;
+
+            atk::logging::debug(
+                "AudioDeviceHandler::openDevice",
+                juce::String::formatted(
+                    "current hardware setup for \"%s\": %.2f Hz / %d samples",
+                    deviceName.toRawUTF8(),
+                    hardwareSampleRate,
+                    hardwareBufferSize
+                )
+            );
         }
-
-        if (options.sampleRate <= 0.0 || options.bufferSize <= 0)
+        else
         {
-            double hardwareSampleRate = 0.0;
-            int hardwareBufferSize = 0;
-            if (AudioDeviceEnumerator::getCurrentHardwareSetup(deviceName, hardwareSampleRate, hardwareBufferSize))
-            {
-                if (options.sampleRate <= 0.0 && hardwareSampleRate > 0.0)
-                    options.sampleRate = hardwareSampleRate;
-
-                if (options.bufferSize <= 0 && hardwareBufferSize > 0)
-                    options.bufferSize = hardwareBufferSize;
-
-                atk::logging::debug(
-                    "AudioDeviceHandler::openDevice",
-                    juce::String::formatted(
-                        "hardware fallback for \"%s\": %.2f Hz / %d samples",
-                        deviceName.toRawUTF8(),
-                        hardwareSampleRate,
-                        hardwareBufferSize
-                    )
-                );
-            }
-            else
-            {
-                atk::logging::debug(
-                    "AudioDeviceHandler::openDevice",
-                    "hardware fallback unavailable for \"" + deviceName + "\""
-                );
-            }
+            atk::logging::debug(
+                "AudioDeviceHandler::openDevice",
+                "current hardware setup unavailable for \"" + deviceName + "\""
+            );
         }
     }
 
@@ -674,57 +678,73 @@ bool AudioDeviceHandler::openDevice(const juce::AudioDeviceManager::AudioDeviceS
             )
         );
         markRecoveryPending();
-        deviceManager->removeAudioCallback(this);
         return false;
     }
 
-    options.useDefaultInputChannels = false;
-    options.useDefaultOutputChannels = false;
-    options.inputChannels.setRange(0, 256, true);
-    options.outputChannels.setRange(0, 256, true); // JUCE will limit to actual count
+    // Create the device directly (bypassing AudioDeviceManager)
+    device = std::unique_ptr<juce::AudioIODevice>(
+        deviceType->createDevice(isOutput ? deviceName : juce::String(), isInput ? deviceName : juce::String())
+    );
 
-    // selectDefaultDeviceOnFailure stays false: a handler owns one specific device and must
-    // never silently fall back to a different one.
-    juce::String error = deviceManager->initialise(256, 256, nullptr, false, deviceName, &options);
-
-    if (error.isEmpty())
+    if (!device)
     {
-        auto* device = deviceManager->getCurrentAudioDevice();
-
-        // Populate cache with actual device channel info
-        if (device)
-        {
-            if (auto* server = atk::AudioServer::getInstanceWithoutCreating())
-            {
-                server->cacheDeviceInfo(
-                    deviceName,
-                    device->getInputChannelNames(),
-                    device->getOutputChannelNames(),
-                    device->getAvailableSampleRates(),
-                    device->getAvailableBufferSizes()
-                );
-            }
-        }
-
-        // Register as change listener on AudioDeviceManager to detect device configuration changes
-        deviceManager->addChangeListener(this);
-
-        // Check if device actually started
-        if (device && !device->isPlaying())
-            deviceManager->restartLastAudioDevice();
-
-        atk::logging::info("AudioDeviceHandler::openDevice", "opened device \"" + deviceName + "\"");
-        reportNegotiatedSetup("open");
-        clearRecoveryPending();
-        setSetup();
-
-        return true;
+        atk::logging::warning("AudioDeviceHandler::openDevice", "failed to create device \"" + deviceName + "\"");
+        markRecoveryPending();
+        return false;
     }
 
-    atk::logging::warning("AudioDeviceHandler::openDevice", "failed to open device \"" + deviceName + "\": " + error);
-    markRecoveryPending();
-    deviceManager->removeAudioCallback(this);
-    return false;
+    // Prepare channel configuration
+    juce::BigInteger inputChannels;
+    juce::BigInteger outputChannels;
+    if (isInput)
+        inputChannels.setRange(0, 256, true);
+    if (isOutput)
+        outputChannels.setRange(0, 256, true);
+
+    // Open the device
+    juce::String error = device->open(inputChannels, outputChannels, options.sampleRate, options.bufferSize);
+
+    if (!error.isEmpty())
+    {
+        atk::logging::warning(
+            "AudioDeviceHandler::openDevice",
+            "failed to open device \"" + deviceName + "\": " + error
+        );
+        device.reset();
+        markRecoveryPending();
+        return false;
+    }
+
+    // Start the device with our callback
+    device->start(this);
+
+    // Populate cache with actual device channel info
+    if (server)
+    {
+        server->cacheDeviceInfo(
+            deviceName,
+            device->getInputChannelNames(),
+            device->getOutputChannelNames(),
+            device->getAvailableSampleRates(),
+            device->getAvailableBufferSizes()
+        );
+    }
+
+    // Check if device actually started
+    if (!device->isPlaying())
+    {
+        atk::logging::warning("AudioDeviceHandler::openDevice", "device \"" + deviceName + "\" failed to start playing");
+        device->close();
+        device.reset();
+        markRecoveryPending();
+        return false;
+    }
+
+    atk::logging::info("AudioDeviceHandler::openDevice", "opened device \"" + deviceName + "\"");
+    reportNegotiatedSetup("open");
+    clearRecoveryPending();
+
+    return true;
 }
 
 void AudioDeviceHandler::closeDevice()
@@ -732,16 +752,14 @@ void AudioDeviceHandler::closeDevice()
     if (!isDeviceOpen())
         return;
 
-    // Remove change listener before closing device
-    deviceManager->removeChangeListener(this);
-
-    deviceManager->removeAudioCallback(this);
-    deviceManager->closeAudioDevice();
+    device->stop();
+    device->close();
+    device.reset();
 }
 
 bool AudioDeviceHandler::isDeviceOpen() const
 {
-    return deviceManager->getCurrentAudioDevice() != nullptr;
+    return device != nullptr && device->isOpen();
 }
 
 void AudioDeviceHandler::audioDeviceIOCallbackWithContext(
@@ -939,7 +957,6 @@ void AudioDeviceHandler::changeListenerCallback(juce::ChangeBroadcaster* source)
 {
     juce::ignoreUnused(source);
 
-    auto* device = deviceManager->getCurrentAudioDevice();
     if (!device)
         return;
 
@@ -959,7 +976,6 @@ void AudioDeviceHandler::changeListenerCallback(juce::ChangeBroadcaster* source)
     }
 
     reportNegotiatedSetup("device_changed");
-    setSetup();
 }
 
 void AudioDeviceHandler::addClientSubscription(
@@ -1021,7 +1037,7 @@ void AudioDeviceHandler::addClientSubscription(
 
             // Use device's actual input channel count
             int numChannels = 2; // Default fallback
-            if (auto* device = deviceManager->getCurrentAudioDevice())
+            if (device)
                 numChannels = device->getActiveInputChannels().countNumberOfSetBits();
 
             // Pre-configure reader side with OBS parameters (typical: 48kHz, 480 samples)
@@ -1051,7 +1067,7 @@ void AudioDeviceHandler::addClientSubscription(
 
             // Use device's actual output channel count
             int numChannels = 2; // Default fallback
-            if (auto* device = deviceManager->getCurrentAudioDevice())
+            if (device)
                 numChannels = device->getActiveOutputChannels().countNumberOfSetBits();
 
             // Pre-configure writer side with OBS parameters (client will write at 48kHz, 480
@@ -1160,7 +1176,6 @@ bool AudioDeviceHandler::registerDirectCallback(juce::AudioIODeviceCallback* cal
             return false;
         }
 
-        auto* device = deviceManager->getCurrentAudioDevice();
         if (device != nullptr && device->isPlaying())
             prepareDirectCallback(*info, *device);
 
@@ -1287,7 +1302,7 @@ void AudioDeviceHandler::resetSubscriptionBuffersAfterRecovery()
 
 int AudioDeviceHandler::getNumChannels() const
 {
-    if (auto* device = deviceManager->getCurrentAudioDevice())
+    if (device)
     {
         // For full-duplex, return max of input and output channels
         int inputCh = device->getActiveInputChannels().countNumberOfSetBits();
@@ -1299,7 +1314,7 @@ int AudioDeviceHandler::getNumChannels() const
 
 double AudioDeviceHandler::getSampleRate() const
 {
-    if (auto* device = deviceManager->getCurrentAudioDevice())
+    if (device)
         return device->getCurrentSampleRate();
 
     // Return 0.0 to indicate no device is open (caller should check)
@@ -1308,7 +1323,7 @@ double AudioDeviceHandler::getSampleRate() const
 
 int AudioDeviceHandler::getBufferSize() const
 {
-    if (auto* device = deviceManager->getCurrentAudioDevice())
+    if (device)
         return device->getCurrentBufferSizeSamples();
 
     // Return 0 to indicate no device is open (caller should check)
@@ -1317,7 +1332,6 @@ int AudioDeviceHandler::getBufferSize() const
 
 void AudioDeviceHandler::reportNegotiatedSetup(const juce::String& context) const
 {
-    auto* device = deviceManager->getCurrentAudioDevice();
     if (!device)
         return;
 
@@ -1339,58 +1353,6 @@ void AudioDeviceHandler::reportNegotiatedSetup(const juce::String& context) cons
             + juce::String(sizes.isEmpty() ? 0 : sizes.getLast())
             + "]"
     );
-}
-
-juce::String AudioDeviceHandler::buildSetupXml() const
-{
-    auto* device = deviceManager->getCurrentAudioDevice();
-    if (!device)
-        return {};
-
-    auto setup = deviceManager->getAudioDeviceSetup();
-
-    juce::XmlElement xml("DEVICESETUP");
-    xml.setAttribute("deviceType", deviceManager->getCurrentAudioDeviceType());
-    xml.setAttribute("audioOutputDeviceName", setup.outputDeviceName);
-    xml.setAttribute("audioInputDeviceName", setup.inputDeviceName);
-    xml.setAttribute("audioDeviceRate", setup.sampleRate);
-    xml.setAttribute("audioDeviceBufferSize", setup.bufferSize);
-    xml.setAttribute("audioDeviceInChans", setup.inputChannels.toString(2));
-    xml.setAttribute("audioDeviceOutChans", setup.outputChannels.toString(2));
-
-    return xml.toString();
-}
-
-void AudioDeviceHandler::setSetup() const
-{
-    auto xml = buildSetupXml();
-    if (xml.isEmpty() || deviceKey.isEmpty())
-        return;
-
-    atk::settings::setAudioServerDeviceSetupXml(deviceKey, xml);
-}
-
-bool AudioDeviceHandler::getSetup(juce::AudioDeviceManager::AudioDeviceSetup& outSetup) const
-{
-    if (deviceKey.isEmpty())
-        return false;
-
-    auto xmlString = atk::settings::getAudioServerDeviceSetupXml(deviceKey);
-    if (xmlString.isEmpty())
-        return false;
-
-    auto xml = juce::XmlDocument::parse(xmlString);
-    if (!xml || !xml->hasTagName("DEVICESETUP"))
-        return false;
-
-    outSetup.outputDeviceName = xml->getStringAttribute("audioOutputDeviceName");
-    outSetup.inputDeviceName = xml->getStringAttribute("audioInputDeviceName");
-    outSetup.sampleRate = xml->getDoubleAttribute("audioDeviceRate");
-    outSetup.bufferSize = xml->getIntAttribute("audioDeviceBufferSize");
-    outSetup.inputChannels.parseString(xml->getStringAttribute("audioDeviceInChans"), 2);
-    outSetup.outputChannels.parseString(xml->getStringAttribute("audioDeviceOutChans"), 2);
-
-    return true;
 }
 
 void AudioDeviceHandler::rebuildSnapshotLocked()
@@ -1546,13 +1508,13 @@ bool AudioServer::shouldRecoverDevice(AudioDeviceHandler* handler) const
     if (!handler->hasActiveSubscriptions() && !handler->hasDesiredSubscriptions())
         return false;
 
-    if (handler->recoveryPending.load(std::memory_order_acquire))
+    if (handler->isRecoveryPending())
         return true;
 
     if (!handler->isDeviceOpen())
         return true;
 
-    auto* device = handler->deviceManager->getCurrentAudioDevice();
+    auto* device = handler->getCurrentDevice();
     if (device == nullptr)
         return true;
 
@@ -1797,18 +1759,20 @@ void AudioServer::updateClientSubscriptions(void* clientId, const AudioClientSta
             if (handler == nullptr)
                 return false;
 
-            std::lock_guard<std::mutex> handlerLock(handler->clientBuffersMutex);
+            std::lock_guard<std::mutex> handlerLock(handler->getClientBuffersMutex());
 
-            auto desiredIt = handler->desiredClientSubscriptions.find(clientId);
-            if (desiredIt == handler->desiredClientSubscriptions.end())
+            auto& desiredClientSubscriptions = handler->getDesiredClientSubscriptions();
+            auto desiredIt = desiredClientSubscriptions.find(clientId);
+            if (desiredIt == desiredClientSubscriptions.end())
                 return false;
 
             bool expectsDirection = isInput ? desiredIt->second.hasInput : desiredIt->second.hasOutput;
             if (!expectsDirection)
                 return true;
 
-            auto bufferIt = handler->clientBuffers.find(clientId);
-            if (bufferIt == handler->clientBuffers.end())
+            auto& clientBuffers = handler->getClientBuffers();
+            auto bufferIt = clientBuffers.find(clientId);
+            if (bufferIt == clientBuffers.end())
                 return false;
 
             if (isInput)
@@ -1900,8 +1864,9 @@ void AudioServer::updateClientSubscriptions(void* clientId, const AudioClientSta
         if (it != deviceHandlers.end())
         {
             auto* handler = it->second.get();
-            std::lock_guard<std::mutex> handlerLock(handler->clientBuffersMutex);
-            if (handler->clientBuffers.find(clientId) != handler->clientBuffers.end())
+            std::lock_guard<std::mutex> handlerLock(handler->getClientBuffersMutex());
+            auto& clientBuffers = handler->getClientBuffers();
+            if (clientBuffers.find(clientId) != clientBuffers.end())
                 allDeviceKeys.insert(key);
         }
     }
@@ -1925,19 +1890,21 @@ void AudioServer::updateClientSubscriptions(void* clientId, const AudioClientSta
         // ATOMIC: Update subscriptions in single locked operation
         // IMPORTANT: Preserve existing SyncBuffers to avoid audio discontinuity
         {
-            std::unique_lock<std::mutex> handlerLock(handler->clientBuffersMutex);
+            std::unique_lock<std::mutex> handlerLock(handler->getClientBuffersMutex());
             bool snapshotDirty = false;
+            auto& clientBuffers = handler->getClientBuffers();
+            auto& desiredClientSubscriptions = handler->getDesiredClientSubscriptions();
 
             if (newInput.empty() && newOutput.empty())
-                handler->desiredClientSubscriptions.erase(clientId);
+                desiredClientSubscriptions.erase(clientId);
             else
-                handler->desiredClientSubscriptions[clientId] = {
+                desiredClientSubscriptions[clientId] = {
                     !newInput.empty(),
                     !newOutput.empty(),
                 };
 
-            auto bufferIt = handler->clientBuffers.find(clientId);
-            if (bufferIt != handler->clientBuffers.end())
+            auto bufferIt = clientBuffers.find(clientId);
+            if (bufferIt != clientBuffers.end())
             {
                 // If no new subscriptions for this device, remove client entry entirely
                 if (newInput.empty() && newOutput.empty())
@@ -1946,7 +1913,7 @@ void AudioServer::updateClientSubscriptions(void* clientId, const AudioClientSta
                     bufferIt->second.outputBuffer.reset();
                     bufferIt->second.inputMappings.clear();
                     bufferIt->second.outputMappings.clear();
-                    handler->clientBuffers.erase(bufferIt);
+                    clientBuffers.erase(bufferIt);
                     handler->rebuildSnapshotLocked();
                     continue;
                 }
@@ -1994,7 +1961,7 @@ void AudioServer::updateClientSubscriptions(void* clientId, const AudioClientSta
                     justOpened = true;
                 }
 
-                auto& buffers = handler->clientBuffers[clientId];
+                auto& buffers = clientBuffers[clientId];
 
                 std::vector<ChannelMapping> inputMappings;
                 for (size_t i = 0; i < newInput.size(); ++i)
@@ -2011,7 +1978,7 @@ void AudioServer::updateClientSubscriptions(void* clientId, const AudioClientSta
                     buffers.inputBuffer = std::make_shared<SyncBuffer>(handler->getDeviceName() + " in");
 
                     int numChannels = 2;
-                    if (auto* device = handler->deviceManager->getCurrentAudioDevice())
+                    if (auto* device = handler->getCurrentDevice())
                         numChannels = device->getActiveInputChannels().countNumberOfSetBits();
 
                     juce::AudioBuffer<float> dummyBuffer(numChannels, 480);
@@ -2025,8 +1992,8 @@ void AudioServer::updateClientSubscriptions(void* clientId, const AudioClientSta
 
                 snapshotDirty = true;
 
-                if (justOpened || !handler->isRunning.load(std::memory_order_acquire))
-                    handler->isRunning.store(true, std::memory_order_release);
+                if (justOpened || !handler->isRunningNow())
+                    handler->setRunning(true);
             }
 
             // Add new output subscriptions
@@ -2049,7 +2016,7 @@ void AudioServer::updateClientSubscriptions(void* clientId, const AudioClientSta
                     justOpened = true;
                 }
 
-                auto& buffers = handler->clientBuffers[clientId];
+                auto& buffers = clientBuffers[clientId];
 
                 std::vector<ChannelMapping> outputMappings;
                 for (size_t i = 0; i < newOutput.size(); ++i)
@@ -2066,7 +2033,7 @@ void AudioServer::updateClientSubscriptions(void* clientId, const AudioClientSta
                     buffers.outputBuffer = std::make_shared<SyncBuffer>(handler->getDeviceName() + " out");
 
                     int numChannels = 2;
-                    if (auto* device = handler->deviceManager->getCurrentAudioDevice())
+                    if (auto* device = handler->getCurrentDevice())
                         numChannels = device->getActiveOutputChannels().countNumberOfSetBits();
 
                     juce::AudioBuffer<float> dummyBuffer(numChannels, 480);
@@ -2080,8 +2047,8 @@ void AudioServer::updateClientSubscriptions(void* clientId, const AudioClientSta
 
                 snapshotDirty = true;
 
-                if (justOpened || !handler->isRunning.load(std::memory_order_acquire))
-                    handler->isRunning.store(true, std::memory_order_release);
+                if (justOpened || !handler->isRunningNow())
+                    handler->setRunning(true);
             }
 
             if (snapshotDirty)
@@ -2135,10 +2102,11 @@ void AudioServer::rebuildClientBufferSnapshot(void* clientId)
         if (handlerIt != deviceHandlers.end())
         {
             auto* handler = handlerIt->second.get();
-            std::lock_guard<std::mutex> handlerLock(handler->clientBuffersMutex);
+            std::lock_guard<std::mutex> handlerLock(handler->getClientBuffersMutex());
 
-            auto clientIt = handler->clientBuffers.find(clientId);
-            if (clientIt != handler->clientBuffers.end() && clientIt->second.inputBuffer)
+            auto& clientBuffers = handler->getClientBuffers();
+            auto clientIt = clientBuffers.find(clientId);
+            if (clientIt != clientBuffers.end() && clientIt->second.inputBuffer)
             {
                 AudioClient::ChannelBufferRef ref;
                 ref.subscription = sub;
@@ -2174,10 +2142,11 @@ void AudioServer::rebuildClientBufferSnapshot(void* clientId)
         if (handlerIt != deviceHandlers.end())
         {
             auto* handler = handlerIt->second.get();
-            std::lock_guard<std::mutex> handlerLock(handler->clientBuffersMutex);
+            std::lock_guard<std::mutex> handlerLock(handler->getClientBuffersMutex());
 
-            auto clientIt = handler->clientBuffers.find(clientId);
-            if (clientIt != handler->clientBuffers.end() && clientIt->second.outputBuffer)
+            auto& clientBuffers = handler->getClientBuffers();
+            auto clientIt = clientBuffers.find(clientId);
+            if (clientIt != clientBuffers.end() && clientIt->second.outputBuffer)
             {
                 AudioClient::ChannelBufferRef ref;
                 ref.subscription = sub;
@@ -2332,7 +2301,7 @@ int AudioServer::getDeviceNumChannels(const juce::String& deviceName, bool isInp
         auto it = deviceHandlers.find(deviceKey);
         if (it != deviceHandlers.end() && it->second->isDeviceOpen())
         {
-            auto* device = it->second->deviceManager->getCurrentAudioDevice();
+            auto* device = it->second->getCurrentDevice();
             if (device)
             {
                 // Since we have the device open, cache BOTH input and output channel info
@@ -2459,7 +2428,7 @@ juce::Array<double> AudioServer::getAvailableSampleRates(const juce::String& dev
         auto it = deviceHandlers.find(deviceKey);
         if (it != deviceHandlers.end() && it->second->isDeviceOpen())
         {
-            if (auto* device = it->second->deviceManager->getCurrentAudioDevice())
+            if (auto* device = it->second->getCurrentDevice())
                 return device->getAvailableSampleRates();
         }
     }
@@ -2518,7 +2487,7 @@ juce::Array<int> AudioServer::getAvailableBufferSizes(const juce::String& device
         auto it = deviceHandlers.find(deviceKey);
         if (it != deviceHandlers.end() && it->second->isDeviceOpen())
         {
-            if (auto* device = it->second->deviceManager->getCurrentAudioDevice())
+            if (auto* device = it->second->getCurrentDevice())
                 return device->getAvailableBufferSizes();
         }
     }
@@ -2728,7 +2697,7 @@ bool AudioServer::registerDirectCallback(
     bool needsReopen = false;
     if (handler->isDeviceOpen())
     {
-        auto* device = handler->deviceManager->getCurrentAudioDevice();
+        auto* device = handler->getCurrentDevice();
         if (device == nullptr)
         {
             // Handler thinks it's open but device is gone (e.g., after hotplug)
@@ -2772,7 +2741,7 @@ bool AudioServer::registerDirectCallback(
             return false;
         }
     }
-    else if (auto* device = handler->deviceManager->getCurrentAudioDevice())
+    else if (auto* device = handler->getCurrentDevice())
     {
         if (!device->isPlaying())
         {
@@ -2843,7 +2812,7 @@ bool AudioServer::setDeviceSampleRate(const juce::String& deviceName, double new
         return true;
     }
 
-    auto* device = handler->deviceManager->getCurrentAudioDevice();
+    auto* device = handler->getCurrentDevice();
     if (!device)
     {
         atk::logging::warning("AudioServer::setDeviceSampleRate", "current device missing for \"" + deviceName + "\"");
@@ -2865,29 +2834,23 @@ bool AudioServer::setDeviceSampleRate(const juce::String& deviceName, double new
         "AudioServer::setDeviceSampleRate",
         juce::String::formatted("applying sample rate %.2f to \"", newSampleRate) + deviceName + "\""
     );
-    // Get current setup to preserve device names
-    auto currentSetup = handler->deviceManager->getAudioDeviceSetup();
-
-    // Create new setup with changed sample rate, keep everything else
-    juce::AudioDeviceManager::AudioDeviceSetup newSetup = currentSetup;
+    juce::AudioDeviceManager::AudioDeviceSetup newSetup;
+    newSetup.outputDeviceName =
+        device->getActiveOutputChannels().countNumberOfSetBits() > 0 ? deviceName : juce::String();
+    newSetup.inputDeviceName =
+        device->getActiveInputChannels().countNumberOfSetBits() > 0 ? deviceName : juce::String();
+    newSetup.bufferSize = device->getCurrentBufferSizeSamples();
+    newSetup.inputChannels = device->getActiveInputChannels();
+    newSetup.outputChannels = device->getActiveOutputChannels();
     newSetup.sampleRate = newSampleRate;
-    // Keep all channels enabled
-    newSetup.inputChannels.setRange(0, 256, true);
-    newSetup.outputChannels.setRange(0, 256, true);
+    handler->updatePreferredRecoverySetup(newSetup);
 
-    // Use device manager to properly handle callback stop/start
-    juce::String error = handler->deviceManager->setAudioDeviceSetup(newSetup, true);
-
-    if (error.isNotEmpty())
+    handler->closeDevice();
+    if (!handler->openDevice(newSetup))
     {
-        atk::logging::warning(
-            "AudioServer::setDeviceSampleRate",
-            "setAudioDeviceSetup failed for \"" + deviceName + "\": " + error
-        );
+        atk::logging::warning("AudioServer::setDeviceSampleRate", "failed to reopen device after sample rate change");
         return false;
     }
-
-    handler->updatePreferredRecoverySetup(newSetup);
 
     atk::logging::info(
         "AudioServer::setDeviceSampleRate",
@@ -2925,7 +2888,7 @@ bool AudioServer::setDeviceBufferSize(const juce::String& deviceName, int newBuf
         return true;
     }
 
-    auto* device = handler->deviceManager->getCurrentAudioDevice();
+    auto* device = handler->getCurrentDevice();
     if (!device)
     {
         atk::logging::warning("AudioServer::setDeviceBufferSize", "current device missing for \"" + deviceName + "\"");
@@ -2947,29 +2910,23 @@ bool AudioServer::setDeviceBufferSize(const juce::String& deviceName, int newBuf
         "AudioServer::setDeviceBufferSize",
         juce::String::formatted("applying buffer size %d to \"", newBufferSize) + deviceName + "\""
     );
-    // Get current setup to preserve device names
-    auto currentSetup = handler->deviceManager->getAudioDeviceSetup();
-
-    // Create new setup with changed buffer size, keep everything else
-    juce::AudioDeviceManager::AudioDeviceSetup newSetup = currentSetup;
+    juce::AudioDeviceManager::AudioDeviceSetup newSetup;
+    newSetup.outputDeviceName =
+        device->getActiveOutputChannels().countNumberOfSetBits() > 0 ? deviceName : juce::String();
+    newSetup.inputDeviceName =
+        device->getActiveInputChannels().countNumberOfSetBits() > 0 ? deviceName : juce::String();
+    newSetup.sampleRate = device->getCurrentSampleRate();
+    newSetup.inputChannels = device->getActiveInputChannels();
+    newSetup.outputChannels = device->getActiveOutputChannels();
     newSetup.bufferSize = newBufferSize;
-    // Keep all channels enabled
-    newSetup.inputChannels.setRange(0, 256, true);
-    newSetup.outputChannels.setRange(0, 256, true);
+    handler->updatePreferredRecoverySetup(newSetup);
 
-    // Use device manager to properly handle callback stop/start
-    juce::String error = handler->deviceManager->setAudioDeviceSetup(newSetup, true);
-
-    if (error.isNotEmpty())
+    handler->closeDevice();
+    if (!handler->openDevice(newSetup))
     {
-        atk::logging::warning(
-            "AudioServer::setDeviceBufferSize",
-            "setAudioDeviceSetup failed for \"" + deviceName + "\": " + error
-        );
+        atk::logging::warning("AudioServer::setDeviceBufferSize", "failed to reopen device after buffer size change");
         return false;
     }
-
-    handler->updatePreferredRecoverySetup(newSetup);
 
     atk::logging::info(
         "AudioServer::setDeviceBufferSize",
@@ -2994,7 +2951,19 @@ bool AudioServer::getCurrentDeviceSetup(
     if (!handler->isDeviceOpen())
         return false;
 
-    outSetup = handler->deviceManager->getAudioDeviceSetup();
+    auto* device = handler->getCurrentDevice();
+    if (!device)
+        return false;
+
+    outSetup.outputDeviceName =
+        device->getActiveOutputChannels().countNumberOfSetBits() > 0 ? deviceName : juce::String();
+    outSetup.inputDeviceName =
+        device->getActiveInputChannels().countNumberOfSetBits() > 0 ? deviceName : juce::String();
+    outSetup.sampleRate = device->getCurrentSampleRate();
+    outSetup.bufferSize = device->getCurrentBufferSizeSamples();
+    outSetup.inputChannels = device->getActiveInputChannels();
+    outSetup.outputChannels = device->getActiveOutputChannels();
+
     return true;
 }
 

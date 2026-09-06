@@ -33,7 +33,6 @@ constexpr const char* kMidiControlLastTouchedPresetPresetKey = "global.midi_cont
 constexpr const char* kMidiControlLastTouchedPresetSlotsKey = "global.midi_control.last_touched.save_preset_slots";
 constexpr const char* kMidiControlActiveContextDockRestoreKey = "global.midi_control.docks.active_context.restore";
 constexpr const char* kMidiControlLastTouchedDockRestoreKey = "global.midi_control.docks.last_touched.restore";
-constexpr const char* kAudioServerDeviceSetupsKey = "global.audio_server.device_setups";
 constexpr const char* kDefaultHistoryCollectionKey = "default";
 constexpr int kMidiControlDelayedFeedbackOutputDefaultIdleMs = 400;
 constexpr int kMidiControlDelayedFeedbackOutputMinIdleMs = 50;
@@ -69,7 +68,6 @@ int g_midiObsLastTouchedPresetPreset = 0;
 std::vector<int> g_midiObsLastTouchedPresetSlots;
 bool g_restoreMidiControlActiveContextDock = false;
 bool g_restoreMidiControlLastTouchedDock = false;
-std::unordered_map<std::string, juce::String> g_audioServerDeviceSetupsByKey;
 
 [[noreturn]] void failFast(const char* context, const juce::String& message)
 {
@@ -307,8 +305,6 @@ void ensureSettingsLoaded()
     g_restoreMidiControlActiveContextDock =
         g_settingsFile->getBoolValue(kMidiControlActiveContextDockRestoreKey, false);
     g_restoreMidiControlLastTouchedDock = g_settingsFile->getBoolValue(kMidiControlLastTouchedDockRestoreKey, false);
-    g_audioServerDeviceSetupsByKey =
-        deserializeStringMap(g_settingsFile->getValue(kAudioServerDeviceSetupsKey), kAudioServerDeviceSetupsKey);
     g_settingsLifecycleState = SettingsLifecycleState::active;
 }
 } // namespace
@@ -806,40 +802,6 @@ void atk::settings::setRestoreMidiControlLastTouchedDock(bool enabled)
     if (g_settingsFile != nullptr)
     {
         g_settingsFile->setValue(kMidiControlLastTouchedDockRestoreKey, g_restoreMidiControlLastTouchedDock);
-        g_settingsFile->saveIfNeeded();
-    }
-}
-
-juce::String atk::settings::getAudioServerDeviceSetupXml(const juce::String& deviceKey)
-{
-    std::lock_guard<std::mutex> lock(g_settingsMutex);
-
-    ensureSettingsLoaded();
-
-    auto it = g_audioServerDeviceSetupsByKey.find(deviceKey.toStdString());
-    if (it == g_audioServerDeviceSetupsByKey.end())
-        return {};
-
-    return it->second;
-}
-
-void atk::settings::setAudioServerDeviceSetupXml(const juce::String& deviceKey, const juce::String& xml)
-{
-    std::lock_guard<std::mutex> lock(g_settingsMutex);
-
-    if (deviceKey.isEmpty())
-        return;
-
-    g_audioServerDeviceSetupsByKey[deviceKey.toStdString()] = xml;
-
-    if (g_settingsLifecycleState == SettingsLifecycleState::shutdown)
-        return;
-
-    ensureSettingsLoaded();
-
-    if (g_settingsFile != nullptr)
-    {
-        g_settingsFile->setValue(kAudioServerDeviceSetupsKey, serializeStringMap(g_audioServerDeviceSetupsByKey));
         g_settingsFile->saveIfNeeded();
     }
 }
