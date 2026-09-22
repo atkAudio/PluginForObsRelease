@@ -123,7 +123,9 @@ include(./cmake/common/install_after_build.cmake)
 
 # Build tests
 include(CTest)
-add_subdirectory(tests)
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
 
 atk_setup_git_hooks()
 atk_configure_local_post_build_deploy(${CMAKE_PROJECT_NAME} ${_name})

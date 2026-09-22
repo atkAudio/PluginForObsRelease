@@ -2,6 +2,8 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
+#include "RealtimeSafety.h"
+
 namespace atk
 {
 
@@ -492,7 +494,7 @@ public:
     const String getName() const override;
     void prepareToPlay(double, int) override;
     void releaseResources() override;
-    void processBlock(AudioBuffer<float>&, MidiBuffer&) override;
+    void processBlock(AudioBuffer<float>&, MidiBuffer&) ATK_RTSAN_NONBLOCKING override;
     bool supportsDoublePrecisionProcessing() const override;
 
     void reset() override;

@@ -10,9 +10,9 @@
 #include <juce_core/juce_core.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <memory>
-#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -129,8 +129,112 @@ private:
 */
 class RealtimeThreadPool
 {
+private:
+    class DispatchReaderGate
+    {
+    public:
+        void open()
+        {
+            state.store(0, std::memory_order_release);
+        }
+
+        bool tryAcquire()
+        {
+            int current = state.load(std::memory_order_acquire);
+            while (current >= 0)
+                if (state.compare_exchange_weak(
+                        current,
+                        current + 1,
+                        std::memory_order_acq_rel,
+                        std::memory_order_acquire
+                    ))
+                    return true;
+
+            return false;
+        }
+
+        void release()
+        {
+            int current = state.load(std::memory_order_acquire);
+            for (;;)
+            {
+                int released = current >= 0 ? current - 1 : current + 1;
+                if (state.compare_exchange_weak(current, released, std::memory_order_acq_rel, std::memory_order_acquire))
+                {
+                    if (released == closedAndDrained)
+                        spinAtomicNotifyAll(state);
+                    return;
+                }
+            }
+        }
+
+        void close()
+        {
+            int current = state.load(std::memory_order_acquire);
+            while (current >= 0)
+            {
+                int closed = -current - 1;
+                if (state.compare_exchange_weak(current, closed, std::memory_order_acq_rel, std::memory_order_acquire))
+                    return;
+            }
+        }
+
+        void waitUntilDrained()
+        {
+            int current = state.load(std::memory_order_acquire);
+            while (current != closedAndDrained)
+            {
+                spinAtomicWaitRealtime(state, current);
+                current = state.load(std::memory_order_acquire);
+            }
+        }
+
+    private:
+        // Non-negative values are open reader counts; -count-1 closes the gate while preserving active leases.
+        static constexpr int closedAndDrained = -1;
+        std::atomic<int> state{closedAndDrained};
+    };
+
+    struct DispatchSlot
+    {
+        std::atomic<bool> claimed{false};
+        DispatchReaderGate readers;
+        std::atomic<DependencyTaskGraph*> graph{nullptr};
+    };
+
+    class DispatchSlotLease
+    {
+    public:
+        DispatchSlotLease() = default;
+
+        DispatchSlotLease(DispatchReaderGate* readers_, DependencyTaskGraph* graph_)
+            : readers(readers_)
+            , graph(graph_)
+        {
+        }
+
+        ~DispatchSlotLease()
+        {
+            if (readers != nullptr)
+                readers->release();
+        }
+
+        DispatchSlotLease(const DispatchSlotLease&) = delete;
+        DispatchSlotLease& operator=(const DispatchSlotLease&) = delete;
+
+        DependencyTaskGraph* get() const
+        {
+            return graph;
+        }
+
+    private:
+        DispatchReaderGate* readers = nullptr;
+        DependencyTaskGraph* graph = nullptr;
+    };
+
 public:
     static constexpr int kMaxWorkers = 32;
+    static constexpr size_t kMaxConcurrentDependencyGraphs = 64;
 
     static RealtimeThreadPool* getInstance()
     {
@@ -143,6 +247,11 @@ public:
     {
         delete instance;
         instance = nullptr;
+    }
+
+    ~RealtimeThreadPool()
+    {
+        shutdown();
     }
 
     void initialize(int numWorkers = 0)
@@ -190,8 +299,6 @@ public:
 
         // Workers handle their own cleanup in destructor
         workers.clear();
-
-        currentGraph.store(nullptr, std::memory_order_release);
     }
 
     bool isReady() const
@@ -204,7 +311,7 @@ public:
         return static_cast<int>(workers.size());
     }
 
-    // Submit a fire-and-forget task (wakes all workers to compete)
+    // Submit a fire-and-forget task and wake one worker to consume it.
     bool submitTask(void (*execute)(void*), void* userData)
     {
         if (!initialized.load(std::memory_order_acquire) || execute == nullptr)
@@ -212,26 +319,24 @@ public:
 
         if (taskQueue.tryPush(execute, userData))
         {
-            // wakeAllWorkers();
             wakeFirstWorker();
             return true;
         }
         return false;
     }
 
-    // Execute a dependency graph - blocks until complete
-    void executeDependencyGraph(DependencyTaskGraph* graph)
+    // Executes a dependency graph to completion. Returns false when every fixed dispatch slot is busy.
+    bool executeDependencyGraph(DependencyTaskGraph* graph)
     {
         if (!initialized.load(std::memory_order_acquire))
-            return;
+            return false;
 
         if (!graph || graph->empty())
-            return;
+            return true;
 
-        // TODO(atk): taskQueue and executeDependencyGraph are separate paths, but graph submission
-        // still uses a single shared currentGraph slot; executeMutex serializes callers to prevent
-        // overwrite and waitUntilDone() stalls until a realtime-safe MPSC-style handoff replaces it.
-        std::lock_guard<std::mutex> lock(executeMutex);
+        auto* slot = claimDispatchSlot();
+        if (slot == nullptr)
+            return false;
 
         graph->setWakeCallback(
             []()
@@ -242,16 +347,18 @@ public:
         );
 
         graph->prepare();
-        currentGraph.store(graph, std::memory_order_release);
-
-        // // Wake first worker (cascades to wake others)
-        // wakeFirstWorker();
+        slot->graph.store(graph, std::memory_order_release);
+        slot->readers.open();
         wakeAllWorkers();
 
         graph->waitUntilDone();
 
-        currentGraph.store(nullptr, std::memory_order_release);
+        slot->readers.close();
+        slot->readers.waitUntilDrained();
+        slot->graph.store(nullptr, std::memory_order_release);
         graph->setWakeCallback(nullptr);
+        slot->claimed.store(false, std::memory_order_release);
+        return true;
     }
 
     bool isCalledFromWorkerThread() const
@@ -263,7 +370,6 @@ public:
         return false;
     }
 
-    // Wake all workers to check for work
     void wakeAllWorkers()
     {
         for (const auto& worker : workers)
@@ -271,7 +377,6 @@ public:
                 worker->signal();
     }
 
-    // Wake first worker (cascades to others via wakeNextWorker)
     void wakeFirstWorker()
     {
         if (!workers.empty() && workers[0])
@@ -279,6 +384,31 @@ public:
     }
 
 private:
+    DispatchSlot* claimDispatchSlot()
+    {
+        for (auto& slot : dispatchSlots)
+        {
+            bool expected = false;
+            if (slot.claimed.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+                return &slot;
+        }
+
+        return nullptr;
+    }
+
+    DispatchSlotLease acquireDispatchSlotGraph(DispatchSlot& slot)
+    {
+        if (!slot.readers.tryAcquire())
+            return {};
+
+        auto* graph = slot.graph.load(std::memory_order_acquire);
+        if (graph != nullptr)
+            return DispatchSlotLease(&slot.readers, graph);
+
+        slot.readers.release();
+        return {};
+    }
+
     class Worker
     {
     public:
@@ -295,8 +425,7 @@ private:
         ~Worker()
         {
             shouldExit.store(true, std::memory_order_release);
-            wakeFlag.store(true, std::memory_order_release);
-            spinAtomicNotifyOne(wakeFlag);
+            signal();
             if (thread.joinable())
                 thread.join();
         }
@@ -315,12 +444,12 @@ private:
         void signal()
         {
             wakeFlag.store(true, std::memory_order_release);
+            [[maybe_unused]] ScopedRealtimeSanitizerDisabler disabler;
             spinAtomicNotifyOne(wakeFlag);
         }
 
         void wakeNextWorker()
         {
-            // Don't wake next worker if pool is shutting down
             if (!pool.initialized.load(std::memory_order_acquire))
                 return;
 
@@ -328,10 +457,7 @@ private:
             if (total <= 1)
                 return;
 
-            int nextIndex = (workerIndex + 1) % total;
-            if (nextIndex == workerIndex)
-                return;
-
+            const int nextIndex = (workerIndex + 1) % total;
             auto* nextWorker = pool.workers[nextIndex].get();
             if (nextWorker)
                 nextWorker->signal();
@@ -353,16 +479,28 @@ private:
                 {
                     didWork = false;
 
-                    // Check for dependency graph work
-                    if (auto* graph = pool.currentGraph.load(std::memory_order_acquire))
+                    for (size_t offset = 0; offset < kMaxConcurrentDependencyGraphs; ++offset)
                     {
-                        wakeNextWorker();
-                        if (graph->tryExecuteOneTask())
+                        auto& slot = pool.dispatchSlots[(nextDispatchSlot + offset) % kMaxConcurrentDependencyGraphs];
+                        auto lease = pool.acquireDispatchSlotGraph(slot);
+                        if (auto* graph = lease.get())
                         {
-                            didWork = true;
-                            continue;
+                            if (graph->tryExecuteOneTask())
+                            {
+                                didWork = true;
+                                wakeNextWorker();
+                            }
+
+                            if (didWork)
+                            {
+                                nextDispatchSlot = (nextDispatchSlot + offset + 1) % kMaxConcurrentDependencyGraphs;
+                                break;
+                            }
                         }
                     }
+
+                    if (didWork)
+                        continue;
 
                     // Check for fire-and-forget tasks
                     RealtimeTaskQueue::Task task;
@@ -382,6 +520,7 @@ private:
         std::atomic<bool> wakeFlag{false};
         std::atomic<bool> shouldExit{false};
         std::atomic<bool> started{false};
+        size_t nextDispatchSlot = 0;
         std::thread thread;
     };
 
@@ -391,9 +530,8 @@ private:
 
     std::vector<std::unique_ptr<Worker>> workers;
     RealtimeTaskQueue taskQueue;
-    std::atomic<DependencyTaskGraph*> currentGraph{nullptr};
+    std::array<DispatchSlot, kMaxConcurrentDependencyGraphs> dispatchSlots;
     std::atomic<bool> initialized{false};
-    std::mutex executeMutex;
 
     RealtimeThreadPool(const RealtimeThreadPool&) = delete;
     RealtimeThreadPool& operator=(const RealtimeThreadPool&) = delete;

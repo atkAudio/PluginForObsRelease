@@ -139,8 +139,6 @@ struct TaskNode
 //==============================================================================
 class DependencyTaskGraph
 {
-    static constexpr double kReleaseCoeff = 1.0 - (1.0 / 1024.0); // ~1024 samples to decay
-
 public:
     using WakeCallback = void (*)();
 
@@ -209,7 +207,15 @@ public:
 
     void waitUntilDone()
     {
-        spinAtomicWait(waitFlag, false);
+        while (!isComplete())
+        {
+            if (!tryExecuteOneTask())
+            {
+                size_t completed = completedCount.load(std::memory_order_acquire);
+                if (completed < totalTasks)
+                    spinAtomicWaitRealtime(completedCount, completed);
+            }
+        }
     }
 
     bool tryExecuteOneTask()
@@ -254,27 +260,12 @@ public:
     }
 
 private:
-    // Computes subtree weights and selects heaviest subtree as preferred child.
     void executeTask(size_t taskIndex)
     {
         TaskNode& task = *tasks[taskIndex];
 
-        // auto startTime = std::chrono::steady_clock::now();
         if (task.execute && task.userData)
             task.execute(task.userData);
-        // auto elapsed = std::chrono::steady_clock::now() - startTime;
-        // auto currentTime = std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed);
-
-        // // Peak envelope follower: instant attack, 1024-sample release
-        // if (currentTime >= task.executionTimeEma)
-        //     task.executionTimeEma = currentTime;
-        // else
-        //     task.executionTimeEma =
-        //         std::chrono::nanoseconds(static_cast<int64_t>(task.executionTimeEma.count() * kReleaseCoeff));
-
-        // // Collect all ready dependents and find the heaviest one
-        // size_t heaviestReadyIndex = SIZE_MAX;
-        // int64_t heaviestWeight = -1;
         bool pushedToQueue = false;
 
         for (size_t depIndex : task.dependentIndices)
@@ -282,25 +273,8 @@ private:
             TaskNode& dependent = *tasks[depIndex];
             if (dependent.pendingDependencies.fetch_sub(1, std::memory_order_acq_rel) == 1)
             {
-                //     // This dependent is now ready - check if it's the heaviest
-                //     int64_t weight = dependent.executionTimeEma.count();
-                //     if (weight > heaviestWeight)
-                //     {
-                //         // Push previous heaviest to queue (if any)
-                //         if (heaviestReadyIndex != SIZE_MAX)
-                //         {
-                //             readyQueue.tryPush(heaviestReadyIndex);
-                //             pushedToQueue = true;
-                //         }
-                //         heaviestWeight = weight;
-                //         heaviestReadyIndex = depIndex;
-                //     }
-                //     else
-                //     {
-                // Not the heaviest, push to shared queue
                 readyQueue.tryPush(depIndex);
                 pushedToQueue = true;
-                //     }
             }
         }
 
@@ -314,11 +288,6 @@ private:
             waitFlag.store(true, std::memory_order_release);
             spinAtomicNotifyOne(waitFlag);
         }
-
-        // // Execute heaviest ready child directly (no queue handoff)
-        // // Heavy chains run on one worker with hot cache
-        // if (heaviestReadyIndex != SIZE_MAX)
-        //     executeTask(heaviestReadyIndex);
     }
 
     std::vector<std::unique_ptr<TaskNode>> tasks;

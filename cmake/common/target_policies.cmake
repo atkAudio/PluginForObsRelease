@@ -95,3 +95,51 @@ function(atk_apply_packaging_build_flags target_name)
             $<$<AND:$<NOT:$<OR:$<BOOL:$ENV{CI}>,$<BOOL:$ENV{GITHUB_ACTIONS}>>>,$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>>:ATK_DEBUG>
     )
 endfunction()
+
+function(atk_enable_test_sanitizer target_name)
+    set(ATK_TEST_SANITIZER
+        "none"
+        CACHE STRING
+        "Sanitizer for the test executable: none, address-undefined-leak, thread, or realtime"
+    )
+    set_property(
+        CACHE
+            ATK_TEST_SANITIZER
+        PROPERTY
+            STRINGS
+                none
+                address-undefined-leak
+                thread
+                realtime
+    )
+
+    if(ATK_TEST_SANITIZER STREQUAL "none")
+        return()
+    endif()
+
+    if(ATK_TEST_SANITIZER STREQUAL "thread")
+        if(NOT CMAKE_SYSTEM_NAME MATCHES "Linux|Darwin" OR NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+            message(FATAL_ERROR "ThreadSanitizer requires Clang on Linux or macOS")
+        endif()
+    elseif(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "ATK_TEST_SANITIZER=${ATK_TEST_SANITIZER} requires Clang on Linux")
+    endif()
+
+    if(ATK_TEST_SANITIZER STREQUAL "address-undefined-leak")
+        set(sanitizer_flags "-fsanitize=address,undefined,leak")
+    elseif(ATK_TEST_SANITIZER STREQUAL "thread")
+        set(sanitizer_flags "-fsanitize=thread")
+    elseif(ATK_TEST_SANITIZER STREQUAL "realtime")
+        set(sanitizer_flags "-fsanitize=realtime")
+    else()
+        message(FATAL_ERROR "Unknown ATK_TEST_SANITIZER value: ${ATK_TEST_SANITIZER}")
+    endif()
+
+    target_compile_options(
+        ${target_name}
+        PRIVATE
+            ${sanitizer_flags}
+            -fno-omit-frame-pointer
+    )
+    target_link_options(${target_name} PRIVATE ${sanitizer_flags})
+endfunction()

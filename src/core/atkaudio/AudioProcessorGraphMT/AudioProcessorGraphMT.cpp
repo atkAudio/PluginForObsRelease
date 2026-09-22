@@ -578,7 +578,10 @@ struct GraphRenderSequence
                 AudioBuffer<float>
                     audioChunk(buffer.getArrayOfWritePointers(), buffer.getNumChannels(), chunkStartSample, chunkSize);
                 midiChunk.clear();
-                midiChunk.addEvents(midiMessages, chunkStartSample, chunkSize, -chunkStartSample);
+                {
+                    [[maybe_unused]] ScopedRealtimeSanitizerDisabler disabler;
+                    midiChunk.addEvents(midiMessages, chunkStartSample, chunkSize, -chunkStartSample);
+                }
 
                 // Splitting up the buffer like this will cause the play head and host time to be
                 // invalid for all but the first chunk...
@@ -590,7 +593,10 @@ struct GraphRenderSequence
             return;
         }
 
-        currentAudioOutputBuffer.setSize(jmax(1, buffer.getNumChannels()), numSamples, false, false, true);
+        {
+            [[maybe_unused]] ScopedRealtimeSanitizerDisabler disabler;
+            currentAudioOutputBuffer.setSize(jmax(1, buffer.getNumChannels()), numSamples, false, false, true);
+        }
         currentAudioOutputBuffer.clear();
         currentMidiOutputBuffer.clear();
 
@@ -620,6 +626,7 @@ struct GraphRenderSequence
         if (midiBuffers.size() > 1)
         {
             midiMessages.clear();
+            [[maybe_unused]] ScopedRealtimeSanitizerDisabler disabler;
             midiMessages.addEvents(currentMidiOutputBuffer, 0, buffer.getNumSamples(), 0);
         }
     }
@@ -955,7 +962,9 @@ private:
                 return totalChannels;
             }();
 
-            AudioBuffer<float> buffer{audioChannels.data(), numAudioChannels, c.numSamples};
+            float* dummyChannel = nullptr;
+            float* const* channelData = numAudioChannels > 0 ? audioChannels.data() : &dummyChannel;
+            AudioBuffer<float> buffer{channelData, numAudioChannels, c.numSamples};
 
             if (processor.isSuspended())
             {
@@ -2269,7 +2278,12 @@ public:
         size_t addObsNode(Node::Ptr node, std::shared_ptr<ChainBufferPool::PooledBuffer> buffer)
         {
             size_t index = obsNodes.size();
-            obsNodes.push_back({node, buffer, {}, {}});
+            AudioBuffer<float> processingBuffer(
+                buffer->audioBuffer.getArrayOfWritePointers(),
+                buffer->audioBuffer.getNumChannels(),
+                buffer->audioBuffer.getNumSamples()
+            );
+            obsNodes.push_back({node, buffer, std::move(processingBuffer), {}, {}});
             return index;
         }
 
@@ -2331,12 +2345,14 @@ public:
 
             for (const auto& chain : chains)
                 if (chain->connectsToMidiOutput)
+                {
+                    [[maybe_unused]] ScopedRealtimeSanitizerDisabler disabler;
                     hostMidi.addEvents(chain->getMidiBuffer(), 0, numSamples, 0);
+                }
 
             for (auto& obsNode : obsNodes)
             {
                 auto& nodeBuffer = obsNode.buffer->audioBuffer;
-                nodeBuffer.setSize(nodeBuffer.getNumChannels(), numSamples, false, false, true);
                 nodeBuffer.clear();
 
                 for (const auto& [hostInputChannel, nodeInputChannel] : obsNode.directInputConnections)
@@ -2373,7 +2389,12 @@ public:
                 if (auto* proc = obsNode.node->getProcessor())
                 {
                     MidiBuffer emptyMidi;
-                    proc->processBlock(nodeBuffer, emptyMidi);
+                    obsNode.processingBuffer.setDataToReferTo(
+                        nodeBuffer.getArrayOfWritePointers(),
+                        nodeBuffer.getNumChannels(),
+                        numSamples
+                    );
+                    proc->processBlock(obsNode.processingBuffer, emptyMidi);
                 }
             }
         }
@@ -2401,7 +2422,6 @@ public:
             for (auto& obsNode : obsNodes)
             {
                 auto& nodeBuffer = obsNode.buffer->audioBuffer;
-                nodeBuffer.setSize(nodeBuffer.getNumChannels(), numSamples, false, false, true);
                 nodeBuffer.clear();
 
                 for (const auto& [hostInputChannel, nodeInputChannel] : obsNode.directInputConnections)
@@ -2420,7 +2440,12 @@ public:
                 if (auto* proc = obsNode.node->getProcessor())
                 {
                     MidiBuffer emptyMidi;
-                    proc->processBlock(nodeBuffer, emptyMidi);
+                    obsNode.processingBuffer.setDataToReferTo(
+                        nodeBuffer.getArrayOfWritePointers(),
+                        nodeBuffer.getNumChannels(),
+                        numSamples
+                    );
+                    proc->processBlock(obsNode.processingBuffer, emptyMidi);
                 }
             }
         }
@@ -2439,6 +2464,7 @@ public:
         {
             Node::Ptr node;
             std::shared_ptr<ChainBufferPool::PooledBuffer> buffer;
+            AudioBuffer<float> processingBuffer;
             std::vector<std::tuple<NodeID, int, int>> chainInputConnections;
             std::vector<std::pair<int, int>> directInputConnections;
         };
@@ -2459,6 +2485,7 @@ public:
         bool connectsToMidiOutput = false;
 
         std::shared_ptr<ChainBufferPool::PooledBuffer> pooledBuffer;
+        AudioBuffer<float> processingBuffer;
 
         AudioBuffer<float>& getAudioBuffer()
         {
@@ -2617,6 +2644,11 @@ public:
             auto chain = std::make_unique<ChainRenderSequence>(static_cast<uint32>(i), &delayLinePool);
 
             chain->pooledBuffer = bufferPool.acquireBuffer(s.blockSize);
+            chain->processingBuffer.setDataToReferTo(
+                chain->getAudioBuffer().getArrayOfWritePointers(),
+                chain->getAudioBuffer().getNumChannels(),
+                s.blockSize
+            );
 
             // Build RenderSequence - pass empty delays since we calculate accumulated latency at chain level
             static const std::unordered_map<uint32, int> emptyDelays;
@@ -2913,7 +2945,10 @@ public:
         }
 
         if (midiChainConnections.count({sourceChain->subgraphIndex, destChain->subgraphIndex}) > 0)
+        {
+            [[maybe_unused]] ScopedRealtimeSanitizerDisabler disabler;
             destChain->getMidiBuffer().addEvents(sourceChain->getMidiBuffer(), 0, numSamples, 0);
+        }
     }
 
     // Dependency task: Route inputs from completed source chains, then process
@@ -2934,13 +2969,12 @@ public:
         for (auto* sourceChain : chain->sourceChains)
             parent->routeFromSourceToChain(sourceChain, chain, numSamples);
 
-        AudioBuffer<float> chainBufferView(
+        chain->processingBuffer.setDataToReferTo(
             chain->getAudioBuffer().getArrayOfWritePointers(),
             chain->getAudioBuffer().getNumChannels(),
             numSamples
         );
-
-        chain->sequence->process(chainBufferView, chain->getMidiBuffer(), chain->cachedPlayHead);
+        chain->sequence->process(chain->processingBuffer, chain->getMidiBuffer(), chain->cachedPlayHead);
     }
 
     void process(AudioBuffer<float>& audio, MidiBuffer& midi, AudioPlayHead* playHead)
@@ -2956,7 +2990,10 @@ public:
         // Use pre-allocated buffer for saving input
         auto& savedInput = savedInputBuffer->audioBuffer;
         if (savedInput.getNumSamples() < numSamples)
+        {
+            [[maybe_unused]] ScopedRealtimeSanitizerDisabler disabler;
             savedInput.setSize(savedInput.getNumChannels(), numSamples, false, false, true);
+        }
 
         const int numInputChannels = std::min(audio.getNumChannels(), savedInput.getNumChannels());
         for (int ch = 0; ch < numInputChannels; ++ch)
@@ -2982,7 +3019,10 @@ public:
             auto& chainBuffer = chain->getAudioBuffer();
 
             if (chainBuffer.getNumSamples() < numSamples)
+            {
+                [[maybe_unused]] ScopedRealtimeSanitizerDisabler disabler;
                 chainBuffer.setSize(chainBuffer.getNumChannels(), numSamples, false, false, true);
+            }
 
             chainBuffer.clear();
             chain->getMidiBuffer().clear();
@@ -3009,12 +3049,16 @@ public:
 
             bool chainReceivesMidi = (midiInputChains.count(chain->subgraphIndex) > 0);
             if (chainReceivesMidi)
+            {
+                [[maybe_unused]] ScopedRealtimeSanitizerDisabler disabler;
                 chain->getMidiBuffer().addEvents(midi, 0, numSamples, 0);
+            }
         }
 
         auto* pool = atk::RealtimeThreadPool::getInstance();
         const bool isWorkerThread = pool && pool->isCalledFromWorkerThread();
-        const bool canUseThreadPool = pool && pool->isReady() && !isWorkerThread;
+        const bool canUseThreadPool = pool && pool->isReady() && !isWorkerThread && chains.size() > 1;
+        bool renderedInParallel = false;
 
         if (useDependencyMode && canUseThreadPool)
         {
@@ -3031,9 +3075,10 @@ public:
 
             // Execute all chains respecting dependencies
             // Input routing happens inside each task before processing
-            pool->executeDependencyGraph(&taskGraph);
+            renderedInParallel = pool->executeDependencyGraph(&taskGraph);
         }
-        else
+
+        if (!renderedInParallel)
         {
             // Serial fallback: process chains level by level
             for (int level = 0; level <= maxTopologicalLevel; ++level)
@@ -3044,16 +3089,12 @@ public:
 
                 for (auto* chain : chainsAtLevel)
                 {
-                    // The pooled buffer is always float, sized to maxBlockSize
-                    // We only process numSamples, so create a view with the correct size
-                    AudioBuffer<float> chainBufferView(
+                    chain->processingBuffer.setDataToReferTo(
                         chain->getAudioBuffer().getArrayOfWritePointers(),
                         chain->getAudioBuffer().getNumChannels(),
                         numSamples
                     );
-
-                    // Process this chain's subgraph with the correctly-sized buffer view
-                    chain->sequence->process(chainBufferView, chain->getMidiBuffer(), playHead);
+                    chain->sequence->process(chain->processingBuffer, chain->getMidiBuffer(), playHead);
 
                     // Route this chain's output to all dependent chains
                     for (auto* dependent : chain->dependentChains)
@@ -3095,7 +3136,10 @@ public:
 
                         // Copy MIDI only if there's an explicit MIDI connection between these chains
                         if (midiChainConnections.count({chain->subgraphIndex, dependent->subgraphIndex}) > 0)
+                        {
+                            [[maybe_unused]] ScopedRealtimeSanitizerDisabler disabler;
                             dependent->getMidiBuffer().addEvents(chain->getMidiBuffer(), 0, numSamples, 0);
+                        }
 
                         // Decrement dependency counter (atomic - thread-safe)
                         dependent->pendingDependencies.fetch_sub(1, std::memory_order_release);
@@ -4426,7 +4470,7 @@ private:
 
         bool acceptsMidi() const override
         {
-            return midiIn == MidiIn ::yes;
+            return midiIn == MidiIn::yes;
         }
 
         bool producesMidi() const override

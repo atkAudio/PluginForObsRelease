@@ -83,6 +83,20 @@
       }
     },
     {
+      "name": "macos-tsan",
+      "inherits": [
+        "macos"
+      ],
+      "displayName": "macOS arm64 TSan",
+      "description": "Native macOS Debug tests with ThreadSanitizer",
+      "binaryDir": "${sourceDir}/build_macos_tsan",
+      "cacheVariables": {
+        "BUILD_TESTING": true,
+        "ATK_TEST_SANITIZER": "thread",
+        "CMAKE_OSX_ARCHITECTURES": "arm64"
+      }
+    },
+    {
       "name": "windows-x64",
       "displayName": "Windows x64",
       "description": "Build for Windows x64",
@@ -173,6 +187,51 @@
       ],
       "displayName": "Ubuntu x86_64 CI build",
       "description": "Build for Ubuntu x86_64 on CI"
+    },
+    {
+      "name": "ubuntu-x86_64-asan-ubsan-lsan",
+      "inherits": [
+        "ubuntu-x86_64-debug"
+      ],
+      "displayName": "Ubuntu x86_64 ASan UBSan LSan",
+      "description": "Linux Clang Debug tests with Address, UndefinedBehavior, and Leak Sanitizers",
+      "binaryDir": "${sourceDir}/build_x86_64_asan_ubsan_lsan",
+      "cacheVariables": {
+        "BUILD_TESTING": true,
+        "ATK_TEST_SANITIZER": "address-undefined-leak",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
+    },
+    {
+      "name": "ubuntu-x86_64-tsan",
+      "inherits": [
+        "ubuntu-x86_64-debug"
+      ],
+      "displayName": "Ubuntu x86_64 TSan",
+      "description": "Linux Clang Debug tests with ThreadSanitizer",
+      "binaryDir": "${sourceDir}/build_x86_64_tsan",
+      "cacheVariables": {
+        "BUILD_TESTING": true,
+        "ATK_TEST_SANITIZER": "thread",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
+    },
+    {
+      "name": "ubuntu-x86_64-rtsan",
+      "inherits": [
+        "ubuntu-x86_64-debug"
+      ],
+      "displayName": "Ubuntu x86_64 RTSan",
+      "description": "Linux Clang Debug tests with RealtimeSanitizer",
+      "binaryDir": "${sourceDir}/build_x86_64_rtsan",
+      "cacheVariables": {
+        "BUILD_TESTING": true,
+        "ATK_TEST_SANITIZER": "realtime",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
     }
   ],
   "buildPresets": [
@@ -196,6 +255,16 @@
       "displayName": "macOS Universal CI",
       "description": "macOS CI build for Universal architectures",
       "configuration": "RelWithDebInfo"
+    },
+    {
+      "name": "macos-tsan",
+      "configurePreset": "macos-tsan",
+      "displayName": "macOS arm64 TSan",
+      "description": "Build ThreadSanitizer tests",
+      "configuration": "Debug",
+      "targets": [
+        "tests"
+      ]
     },
     {
       "name": "windows-x64",
@@ -259,6 +328,100 @@
       "displayName": "Ubuntu x86_64 CI",
       "description": "Ubuntu CI build for x86_64",
       "configuration": "RelWithDebInfo"
+    },
+    {
+      "name": "ubuntu-x86_64-asan-ubsan-lsan",
+      "configurePreset": "ubuntu-x86_64-asan-ubsan-lsan",
+      "displayName": "Ubuntu x86_64 ASan UBSan LSan",
+      "description": "Build AddressSanitizer, UndefinedBehaviorSanitizer, and LeakSanitizer tests",
+      "configuration": "Debug",
+      "targets": [
+        "tests"
+      ]
+    },
+    {
+      "name": "ubuntu-x86_64-tsan",
+      "configurePreset": "ubuntu-x86_64-tsan",
+      "displayName": "Ubuntu x86_64 TSan",
+      "description": "Build ThreadSanitizer tests",
+      "configuration": "Debug",
+      "targets": [
+        "tests"
+      ]
+    },
+    {
+      "name": "ubuntu-x86_64-rtsan",
+      "configurePreset": "ubuntu-x86_64-rtsan",
+      "displayName": "Ubuntu x86_64 RTSan",
+      "description": "Build RealtimeSanitizer tests",
+      "configuration": "Debug",
+      "targets": [
+        "tests"
+      ]
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "macos-tsan-audiographmt",
+      "configurePreset": "macos-tsan",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "environment": {
+        "TSAN_OPTIONS": "halt_on_error=1:second_deadlock_stack=1"
+      },
+      "filter": {
+        "include": {
+          "name": "(ParallelExecutionTest|ParallelRenderSequenceTest|SubgraphExtractorTest|DagPartitionerParallelTest|WorkerPinningTest)"
+        }
+      }
+    },
+    {
+      "name": "ubuntu-x86_64-asan-ubsan-lsan-audiographmt",
+      "configurePreset": "ubuntu-x86_64-asan-ubsan-lsan",
+      "output": {
+        "outputOnFailure": true
+      },
+      "environment": {
+        "ASAN_OPTIONS": "detect_leaks=1:halt_on_error=1",
+        "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1"
+      },
+      "filter": {
+        "include": {
+          "name": "(ParallelExecutionTest|ParallelRenderSequenceTest|SubgraphExtractorTest|DagPartitionerParallelTest|WorkerPinningTest)"
+        }
+      }
+    },
+    {
+      "name": "ubuntu-x86_64-tsan-audiographmt",
+      "configurePreset": "ubuntu-x86_64-tsan",
+      "output": {
+        "outputOnFailure": true
+      },
+      "environment": {
+        "TSAN_OPTIONS": "halt_on_error=1:second_deadlock_stack=1"
+      },
+      "filter": {
+        "include": {
+          "name": "(ParallelExecutionTest|ParallelRenderSequenceTest|SubgraphExtractorTest|DagPartitionerParallelTest|WorkerPinningTest)"
+        }
+      }
+    },
+    {
+      "name": "ubuntu-x86_64-rtsan-audiographmt",
+      "configurePreset": "ubuntu-x86_64-rtsan",
+      "output": {
+        "outputOnFailure": true
+      },
+      "environment": {
+        "RTSAN_OPTIONS": "halt_on_error=1"
+      },
+      "filter": {
+        "include": {
+          "name": "(ParallelExecutionTest|ParallelRenderSequenceTest|SubgraphExtractorTest|DagPartitionerParallelTest|WorkerPinningTest)"
+        }
+      }
     }
   ]
 }

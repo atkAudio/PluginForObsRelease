@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "RealtimeSafety.h"
+
 #include <atomic>
 
 #if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
@@ -43,6 +45,24 @@ void spinAtomicWait(std::atomic<T>& atomic, T oldValue, std::memory_order order 
 
     while (atomic.load(order) == oldValue)
         atomic.wait(oldValue, order);
+}
+
+template <typename T>
+void spinAtomicWaitRealtime(std::atomic<T>& atomic, T oldValue, std::memory_order order = std::memory_order_acquire)
+{
+    while (atomic.load(order) == oldValue)
+    {
+        for (int i = 0; i < 10; ++i)
+        {
+            for (int p = 0; p < (8 << i); ++p)
+                cpuPause();
+
+            if (atomic.load(order) != oldValue)
+                return;
+        }
+
+        rtsanDisabledYield();
+    }
 }
 
 template <typename T>
