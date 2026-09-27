@@ -360,6 +360,13 @@ if(WIN32)
 elseif(APPLE)
     set(CPACK_GENERATOR "productbuild")
 
+    if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+        message(FATAL_ERROR "CMAKE_OSX_DEPLOYMENT_TARGET must be set for macOS packaging")
+    endif()
+    # Picked up by cmake/macos/CPack.distribution.dist.in's <allowed-os-versions>
+    # check, which fails the installer at install time on older macOS versions.
+    set(CPACK_ATK_MIN_MACOS_VERSION "${CMAKE_OSX_DEPLOYMENT_TARGET}")
+
     # Use DESTDIR approach to ensure proper staging directory structure
     set(CPACK_SET_DESTDIR ON)
     set(CPACK_INSTALL_PREFIX "Library/Application Support/obs-studio/plugins")

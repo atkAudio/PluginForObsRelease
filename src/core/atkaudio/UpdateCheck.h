@@ -7,12 +7,12 @@
 #include <config.h>
 #include <juce_audio_utils/juce_audio_utils.h>
 
-constexpr auto OWNER = "atkAudio";
+constexpr auto OWNER = UPDATE_REPOSITORY_OWNER;
 constexpr auto DISPLAY_NAME = PLUGIN_DISPLAY_NAME;
-constexpr auto REPO = "PluginForObsRelease";
+constexpr auto REPO = UPDATE_REPOSITORY_NAME;
 constexpr auto VERSION = PLUGIN_VERSION;
 constexpr auto JSON_VALUE = "tag_name";
-constexpr auto FILENAME = "atkaudio-pluginforobs.zip";
+constexpr auto FILENAME = UPDATE_FILENAME;
 constexpr long long VERSION_FILE_EXPIRY_MS = 3LL * 30 * 24 * 60 * 60 * 1000;
 constexpr long long UPDATE_CHECK_INTERVAL_MS = 7LL * 24 * 60 * 60 * 1000;
 constexpr int RELEASE_NOTES_WIDTH_PX = 640;

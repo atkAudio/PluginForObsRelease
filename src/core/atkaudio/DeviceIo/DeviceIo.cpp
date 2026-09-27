@@ -75,8 +75,7 @@ void atk::DeviceIo::process(float** buffer, int numChannels, int numSamples, dou
     if (tempBuffer.getNumChannels() < numChannels || tempBuffer.getNumSamples() < numSamples)
         tempBuffer.setSize(numChannels, numSamples, false, false, true);
 
-    bool hasHardwareInput =
-        toObsBuffer.read(tempBuffer.getArrayOfWritePointers(), numChannels, numSamples, sampleRate, false);
+    bool hasHardwareInput = toObsBuffer.read(tempBuffer.getArrayOfWritePointers(), numChannels, numSamples, sampleRate);
 
     // Input gain only affects audio sourced from the audioserver device, before it mixes into the OBS chain.
     if (hasHardwareInput)

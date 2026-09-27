@@ -2,9 +2,21 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
+#include <iostream>
+
 class QObject;
 
 #define MAX_OBS_AUDIO_BUFFER_SIZE 1024
+
+// Project-wide debug-print macro, decoupled from JUCE's own DBG (which is a no-op
+// outside JUCE_DEBUG, and otherwise routes through OutputDebugString rather than
+// std::cerr). Enabled whenever ATK_DEBUG is defined (Debug/RelWithDebInfo local
+// builds - see cmake/common/target_policies.cmake).
+#if defined(ATK_DEBUG)
+#define ATK_DBG(x) std::cerr << x << std::endl
+#else
+#define ATK_DBG(x)
+#endif
 
 namespace atk
 {

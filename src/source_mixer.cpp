@@ -248,11 +248,7 @@ static void asmd_capture(void* param, obs_source_t* sourceIn, const struct audio
     }
 
     if (!source->syncBuffer.getIsPrepared())
-    {
-        source->syncBuffer.setTargetLevelFactor(1.0);
-        source->syncBuffer.setInterpolationType(atk::InterpolationType::Linear);
         source->syncBuffer.prepare(numChannels, frames, sampleRate);
-    }
 
     // Write to SyncBuffer with source sample rate
     // Mixing is done in audio_output_callback

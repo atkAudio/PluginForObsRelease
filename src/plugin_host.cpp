@@ -246,12 +246,6 @@ static void* pluginhost_create(obs_data_t* settings, obs_source_t* filter)
     ph->pointersToProcess.resize(ph->num_channels * 2, nullptr);
     ph->sidechainTempBuffer.resize(ph->num_channels, std::vector<float>(AUDIO_OUTPUT_FRAMES, 0.0f));
 
-    // Configure SyncBuffer for sidechain: linear interpolation, target level 1.0
-    // (minimal latency)
-    ph->sidechain_sync.setInterpolationType(atk::InterpolationType::Linear);
-    ph->sidechain_sync.setTargetLevelFactor(1.0f);
-    ph->sidechain_sync.setHysteresis(0.25f);
-
     // Pre-prepare the plugin processor so setState works before first audio callback
     ph->pluginHost->process(nullptr, (int)ph->num_channels, AUDIO_OUTPUT_FRAMES, (double)ph->sample_rate);
 

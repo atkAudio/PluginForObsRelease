@@ -445,7 +445,7 @@ void AudioClient::pullSubscribedInputs(juce::AudioBuffer<float>& deviceBuffer, i
         for (int ch = 0; ch < numDevCh; ++ch)
             tempInputPointers[ch] = tempInputBuffer.getWritePointer(ch);
 
-        if (group.buffer->read(tempInputPointers.data(), numDevCh, numSamples, sampleRate, false))
+        if (group.buffer->read(tempInputPointers.data(), numDevCh, numSamples, sampleRate))
         {
             for (const auto& [subIdx, devCh] : group.channelMap)
                 if (devCh < numDevCh && subIdx < deviceBuffer.getNumChannels())
@@ -828,13 +828,8 @@ void AudioDeviceHandler::audioDeviceIOCallbackWithContext(
                         for (int ch = 0; ch < numDeviceChannels; ++ch)
                             rtSubscriptionPointers[ch] = rtSubscriptionTempBuffer.getWritePointer(ch);
 
-                        if (buffers.outputBuffer->read(
-                                rtSubscriptionPointers.data(),
-                                numDeviceChannels,
-                                numSamples,
-                                deviceSampleRate,
-                                false
-                            ))
+                        if (buffers.outputBuffer
+                                ->read(rtSubscriptionPointers.data(), numDeviceChannels, numSamples, deviceSampleRate))
                         {
                             // Sum each channel into device output
                             for (int ch = 0; ch < numDeviceChannels; ++ch)
@@ -1035,21 +1030,6 @@ void AudioDeviceHandler::addClientSubscription(
         {
             buffers.inputBuffer = std::make_shared<SyncBuffer>(deviceName + " in");
 
-            // Use device's actual input channel count
-            int numChannels = 2; // Default fallback
-            if (device)
-                numChannels = device->getActiveInputChannels().countNumberOfSetBits();
-
-            // Pre-configure reader side with OBS parameters (typical: 48kHz, 480 samples)
-            // This allows writer (device callback) to prepare immediately
-            juce::AudioBuffer<float> dummyBuffer(numChannels, 480);
-            dummyBuffer.clear();
-            std::vector<float*> dummyPointers(numChannels);
-            for (int ch = 0; ch < numChannels; ++ch)
-                dummyPointers[ch] = dummyBuffer.getWritePointer(ch);
-
-            buffers.inputBuffer->read(dummyPointers.data(), numChannels, 480, 48000.0, false);
-
             atk::logging::debug(
                 "AudioDeviceHandler::addClientSubscription",
                 "created input SyncBuffer for \"" + deviceName + "\""
@@ -1064,21 +1044,6 @@ void AudioDeviceHandler::addClientSubscription(
         if (!buffers.outputBuffer)
         {
             buffers.outputBuffer = std::make_shared<SyncBuffer>(deviceName + " out");
-
-            // Use device's actual output channel count
-            int numChannels = 2; // Default fallback
-            if (device)
-                numChannels = device->getActiveOutputChannels().countNumberOfSetBits();
-
-            // Pre-configure writer side with OBS parameters (client will write at 48kHz, 480
-            // samples) This allows reader (device callback) to prepare immediately
-            juce::AudioBuffer<float> dummyBuffer(numChannels, 480);
-            dummyBuffer.clear();
-            std::vector<const float*> dummyPointers(numChannels);
-            for (int ch = 0; ch < numChannels; ++ch)
-                dummyPointers[ch] = dummyBuffer.getReadPointer(ch);
-
-            buffers.outputBuffer->write(dummyPointers.data(), numChannels, 480, 48000.0);
 
             atk::logging::debug(
                 "AudioDeviceHandler::addClientSubscription",
@@ -1974,21 +1939,7 @@ void AudioServer::updateClientSubscriptions(void* clientId, const AudioClientSta
                 buffers.inputMappings = inputMappings;
 
                 if (!buffers.inputBuffer)
-                {
                     buffers.inputBuffer = std::make_shared<SyncBuffer>(handler->getDeviceName() + " in");
-
-                    int numChannels = 2;
-                    if (auto* device = handler->getCurrentDevice())
-                        numChannels = device->getActiveInputChannels().countNumberOfSetBits();
-
-                    juce::AudioBuffer<float> dummyBuffer(numChannels, 480);
-                    dummyBuffer.clear();
-                    std::vector<float*> dummyPointers(numChannels);
-                    for (int ch = 0; ch < numChannels; ++ch)
-                        dummyPointers[ch] = dummyBuffer.getWritePointer(ch);
-
-                    buffers.inputBuffer->read(dummyPointers.data(), numChannels, 480, 48000.0, false);
-                }
 
                 snapshotDirty = true;
 
@@ -2029,21 +1980,7 @@ void AudioServer::updateClientSubscriptions(void* clientId, const AudioClientSta
                 buffers.outputMappings = outputMappings;
 
                 if (!buffers.outputBuffer)
-                {
                     buffers.outputBuffer = std::make_shared<SyncBuffer>(handler->getDeviceName() + " out");
-
-                    int numChannels = 2;
-                    if (auto* device = handler->getCurrentDevice())
-                        numChannels = device->getActiveOutputChannels().countNumberOfSetBits();
-
-                    juce::AudioBuffer<float> dummyBuffer(numChannels, 480);
-                    dummyBuffer.clear();
-                    std::vector<const float*> dummyPointers(numChannels);
-                    for (int ch = 0; ch < numChannels; ++ch)
-                        dummyPointers[ch] = dummyBuffer.getReadPointer(ch);
-
-                    buffers.outputBuffer->write(dummyPointers.data(), numChannels, 480, 48000.0);
-                }
 
                 snapshotDirty = true;
 

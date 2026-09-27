@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <atomic>
 #include <vector>
-#include <cstring>
 
 namespace atk
 {

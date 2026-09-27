@@ -68,6 +68,34 @@ set(PLUGIN_EMAIL ${_email})
 set(PLUGIN_VERSION ${_version})
 set(MACOS_BUNDLEID ${_bundleId})
 
+find_package(Git REQUIRED)
+execute_process(
+    COMMAND
+        ${GIT_EXECUTABLE} config --get remote.origin.url
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE UPDATE_REPOSITORY_URL
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE UPDATE_REPOSITORY_RESULT
+)
+if(UPDATE_REPOSITORY_RESULT OR NOT UPDATE_REPOSITORY_URL)
+    message(FATAL_ERROR "Unable to determine the Git repository name for update checks")
+endif()
+string(
+    REGEX REPLACE "\\.git$"
+    ""
+    UPDATE_REPOSITORY_URL
+    "${UPDATE_REPOSITORY_URL}"
+)
+string(
+    REGEX REPLACE "^.*[/@]([^/:]+)$"
+    "\\1"
+    UPDATE_REPOSITORY_NAME
+    "${UPDATE_REPOSITORY_URL}"
+)
+set(UPDATE_REPOSITORY_NAME "${UPDATE_REPOSITORY_NAME}Release")
+set(UPDATE_REPOSITORY_OWNER "${_author}")
+set(UPDATE_FILENAME "${_name}.zip")
+
 string(
     REPLACE "."
     ";"
