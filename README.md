@@ -75,29 +75,14 @@ Develop your own audio processing plugins and integrate them into `PluginHost2` 
 
 Project is (now loosely) based on [OBS Plugin Template](https://github.com/obsproject/obs-plugintemplate) and depends on [JUCE Framework](https://github.com/juce-framework/JUCE). Install JUCE Framework [Minimum System Requirements](https://github.com/juce-framework/JUCE#minimum-system-requirements) and OBS Plugin Template [Supported Build Environment](https://github.com/obsproject/obs-plugintemplate#supported-build-environments) and follow OBS Plugin Template [Quick Start Guide](https://github.com/obsproject/obs-plugintemplate/wiki/Quick-Start-Guide).
 
-In short, after installing all dependencies (Ubuntu example, requires clang):
+For example, after installing all dependencies on Ubuntu:
 
 ```console
 git clone https://github.com/atkaudio/pluginforobsrelease
 cd pluginforobsrelease
 cmake --preset ubuntu-x86_64
-cmake --build --preset ubuntu-x86_64 
-
-# Local debug build
-cmake --preset ubuntu-x86_64-debug
-cmake --build --preset ubuntu-x86_64-debug
+cmake --build --preset ubuntu-x86_64
 ```
-
-CI builds Linux inside the builder images in `.github/docker` (Homebrew LLVM, arm64 cross-compiled). The same images work locally:
-
-```console
-docker build -f .github/docker/linux-amd64-builder.Dockerfile -t pluginforobs-linux-amd64-builder .github/docker
-source .github/scripts/linux-docker-helpers.sh
-run_in_builder cmake --preset ubuntu-x86_64
-run_in_builder cmake --build --preset ubuntu-x86_64
-```
-
-Use `CONTAINER_ARCH=arm64`, the `linux-arm64-builder` image and the `ubuntu-arm64` preset for ARM64.
 
 Find `atkaudio-pluginforobs.so` and copy it to OBS plugins directory.
 See `CMakePresets.json` for Windows, macOS and other build presets.
