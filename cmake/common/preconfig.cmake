@@ -1,6 +1,7 @@
 # Prefer system pkg-config over Linuxbrew on Linux (native builds only)
 # Only applies when Linuxbrew is installed and not cross-compiling
-if(UNIX AND NOT APPLE AND NOT CMAKE_CROSSCOMPILING)
+# Runs before project(), so CMAKE_CROSSCOMPILING is not set yet; a toolchain file marks cross builds.
+if(UNIX AND NOT APPLE AND NOT CMAKE_TOOLCHAIN_FILE)
     if(EXISTS "$ENV{HOME}/.linuxbrew" OR EXISTS "/home/linuxbrew/.linuxbrew")
         if(EXISTS "/usr/bin/pkg-config")
             # Force CMake to use system pkg-config executable

@@ -1,9 +1,9 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
-#include <climits>
 #include <cmath>
 #include <cstdint>
 #include <iomanip>
@@ -27,7 +27,7 @@ inline int nextPowerOfTwo(int value) noexcept
     return result;
 }
 
-// Streaming 5-point Lagrange resampler; at a snapped phase it passes samples through bit-exact.
+// Streaming 5-point Lagrange resampler.
 class Interpolator
 {
 public:
@@ -36,12 +36,6 @@ public:
         std::fill(std::begin(history), std::end(history), 0.0f);
         oldestIndex = 0;
         subSamplePos = 1.0;
-    }
-
-    // Aligns to a whole sample without clearing history, so the output stays continuous.
-    void snapPhase() noexcept
-    {
-        subSamplePos = 0.0;
     }
 
     // Adds gain * resampled input to output; returns the number of input samples consumed.
@@ -112,6 +106,114 @@ private:
     double subSamplePos{1.0};
 };
 
+// Measures a stream's sample rate against the host clock over a moving window of recent entries,
+// between the averages of its older and newer halves so single-callback jitter averages out.
+class StreamClock
+{
+public:
+    // Entries are spaced by entrySamples, so streams with different block sizes span the same time.
+    void reset(double sampleRate, int blockSize, int entrySamples) noexcept
+    {
+        nominalRate = sampleRate;
+        stallSeconds = STALL_BLOCKS * blockSize / sampleRate;
+        samplesPerEntry = entrySamples;
+        restart();
+    }
+
+    void restart() noexcept
+    {
+        numBlocks = 0;
+        numEntries = 0;
+        totalSamples = 0;
+        nextEntrySamples = 0;
+        older = {};
+        newer = {};
+    }
+
+    // Returns true when a stall restarted the count.
+    bool addBlock(int numSamples, double timeSeconds) noexcept
+    {
+        const double gap = timeSeconds - lastTime;
+        lastTime = timeSeconds;
+
+        const bool isStall = numBlocks > 0 && gap > stallSeconds;
+        if (isStall)
+            restart();
+        // A catch-up burst lands all at once; start counting from its last block.
+        if (numBlocks == 1 && gap < 0.5 * numSamples / nominalRate)
+            restart();
+
+        if (numBlocks == 0)
+            startTime = timeSeconds;
+        if (totalSamples >= nextEntrySamples)
+        {
+            addEntry({timeSeconds - startTime, static_cast<double>(totalSamples)});
+            nextEntrySamples = totalSamples + samplesPerEntry;
+        }
+
+        totalSamples += numSamples;
+        ++numBlocks;
+        return isStall;
+    }
+
+    bool isPrimed() const noexcept
+    {
+        return numEntries >= WINDOW_ENTRIES && newer.time > older.time;
+    }
+
+    // Measured over nominal rate.
+    double getRateFactor() const noexcept
+    {
+        return (newer.samples - older.samples) / (newer.time - older.time) / nominalRate;
+    }
+
+private:
+    struct Entry
+    {
+        double time{0.0};
+        double samples{0.0};
+    };
+
+    void addEntry(const Entry& entry) noexcept
+    {
+        if (numEntries >= WINDOW_ENTRIES)
+        {
+            const auto& leaving = window[numEntries % WINDOW_ENTRIES];
+            older.time -= leaving.time;
+            older.samples -= leaving.samples;
+        }
+        if (numEntries >= HALF_ENTRIES)
+        {
+            const auto& crossing = window[(numEntries - HALF_ENTRIES) % WINDOW_ENTRIES];
+            newer.time -= crossing.time;
+            newer.samples -= crossing.samples;
+            older.time += crossing.time;
+            older.samples += crossing.samples;
+        }
+        window[numEntries % WINDOW_ENTRIES] = entry;
+        newer.time += entry.time;
+        newer.samples += entry.samples;
+        ++numEntries;
+    }
+
+    static constexpr int WINDOW_ENTRIES = 1024;
+    static constexpr int HALF_ENTRIES = WINDOW_ENTRIES / 2;
+    static constexpr double STALL_BLOCKS = 4.0;
+
+    double nominalRate{1.0};
+    double stallSeconds{0.0};
+    int samplesPerEntry{1};
+    int64_t numBlocks{0};
+    int64_t numEntries{0};
+    int64_t totalSamples{0};
+    int64_t nextEntrySamples{0};
+    double startTime{0.0};
+    double lastTime{0.0};
+    std::array<Entry, WINDOW_ENTRIES> window{};
+    Entry older;
+    Entry newer;
+};
+
 } // namespace atk
 
 // Multichannel SPSC FIFO; setSize/reset require both sides idle.
@@ -175,12 +277,14 @@ private:
     atk::FifoBuffer fifo;
 };
 
-// Clock-drift absorber. Drift runs free inside an accept zone above the safety floor; once the tracked
-// level leaves it, a fixed correction eases in until the level is back at the zone centre.
+// Clock-drift absorber. Drift measured by counting samples against host time is fed forward, and a slow
+// proportional trim holds the level at a target of one read plus interpolation and drift headroom.
 class SyncBuffer
 {
 public:
-    static constexpr double CORRECTION_AUTHORITY = 500.0e-6;
+    static constexpr double MAX_DRIFT = 300.0e-6;
+    // Drift feed-forward plus a trim that alone can hold the worst-case drift.
+    static constexpr double CORRECTION_AUTHORITY = 2.0 * MAX_DRIFT;
 
     explicit SyncBuffer(const juce::String& debugTag = "")
         : tag(debugTag)
@@ -221,14 +325,22 @@ public:
     {
         std::scoped_lock lock(writeLock, readLock);
         fifo.reset();
+        writerClock.restart();
+        readerClock.restart();
         resetDriftState();
     }
 
     int write(const float* const* src, int numChannels, int numSamples, double sampleRate)
     {
+        return write(src, numChannels, numSamples, sampleRate, getHostTimeSeconds());
+    }
+
+    int write(const float* const* src, int numChannels, int numSamples, double sampleRate, double timeSeconds)
+    {
         std::unique_lock lock(writeLock, std::try_to_lock);
         if (!lock.owns_lock())
         {
+            restartWriterClock.store(true, std::memory_order_relaxed);
             logDrop("writer lock contended", numSamples);
             return 0;
         }
@@ -239,7 +351,21 @@ public:
         if (!isPrepared.load(std::memory_order_acquire))
             return 0;
 
+        if (restartWriterClock.exchange(false, std::memory_order_relaxed))
+            writerClock.restart();
+        if (writerClock.addBlock(numSamples, timeSeconds))
+            logEvent("writer stalled, drift measurement restarted");
+        if (writerClock.isPrimed())
+            writerRateFactor.store(writerClock.getRateFactor(), std::memory_order_relaxed);
+        isWriterClockPrimed.store(writerClock.isPrimed(), std::memory_order_release);
+
         const int written = fifo.write(src, numChannels, numSamples);
+        if (written > 0)
+        {
+            lastWriteSamples.store(written, std::memory_order_relaxed);
+            lastWriteTime.store(timeSeconds, std::memory_order_release);
+        }
+
         if (written < numSamples)
         {
             if (overflowDroppedSamples == 0)
@@ -257,12 +383,18 @@ public:
     // Always overwrites dest; returns false (with silence) while priming, on underflow or contention.
     bool read(float* const* dest, int numChannels, int numSamples, double sampleRate)
     {
+        return read(dest, numChannels, numSamples, sampleRate, getHostTimeSeconds());
+    }
+
+    bool read(float* const* dest, int numChannels, int numSamples, double sampleRate, double timeSeconds)
+    {
         for (int ch = 0; ch < numChannels; ++ch)
             std::fill_n(dest[ch], numSamples, 0.0f);
 
         std::unique_lock lock(readLock, std::try_to_lock);
         if (!lock.owns_lock())
         {
+            restartReaderClock.store(true, std::memory_order_relaxed);
             logDrop("reader lock contended", numSamples);
             return false;
         }
@@ -286,25 +418,34 @@ public:
         if (!isPrepared.load(std::memory_order_acquire))
             return false;
 
+        if (restartReaderClock.exchange(false, std::memory_order_relaxed))
+            readerClock.restart();
+        if (readerClock.addBlock(numSamples, timeSeconds))
+            logEvent("reader stalled, drift measurement restarted");
+
+        // Loaded before the level, so a racing write can only overstate it for one read.
+        const double lastWrite = lastWriteTime.load(std::memory_order_acquire);
+        const double lastBlock = lastWriteSamples.load(std::memory_order_relaxed);
         int level = fifo.getNumReady();
+        // Counting the last block only as far as the writer clock has produced it removes the block ripple.
+        const double producedOfLastBlock = std::clamp((timeSeconds - lastWrite) * writer.sampleRate, 0.0, lastBlock);
+        double continuousLevel = level - (lastBlock - producedOfLastBlock);
         const int targetLevel = getTargetLevel();
 
         if (isPriming)
         {
-            // Priming fires right after a writer block lands; the level then sags by (W - R) before the next.
-            const int writerSag = std::max(0, writer.blockSize - readBlockInWriterSamples());
-            const int primedLevel = targetLevel + writerSag;
-            if (level < primedLevel)
+            if (continuousLevel < targetLevel)
                 return false;
             // Output is still silent, so a startup burst can be dropped here without a glitch.
-            fifo.advanceRead(level - primedLevel);
-            level = primedLevel;
+            const int excess = static_cast<int>(continuousLevel - targetLevel);
+            fifo.advanceRead(excess);
+            level -= excess;
+            continuousLevel -= excess;
             isPriming = false;
             logState("PRIMED", level, targetLevel);
         }
 
-        // Must run before the ratio is read, so a phase snap and its matching ratio land on the same block.
-        updateCompensation(level, targetLevel, numSamples);
+        updateCompensation(continuousLevel, targetLevel, numSamples);
 
         const double ratio = writer.sampleRate / reader.sampleRate * (1.0 + bufferCompensation);
         const int needed = static_cast<int>(std::ceil(numSamples * ratio)) + 1;
@@ -312,6 +453,8 @@ public:
         if (level < needed)
         {
             logState("UNDERFLOW", level, targetLevel);
+            readerClock.restart();
+            restartWriterClock.store(true, std::memory_order_relaxed);
             startPriming();
             return false;
         }
@@ -345,16 +488,18 @@ public:
         return bufferCompensation;
     }
 
-    bool getIsUnity()
+    double getDriftEstimate()
     {
         std::lock_guard lock(readLock);
-        return isUnity;
+        return driftEstimate;
     }
 
-    // Centre of the accept zone that drift is allowed to wander across.
+    // The trim saturates at its authority when the level is this far below target.
     int getTargetLevel() const
     {
-        return getZoneFloor() + getZoneWidth() / 2;
+        return readBlockInWriterSamples()
+             + INTERPOLATOR_MARGIN
+             + static_cast<int>(std::ceil(getTrimAuthority() * getTrimHorizon()));
     }
 
 private:
@@ -386,17 +531,30 @@ private:
         return static_cast<int>(std::ceil(reader.blockSize * writer.sampleRate / reader.sampleRate));
     }
 
-    // What one read needs, plus a writer block. windowMinLevel is only the trough already seen: when
-    // the write/read interleaving slips by one the level drops a whole writer block with no warning,
-    // so that block has to be sitting there in advance.
-    int getZoneFloor() const
+    int getLargerBlock() const
     {
-        return readBlockInWriterSamples() + INTERPOLATOR_MARGIN + writer.blockSize;
+        return std::max(writer.blockSize, readBlockInWriterSamples());
     }
 
-    int getZoneWidth() const
+    int getLargerBlockInReaderSamples() const
     {
-        return readBlockInWriterSamples() / 2;
+        return static_cast<int>(std::ceil(getLargerBlock() * reader.sampleRate / writer.sampleRate));
+    }
+
+    double getTrimHorizon() const
+    {
+        return TRIM_HORIZON_BLOCKS * getLargerBlock();
+    }
+
+    // Unmeasured, the trim alone must hold the worst drift; measured, only the estimate's error.
+    double getTrimAuthority() const
+    {
+        return isDriftMeasured ? MAX_RESIDUAL_DRIFT : MAX_DRIFT;
+    }
+
+    static double getHostTimeSeconds() noexcept
+    {
+        return juce::Time::getMillisecondCounterHiRes() * 0.001;
     }
 
     void prepareLocked()
@@ -408,6 +566,16 @@ private:
 
         interpolators.assign(writer.numChannels, atk::Interpolator{});
 
+        writerClock.reset(writer.sampleRate, writer.blockSize, getLargerBlock());
+        readerClock.reset(reader.sampleRate, reader.blockSize, getLargerBlockInReaderSamples());
+        restartWriterClock.store(false, std::memory_order_relaxed);
+        restartReaderClock.store(false, std::memory_order_relaxed);
+        isWriterClockPrimed.store(false, std::memory_order_relaxed);
+        lastWriteSamples.store(0, std::memory_order_relaxed);
+        lastWriteTime.store(0.0, std::memory_order_relaxed);
+        driftEstimate = 0.0;
+        isDriftMeasured = false;
+
         const int capacity =
             atk::nextPowerOfTwo(std::max(2 * (getTargetLevel() + writer.blockSize), MIN_FIFO_CAPACITY));
         fifo.setSize(writer.numChannels, capacity);
@@ -418,15 +586,12 @@ private:
         isPrepared.store(true, std::memory_order_release);
     }
 
+    // The last drift estimate is kept until the clocks prime again: it describes the hardware, not the FIFO.
     void resetDriftState()
     {
         startPriming();
-        isUnity = false;
-        correctionDirection = 0;
-        trackedLevel = getTargetLevel();
-        windowMinLevel = INT_MAX;
         windowReaderSamples = 0;
-        bufferCompensation = 0.0;
+        bufferCompensation = driftEstimate;
     }
 
     void startPriming()
@@ -436,53 +601,39 @@ private:
             interpolator.reset();
     }
 
-    // Thermostat with a fixed correction rather than an accumulating one, so nothing can wind up.
-    void updateCompensation(int level, int targetLevel, int numSamples)
+    void updateCompensation(double level, int targetLevel, int numSamples)
     {
-        windowMinLevel = std::min(windowMinLevel, level);
+        if (windowReaderSamples == 0 || level < windowMinLevel)
+            windowMinLevel = level;
         windowReaderSamples += numSamples;
 
-        if (windowReaderSamples < WINDOW_BLOCKS * reader.blockSize)
+        if (windowReaderSamples < WINDOW_BLOCKS * getLargerBlockInReaderSamples())
             return;
 
-        // Drift and correction move the level slowly; any faster change is scheduling jitter.
-        const double maxStep = MAX_LEVEL_RATE * windowReaderSamples * writer.sampleRate / reader.sampleRate;
-        trackedLevel += std::clamp(windowMinLevel - trackedLevel, -maxStep, maxStep);
-
-        const int zoneHalf = getZoneWidth() / 2;
-        const int lowEdge = targetLevel - zoneHalf;
-        const int highEdge = targetLevel + zoneHalf;
-        const int loggedLevel = static_cast<int>(std::lround(trackedLevel));
-
-        if (correctionDirection == 0)
+        const bool wasDriftMeasured = isDriftMeasured;
+        isDriftMeasured = readerClock.isPrimed() && isWriterClockPrimed.load(std::memory_order_acquire);
+        const int loggedLevel = static_cast<int>(std::lround(windowMinLevel));
+        if (isDriftMeasured)
         {
-            correctionDirection = trackedLevel < lowEdge ? -1 : trackedLevel > highEdge ? 1 : 0;
-            if (correctionDirection != 0)
-                logState("CORRECTING", loggedLevel, targetLevel);
+            const double measured =
+                writerRateFactor.load(std::memory_order_relaxed) / readerClock.getRateFactor() - 1.0;
+            driftEstimate = std::clamp(measured, -MAX_DRIFT, MAX_DRIFT);
+
+            if (!wasDriftMeasured || std::abs(driftEstimate - loggedDriftEstimate) > DRIFT_LOG_STEP)
+            {
+                loggedDriftEstimate = driftEstimate;
+                logState(wasDriftMeasured ? "DRIFT CHANGED" : "DRIFT MEASURED", loggedLevel, targetLevel);
+            }
         }
-        else if (correctionDirection * (trackedLevel - targetLevel) <= 0)
+        else if (wasDriftMeasured)
         {
-            correctionDirection = 0;
-            logState("SETTLED", loggedLevel, targetLevel);
-        }
-
-        // Eased in rather than stepped, so the ratio never jumps.
-        const double slew = CORRECTION_AUTHORITY / CORRECTION_SLEW_WINDOWS;
-        const double wanted = correctionDirection * CORRECTION_AUTHORITY;
-        bufferCompensation += std::clamp(wanted - bufferCompensation, -slew, slew);
-
-        // Matched clocks coasting inside the zone: an exact 1.0 ratio makes the resampler copy verbatim.
-        const bool wasUnity = isUnity;
-        isUnity = bufferCompensation == 0.0 && writer.sampleRate == reader.sampleRate;
-
-        if (isUnity && !wasUnity)
-        {
-            for (auto& interpolator : interpolators)
-                interpolator.snapPhase();
-            logState("UNITY", loggedLevel, targetLevel);
+            logState("DRIFT UNMEASURED", loggedLevel, targetLevel);
         }
 
-        windowMinLevel = INT_MAX;
+        const double authority = getTrimAuthority();
+        const double trim = std::clamp((windowMinLevel - targetLevel) / getTrimHorizon(), -authority, authority);
+        bufferCompensation = driftEstimate + trim;
+
         windowReaderSamples = 0;
     }
 
@@ -498,6 +649,8 @@ private:
             << targetLevel
             << " compensation="
             << bufferCompensation
+            << " drift="
+            << driftEstimate
         );
     }
 
@@ -505,6 +658,11 @@ private:
     void logDrop([[maybe_unused]] const char* reason, [[maybe_unused]] int64_t droppedSamples) const
     {
         ATK_DBG(logPrefix() << "DROP " << reason << " samples=" << droppedSamples);
+    }
+
+    void logEvent([[maybe_unused]] const char* message) const
+    {
+        ATK_DBG(logPrefix() << message);
     }
 
 #ifdef ATK_DEBUG
@@ -523,12 +681,13 @@ private:
 
     static constexpr int MIN_FIFO_CAPACITY = 4096;
     static constexpr int INTERPOLATOR_MARGIN = 4;
-    // Control window in reader blocks, so detection lag scales with the buffer instead of wall time.
-    static constexpr int WINDOW_BLOCKS = 8;
-    // Control windows taken to reach full authority.
-    static constexpr double CORRECTION_SLEW_WINDOWS = 8.0;
-    // Fastest real level change: worst-case clock drift plus full correction.
-    static constexpr double MAX_LEVEL_RATE = 2.0 * CORRECTION_AUTHORITY;
+    // Periods count the larger of the two blocks, since that sets both the ripple and the scheduling beat.
+    // A longer window gives a steadier minimum; 8 windows per trim horizon keeps the loop well damped.
+    static constexpr int WINDOW_BLOCKS = 32;
+    static constexpr int TRIM_HORIZON_BLOCKS = 256;
+    // Worst expected error of a primed drift estimate.
+    static constexpr double MAX_RESIDUAL_DRIFT = 30.0e-6;
+    static constexpr double DRIFT_LOG_STEP = 10.0e-6;
 
     juce::String tag;
     std::atomic_bool isPrepared{false};
@@ -540,14 +699,24 @@ private:
     std::vector<atk::Interpolator> interpolators;
     juce::AudioBuffer<float> scratch;
 
+    atk::StreamClock writerClock;
+    atk::StreamClock readerClock;
+    // A missed block would read as drift, so contention, underflow and stalls restart the count instead.
+    std::atomic_bool restartWriterClock{false};
+    std::atomic_bool restartReaderClock{false};
+    std::atomic_bool isWriterClockPrimed{false};
+    std::atomic<double> writerRateFactor{1.0};
+    std::atomic<int> lastWriteSamples{0};
+    std::atomic<double> lastWriteTime{0.0};
+
     bool isPriming{true};
-    bool isUnity{false};
+    bool isDriftMeasured{false};
     int64_t overflowDroppedSamples{0};
-    int windowMinLevel{INT_MAX};
+    double windowMinLevel{0.0};
     int windowReaderSamples{0};
-    int correctionDirection{0};
-    double trackedLevel{0.0};
     double bufferCompensation{0.0};
+    double driftEstimate{0.0};
+    double loggedDriftEstimate{0.0};
 
     std::mutex readLock;
     std::mutex writeLock;

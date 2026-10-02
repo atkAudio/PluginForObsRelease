@@ -22,6 +22,18 @@ endif()
 # Enable find_package targets to become globally available targets
 set(CMAKE_FIND_PACKAGE_TARGETS_GLOBAL TRUE)
 
+# The builder images carry Homebrew LLVM/CMake; never resolve target libraries from there.
+list(
+    APPEND CMAKE_IGNORE_PATH
+    "/home/linuxbrew"
+    "/home/linuxbrew/.linuxbrew"
+)
+list(
+    APPEND CMAKE_IGNORE_PREFIX_PATH
+    "/home/linuxbrew"
+    "/home/linuxbrew/.linuxbrew"
+)
+
 find_package(libobs QUIET)
 
 if(NOT TARGET OBS::libobs)

@@ -98,6 +98,10 @@ private:
 
     juce::CriticalSection innerMutex;
     std::unique_ptr<juce::AudioPluginInstance> inner;
+    juce::PluginDescription pendingPluginDescription;
+    juce::MemoryBlock pendingPluginState;
+    EditorStyle pendingEditorStyle = EditorStyle::thisWindow;
+    bool hasPendingPlugin = false;
     juce::String parentSourceUuid;
     juce::String ownerFilterName;
     EditorStyle editorStyle = EditorStyle::thisWindow;

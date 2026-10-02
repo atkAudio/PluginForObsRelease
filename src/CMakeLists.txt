@@ -26,7 +26,7 @@ FetchContent_Declare(
     juce
     EXCLUDE_FROM_ALL
     GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
-    GIT_TAG 9.0.2
+    GIT_TAG 9.0.3
     GIT_SHALLOW TRUE
     PATCH_COMMAND
         ${CMAKE_COMMAND} -P "${CMAKE_SOURCE_DIR}/cmake/patches/apply-juce-patches.cmake"

@@ -210,6 +210,13 @@ void HostAudioProcessorImpl::prepareToPlay(double sr, int bs)
         deviceOutputBuffer.setSize(maxSubscriptions, maxSamples, false, false, true);
 
     inputMidiCopy.ensureSize(2048);
+
+    if (hasPendingPlugin)
+    {
+        hasPendingPlugin = false;
+        setNewPlugin(pendingPluginDescription, pendingEditorStyle, pendingPluginState);
+        pendingPluginState.reset();
+    }
 }
 
 void HostAudioProcessorImpl::releaseResources()
@@ -611,6 +618,15 @@ void HostAudioProcessorImpl::setNewPlugin(const PluginDescription& pd, EditorSty
 {
     const ScopedLock sl(innerMutex);
 
+    if (!active)
+    {
+        pendingPluginDescription = pd;
+        pendingPluginState = mb;
+        pendingEditorStyle = where;
+        hasPendingPlugin = true;
+        return;
+    }
+
     const auto callback = [this, where, mb](std::unique_ptr<AudioPluginInstance> instance, const String& error)
     {
         const ScopedLock sl(innerMutex);
@@ -669,6 +685,8 @@ void HostAudioProcessorImpl::clearPlugin()
     std::unique_ptr<AudioPluginInstance> pluginToDestroy;
     {
         const ScopedLock sl(innerMutex);
+        hasPendingPlugin = false;
+        pendingPluginState.reset();
         if (inner != nullptr)
             atk::LastTouchedParameterTracker::getInstance().unregisterProcessor(*inner);
 

@@ -47,6 +47,17 @@
       }
     },
     {
+      "name": "ubuntu-sanitizer-template",
+      "hidden": true,
+      "environment": {
+        "PATH": "$penv{LLVM_PREFIX}/bin:$penv{PATH}"
+      },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
+    },
+    {
       "name": "macos",
       "displayName": "macOS Universal",
       "description": "Build for macOS 12.0+ (Universal binary)",
@@ -165,7 +176,11 @@
       "inherits": [
         "ubuntu-cross-compile-template"
       ],
-      "binaryDir": "${sourceDir}/build_x86_64"
+      "binaryDir": "${sourceDir}/build_x86_64",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "/usr/bin/gcc",
+        "CMAKE_CXX_COMPILER": "/usr/bin/g++"
+      }
     },
     {
       "name": "ubuntu-x86_64-debug",
@@ -189,8 +204,36 @@
       "description": "Build for Ubuntu x86_64 on CI"
     },
     {
+      "name": "ubuntu-arm64",
+      "displayName": "Ubuntu ARM64",
+      "description": "Cross-compile for Ubuntu ARM64 (run in the linux-arm64-builder image)",
+      "inherits": [
+        "ubuntu-cross-compile-template"
+      ],
+      "binaryDir": "${sourceDir}/build_arm64",
+      "toolchainFile": "${sourceDir}/cmake/linux/aarch64-toolchain.cmake",
+      "cacheVariables": {
+        "CMAKE_INSTALL_LIBDIR": "lib/aarch64-linux-gnu",
+        "CMAKE_SYSTEM_PROCESSOR": "arm64",
+        "CMAKE_AUTOMOC_MOC_EXECUTABLE": "/usr/lib/qt6/libexec/moc",
+        "CMAKE_AUTOUIC_UIC_EXECUTABLE": "/usr/lib/qt6/libexec/uic",
+        "CMAKE_AUTORCC_RCC_EXECUTABLE": "/usr/lib/qt6/libexec/rcc",
+        "CMAKE_AUTOMOC_COMPILER_PREDEFINES": false
+      }
+    },
+    {
+      "name": "ubuntu-ci-arm64",
+      "inherits": [
+        "ubuntu-arm64",
+        "ci-template"
+      ],
+      "displayName": "Ubuntu ARM64 CI build",
+      "description": "Cross-compile for Ubuntu ARM64 on CI"
+    },
+    {
       "name": "ubuntu-x86_64-asan-ubsan-lsan",
       "inherits": [
+        "ubuntu-sanitizer-template",
         "ubuntu-x86_64-debug"
       ],
       "displayName": "Ubuntu x86_64 ASan UBSan LSan",
@@ -198,14 +241,13 @@
       "binaryDir": "${sourceDir}/build_x86_64_asan_ubsan_lsan",
       "cacheVariables": {
         "BUILD_TESTING": true,
-        "ATK_TEST_SANITIZER": "address-undefined-leak",
-        "CMAKE_C_COMPILER": "clang",
-        "CMAKE_CXX_COMPILER": "clang++"
+        "ATK_TEST_SANITIZER": "address-undefined-leak"
       }
     },
     {
       "name": "ubuntu-x86_64-tsan",
       "inherits": [
+        "ubuntu-sanitizer-template",
         "ubuntu-x86_64-debug"
       ],
       "displayName": "Ubuntu x86_64 TSan",
@@ -213,14 +255,13 @@
       "binaryDir": "${sourceDir}/build_x86_64_tsan",
       "cacheVariables": {
         "BUILD_TESTING": true,
-        "ATK_TEST_SANITIZER": "thread",
-        "CMAKE_C_COMPILER": "clang",
-        "CMAKE_CXX_COMPILER": "clang++"
+        "ATK_TEST_SANITIZER": "thread"
       }
     },
     {
       "name": "ubuntu-x86_64-rtsan",
       "inherits": [
+        "ubuntu-sanitizer-template",
         "ubuntu-x86_64-debug"
       ],
       "displayName": "Ubuntu x86_64 RTSan",
@@ -228,9 +269,7 @@
       "binaryDir": "${sourceDir}/build_x86_64_rtsan",
       "cacheVariables": {
         "BUILD_TESTING": true,
-        "ATK_TEST_SANITIZER": "realtime",
-        "CMAKE_C_COMPILER": "clang",
-        "CMAKE_CXX_COMPILER": "clang++"
+        "ATK_TEST_SANITIZER": "realtime"
       }
     }
   ],
@@ -327,6 +366,20 @@
       "configurePreset": "ubuntu-ci-x86_64",
       "displayName": "Ubuntu x86_64 CI",
       "description": "Ubuntu CI build for x86_64",
+      "configuration": "RelWithDebInfo"
+    },
+    {
+      "name": "ubuntu-arm64",
+      "configurePreset": "ubuntu-arm64",
+      "displayName": "Ubuntu ARM64",
+      "description": "Ubuntu cross build for ARM64",
+      "configuration": "RelWithDebInfo"
+    },
+    {
+      "name": "ubuntu-ci-arm64",
+      "configurePreset": "ubuntu-ci-arm64",
+      "displayName": "Ubuntu ARM64 CI",
+      "description": "Ubuntu CI cross build for ARM64",
       "configuration": "RelWithDebInfo"
     },
     {
