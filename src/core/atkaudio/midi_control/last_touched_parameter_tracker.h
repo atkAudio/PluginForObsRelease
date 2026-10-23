@@ -99,6 +99,10 @@ private:
     createIdentity(const juce::String& ownerSourceUuid, const juce::String& ownerFilterName, int parameterIndex) const;
     void removeProcessorEntries(juce::AudioProcessor& processor);
 
+    // Serialises adding/removing parameter listeners. Parameter callbacks hold a parameter's
+    // listener lock and then take trackerLock, so listener changes must happen while holding
+    // only this lock (never trackerLock) to avoid lock-order inversion. Always taken before trackerLock.
+    juce::CriticalSection attachmentLock;
     mutable juce::CriticalSection trackerLock;
     std::unordered_map<juce::AudioProcessor*, std::unique_ptr<ProcessorRegistration>> registrations;
     std::unordered_map<std::string, ParameterState> parameterStateByIdentity;

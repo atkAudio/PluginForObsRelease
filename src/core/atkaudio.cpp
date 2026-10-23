@@ -65,12 +65,12 @@ juce::File atk::getSettingsFile(const juce::String& name)
             "obs_module_get_config_path returned nullptr for settings file: "
                 + name
                 + ", moduleBinaryPath="
-                + juce::String(binaryPath ? binaryPath : "(unknown)")
+                + juce::String::fromUTF8(binaryPath ? binaryPath : "(unknown)")
         );
         return {};
     }
 
-    juce::File result(obsPath);
+    juce::File result(juce::String::fromUTF8(obsPath));
     bfree(obsPath);
 
     auto parentDir = result.getParentDirectory();

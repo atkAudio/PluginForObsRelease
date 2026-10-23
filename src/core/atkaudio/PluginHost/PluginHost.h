@@ -13,6 +13,7 @@ public:
     PluginHost();
     ~PluginHost();
 
+    void prepare(int numChannels, int maxNumSamples, double sampleRate);
     void process(float** buffer, int numChannels, int numSamples, double sampleRate) override;
 
     // WindowModule interface

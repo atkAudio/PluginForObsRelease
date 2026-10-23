@@ -195,7 +195,9 @@ public:
                 if (!isExcluded(outputId))
                     ++nonExcludedOutputs;
 
-            if (nonExcludedOutputs != 1) // 0 outputs or >1 outputs = endpoint
+            const bool feedsExcludedSink = node.outputsTo.size() > nonExcludedOutputs;
+
+            if (nonExcludedOutputs != 1 || feedsExcludedSink) // 0 outputs, >1 outputs or tap = endpoint
                 endpoints.push_back(nodeId);
         }
 
@@ -606,8 +608,10 @@ private:
 
         // Rule 7 & 8: Split points (>1 outputs) and join points (!=1 inputs) create subgraph boundaries
         // This ensures nodes with multiple outputs become their own subgraph so parallel
-        // downstream paths can be scheduled independently
-        if (numInputs != 1 || nonExcludedOutputs > 1)
+        // downstream paths can be scheduled independently.
+        // A node that also feeds an excluded sink must end its subgraph: the sink reads the subgraph's final buffer.
+        const bool tapsExcludedSink = nonExcludedOutputs > 0 && node.outputsTo.size() > nonExcludedOutputs;
+        if (numInputs != 1 || nonExcludedOutputs > 1 || tapsExcludedSink)
         {
             // Finalize previous subgraph
             if (!localSubgraph.empty())
@@ -745,8 +749,10 @@ private:
 
         // Rule 7 & 8: Split points (>1 outputs) and join points (!=1 inputs) create subgraph boundaries
         // This ensures nodes with multiple outputs become their own subgraph so parallel
-        // downstream paths can be scheduled independently
-        if (numInputs != 1 || nonExcludedOutputs > 1)
+        // downstream paths can be scheduled independently.
+        // A node that also feeds an excluded sink must end its subgraph: the sink reads the subgraph's final buffer.
+        const bool tapsExcludedSink = nonExcludedOutputs > 0 && node.outputsTo.size() > nonExcludedOutputs;
+        if (numInputs != 1 || nonExcludedOutputs > 1 || tapsExcludedSink)
         {
             // Finalize previous subgraph
             finalizeSubgraph();

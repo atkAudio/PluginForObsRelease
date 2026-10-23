@@ -246,8 +246,8 @@ static void* pluginhost_create(obs_data_t* settings, obs_source_t* filter)
     ph->pointersToProcess.resize(ph->num_channels * 2, nullptr);
     ph->sidechainTempBuffer.resize(ph->num_channels, std::vector<float>(AUDIO_OUTPUT_FRAMES, 0.0f));
 
-    // Pre-prepare the plugin processor so setState works before first audio callback
-    ph->pluginHost->process(nullptr, (int)ph->num_channels, AUDIO_OUTPUT_FRAMES, (double)ph->sample_rate);
+    // Prepare before setState so the plugin loads without waiting for the first audio callback
+    ph->pluginHost->prepare((int)ph->num_channels, AUDIO_OUTPUT_FRAMES, (double)ph->sample_rate);
 
     // Load state from settings if present (OBS load callback may not be called for all source types)
     if (stateSize > 0)

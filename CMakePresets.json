@@ -54,13 +54,16 @@
       },
       "cacheVariables": {
         "CMAKE_C_COMPILER": "clang",
-        "CMAKE_CXX_COMPILER": "clang++"
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_PREFIX_PATH": "$env{ATK_SANITIZER_QT_ROOT}",
+        "ATK_SANITIZER_QT_ROOT": "$env{ATK_SANITIZER_QT_ROOT}",
+        "Qt6_DIR": "$env{ATK_SANITIZER_QT_ROOT}/lib/cmake/Qt6"
       }
     },
     {
       "name": "macos",
-      "displayName": "macOS Universal",
-      "description": "Build for macOS 12.0+ (Universal binary)",
+      "displayName": "macOS Native",
+      "description": "Build for the host architecture and Xcode-supported macOS versions",
       "inherits": [
         "template"
       ],
@@ -75,7 +78,6 @@
         "deprecated": true
       },
       "cacheVariables": {
-        "CMAKE_OSX_ARCHITECTURES": "arm64;x86_64",
         "CODESIGN_IDENTITY": "$penv{CODESIGN_IDENT}",
         "CODESIGN_TEAM": "$penv{CODESIGN_TEAM}"
       }
@@ -86,25 +88,21 @@
         "macos",
         "ci-template"
       ],
-      "displayName": "macOS Universal CI build",
-      "description": "Build for macOS 12.0+ (Universal binary) for CI",
-      "generator": "Xcode",
-      "cacheVariables": {
-        "CMAKE_OSX_DEPLOYMENT_TARGET": "12.0"
-      }
+      "displayName": "macOS CI build",
+      "description": "Build universal binaries when supported by the active macOS SDK/compiler",
+      "generator": "Xcode"
     },
     {
       "name": "macos-tsan",
       "inherits": [
         "macos"
       ],
-      "displayName": "macOS arm64 TSan",
+      "displayName": "macOS Native TSan",
       "description": "Native macOS Debug tests with ThreadSanitizer",
       "binaryDir": "${sourceDir}/build_macos_tsan",
       "cacheVariables": {
         "BUILD_TESTING": true,
-        "ATK_TEST_SANITIZER": "thread",
-        "CMAKE_OSX_ARCHITECTURES": "arm64"
+        "ATK_TEST_SANITIZER": "thread"
       }
     },
     {
@@ -277,28 +275,28 @@
     {
       "name": "macos",
       "configurePreset": "macos",
-      "displayName": "macOS Universal Debug",
-      "description": "macOS build for Universal architectures",
+      "displayName": "macOS Native Debug",
+      "description": "macOS build for the host architecture",
       "configuration": "Debug"
     },
     {
       "name": "macos-relwithdebinfo",
       "configurePreset": "macos",
-      "displayName": "macOS Universal RelWithDebInfo",
-      "description": "macOS build for Universal architectures (RelWithDebInfo configuration)",
+      "displayName": "macOS Native RelWithDebInfo",
+      "description": "macOS build for the host architecture (RelWithDebInfo configuration)",
       "configuration": "RelWithDebInfo"
     },
     {
       "name": "macos-ci",
       "configurePreset": "macos-ci",
-      "displayName": "macOS Universal CI",
-      "description": "macOS CI build for Universal architectures",
+      "displayName": "macOS CI",
+      "description": "macOS CI build for detected SDK/compiler-supported architectures",
       "configuration": "RelWithDebInfo"
     },
     {
       "name": "macos-tsan",
       "configurePreset": "macos-tsan",
-      "displayName": "macOS arm64 TSan",
+      "displayName": "macOS Native TSan",
       "description": "Build ThreadSanitizer tests",
       "configuration": "Debug",
       "targets": [
@@ -389,7 +387,8 @@
       "description": "Build AddressSanitizer, UndefinedBehaviorSanitizer, and LeakSanitizer tests",
       "configuration": "Debug",
       "targets": [
-        "tests"
+        "tests",
+        "obs_qt_tests"
       ]
     },
     {
@@ -399,7 +398,8 @@
       "description": "Build ThreadSanitizer tests",
       "configuration": "Debug",
       "targets": [
-        "tests"
+        "tests",
+        "obs_qt_tests"
       ]
     },
     {
@@ -414,6 +414,51 @@
     }
   ],
   "testPresets": [
+    {
+      "name": "ubuntu-x86_64-asan-ubsan-lsan",
+      "configurePreset": "ubuntu-x86_64-asan-ubsan-lsan",
+      "output": {
+        "outputOnFailure": true
+      },
+      "environment": {
+        "ASAN_OPTIONS": "detect_leaks=1:halt_on_error=1",
+        "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1",
+        "LSAN_OPTIONS": "exitcode=23"
+      },
+      "filter": {
+        "include": {
+          "label": "^unit$"
+        }
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    },
+    {
+      "name": "ubuntu-x86_64-tsan",
+      "configurePreset": "ubuntu-x86_64-tsan",
+      "output": {
+        "outputOnFailure": true
+      },
+      "environment": {
+        "TSAN_OPTIONS": "halt_on_error=1:second_deadlock_stack=1"
+      },
+      "filter": {
+        "include": {
+          "label": "^unit$"
+        }
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    },
+    {
+      "name": "ubuntu-x86_64-rtsan",
+      "inherits": "ubuntu-x86_64-rtsan-audiographmt",
+      "execution": {
+        "noTestsAction": "error"
+      }
+    },
     {
       "name": "macos-tsan-audiographmt",
       "configurePreset": "macos-tsan",
@@ -472,7 +517,7 @@
       },
       "filter": {
         "include": {
-          "name": "(ParallelExecutionTest|ParallelRenderSequenceTest|SubgraphExtractorTest|DagPartitionerParallelTest|WorkerPinningTest)"
+          "name": "^(ParallelExecutionTest|ParallelRenderSequenceTest|SubgraphExtractorTest|DagPartitionerParallelTest|WorkerPinningTest|RealtimeThreadPoolTest)\\."
         }
       }
     }

@@ -115,7 +115,10 @@ struct TaskNode
     void* userData = nullptr;
     void (*execute)(void* userData) = nullptr;
     std::atomic<int> pendingDependencies{0};
+    std::atomic<uint64_t> claimedGeneration{0};
+    std::atomic<uint64_t> completedGeneration{0};
     int initialDependencyCount = 0;
+    std::vector<size_t> dependencyIndices;
     std::vector<size_t> dependentIndices;
     size_t taskIndex = 0;
     std::chrono::nanoseconds executionTimeEma{0};
@@ -141,6 +144,12 @@ class DependencyTaskGraph
 {
 public:
     using WakeCallback = void (*)();
+
+    struct ScheduledTask
+    {
+        size_t taskIndex;
+        uint64_t generation;
+    };
 
     DependencyTaskGraph() = default;
 
@@ -184,6 +193,7 @@ public:
         if (dependsOnIndex >= tasks.size() || taskIndex >= tasks.size())
             return;
 
+        tasks[taskIndex]->dependencyIndices.push_back(dependsOnIndex);
         tasks[dependsOnIndex]->dependentIndices.push_back(taskIndex);
         tasks[taskIndex]->initialDependencyCount++;
         tasks[taskIndex]->pendingDependencies.fetch_add(1, std::memory_order_relaxed);
@@ -193,15 +203,15 @@ public:
     {
         readyQueue.reset();
         completedCount.store(0, std::memory_order_relaxed);
-        waitFlag.store(false, std::memory_order_relaxed);
         totalTasks = tasks.size();
+        const uint64_t nextGeneration = generation.fetch_add(1, std::memory_order_acq_rel) + 1;
 
         // Reset all tasks and push roots to ready queue
         for (size_t i = 0; i < tasks.size(); ++i)
         {
             tasks[i]->reset();
             if (tasks[i]->initialDependencyCount == 0)
-                readyQueue.tryPush(i);
+                readyQueue.tryPush({i, nextGeneration});
         }
     }
 
@@ -209,21 +219,19 @@ public:
     {
         while (!isComplete())
         {
-            if (!tryExecuteOneTask())
-            {
-                size_t completed = completedCount.load(std::memory_order_acquire);
-                if (completed < totalTasks)
-                    spinAtomicWaitRealtime(completedCount, completed);
-            }
+            const auto progress = getProgressGeneration();
+            if (!tryExecuteOneTask() && !isComplete())
+                waitForProgress(progress);
         }
+        synchronizeTaskCompletions();
     }
 
     bool tryExecuteOneTask()
     {
-        size_t taskIndex;
-        if (readyQueue.tryPop(taskIndex))
+        ScheduledTask scheduledTask;
+        if (readyQueue.tryPop(scheduledTask))
         {
-            executeTask(taskIndex);
+            executeTask(scheduledTask);
             return true;
         }
         return false;
@@ -249,6 +257,26 @@ public:
         return completedCount.load(std::memory_order_acquire);
     }
 
+    uint64_t getProgressGeneration() const
+    {
+        return progressGeneration.load(std::memory_order_acquire);
+    }
+
+    void waitForProgress(uint64_t observed)
+    {
+        // Approved callback-blocking exception for synchronous parallel audio.
+        [[maybe_unused]] ScopedRealtimeSanitizerDisabler disabler;
+        progressGeneration.wait(observed, std::memory_order_acquire);
+    }
+
+    void synchronizeTaskCompletions()
+    {
+        const auto executionGeneration = generation.load(std::memory_order_acquire);
+        for (const auto& task : tasks)
+            while (task->completedGeneration.load(std::memory_order_acquire) != executionGeneration)
+                cpuPause();
+    }
+
     TaskNode& getTask(size_t index)
     {
         return *tasks[index];
@@ -260,12 +288,32 @@ public:
     }
 
 private:
-    void executeTask(size_t taskIndex)
+    void executeTask(ScheduledTask scheduledTask)
     {
-        TaskNode& task = *tasks[taskIndex];
+        if (scheduledTask.generation != generation.load(std::memory_order_acquire))
+            return;
 
-        if (task.execute && task.userData)
+        TaskNode& task = *tasks[scheduledTask.taskIndex];
+        uint64_t claimedGeneration = task.claimedGeneration.load(std::memory_order_relaxed);
+        do
+        {
+            if (claimedGeneration >= scheduledTask.generation)
+                return;
+        } while (!task.claimedGeneration.compare_exchange_weak(
+            claimedGeneration,
+            scheduledTask.generation,
+            std::memory_order_acq_rel,
+            std::memory_order_relaxed
+        ));
+
+        for (size_t dependencyIndex : task.dependencyIndices)
+            while (tasks[dependencyIndex]->completedGeneration.load(std::memory_order_acquire)
+                   != scheduledTask.generation)
+                cpuPause();
+
+        if (task.execute)
             task.execute(task.userData);
+        task.completedGeneration.store(scheduledTask.generation, std::memory_order_release);
         bool pushedToQueue = false;
 
         for (size_t depIndex : task.dependentIndices)
@@ -273,7 +321,7 @@ private:
             TaskNode& dependent = *tasks[depIndex];
             if (dependent.pendingDependencies.fetch_sub(1, std::memory_order_acq_rel) == 1)
             {
-                readyQueue.tryPush(depIndex);
+                readyQueue.tryPush({depIndex, scheduledTask.generation});
                 pushedToQueue = true;
             }
         }
@@ -282,19 +330,21 @@ private:
         if (pushedToQueue && wakeCallback)
             wakeCallback();
 
-        // mark this task as completed
-        if (completedCount.fetch_add(1, std::memory_order_acq_rel) + 1 >= totalTasks)
+        completedCount.fetch_add(1, std::memory_order_acq_rel);
+        // Never reset progress between blocks; snapshot before trying the queue to avoid lost wakes.
+        progressGeneration.fetch_add(1, std::memory_order_release);
         {
-            waitFlag.store(true, std::memory_order_release);
-            spinAtomicNotifyOne(waitFlag);
+            [[maybe_unused]] ScopedRealtimeSanitizerDisabler disabler;
+            progressGeneration.notify_all();
         }
     }
 
     std::vector<std::unique_ptr<TaskNode>> tasks;
-    LockFreeReadyQueue<size_t, 1024> readyQueue;
+    LockFreeReadyQueue<ScheduledTask, 1024> readyQueue;
     std::atomic<size_t> completedCount{0};
+    std::atomic<uint64_t> generation{0};
+    std::atomic<uint64_t> progressGeneration{0};
     size_t totalTasks = 0;
-    std::atomic<bool> waitFlag{false};
     WakeCallback wakeCallback = nullptr;
 };
 

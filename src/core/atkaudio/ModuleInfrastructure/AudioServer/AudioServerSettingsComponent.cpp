@@ -79,7 +79,10 @@ void AudioServerSettingsComponent::DeviceChannelTreeItem::itemOpennessChanged(bo
         childrenLoaded = true;
 
         // Get both channel count and actual channel names from the device
-        juce::StringArray channelNames = server->getDeviceChannelNames(deviceName, isInput);
+        auto* typeItem = dynamic_cast<DeviceChannelTreeItem*>(getParentItem());
+        auto key = typeItem ? typeItem->getItemName() + "|" + deviceName : deviceName;
+        server->requestDeviceActivation(key);
+        juce::StringArray channelNames = server->getDeviceChannelNames(key, isInput);
         int numChannels = static_cast<int>(channelNames.size());
 
         for (int ch = 0; ch < numChannels; ++ch)
@@ -365,12 +368,19 @@ void AudioServerSettingsComponent::ChannelMappingMatrix::setClientChannelNames(c
     // Add client channel columns with custom names
     for (int i = 0; i < numClientChannels; ++i)
     {
+        int columnWidth = juce::jmax(
+            40,
+            juce::GlyphArrangement::getStringWidthInt(
+                juce::Font(juce::FontOptions(14.0f, juce::Font::bold)),
+                clientChannelNames[i]
+            ) + 20
+        );
         table.getHeader().addColumn(
             clientChannelNames[i],
             i + 2, // columnId starts at 2 (1 is device label)
-            40,    // width
-            40,    // minimum width
-            80,    // maximum width
+            columnWidth,
+            columnWidth,
+            juce::jmax(80, columnWidth),
             juce::TableHeaderComponent::notSortable
         );
     }
@@ -649,9 +659,7 @@ AudioServerSettingsComponent::AudioServerSettingsComponent(AudioClient* audioCli
     deviceButton.addListener(this);
     addAndMakeVisible(deviceButton);
 
-    // Build device trees immediately
-    // Note: Device enumeration can be slow with some audio drivers, but deferring
-    // causes timing issues with state restoration. Build synchronously.
+    server->addListener(this);
     updateDeviceTrees();
 
     // Restore current subscriptions from the client after devices are enumerated
@@ -660,9 +668,14 @@ AudioServerSettingsComponent::AudioServerSettingsComponent(AudioClient* audioCli
         auto currentState = client->getSubscriptions();
         setSubscriptionState(currentState, true);
 
-        // Now update the mapping matrix to reflect the subscriptions
-        // This must happen AFTER setSubscriptionState marks the tree checkboxes
-        updateMappingMatrix();
+        std::vector<ChannelMappingMatrix::MappingRow> inputRows;
+        std::vector<ChannelMappingMatrix::MappingRow> outputRows;
+        for (auto& sub : currentState.inputSubscriptions)
+            inputRows.push_back({sub.deviceName, sub.deviceType, sub.channelIndex, true});
+        for (auto& sub : currentState.outputSubscriptions)
+            outputRows.push_back({sub.deviceName, sub.deviceType, sub.channelIndex, false});
+        inputMappingMatrix->setSubscribedChannels(inputRows);
+        outputMappingMatrix->setSubscribedChannels(outputRows);
     }
 
     // Start timer for periodic updates
@@ -671,6 +684,7 @@ AudioServerSettingsComponent::AudioServerSettingsComponent(AudioClient* audioCli
 
 AudioServerSettingsComponent::~AudioServerSettingsComponent()
 {
+    server->removeListener(this);
     // Close device settings dialog if open
     if (deviceSettingsDialog != nullptr)
         deviceSettingsDialog->exitModalState(0);
@@ -767,6 +781,7 @@ void AudioServerSettingsComponent::updateDeviceTrees()
 
     // Populate input devices grouped by type (ASIO, WASAPI, etc.)
     auto inputDevicesByType = server->getInputDevicesByType();
+    lastInputDevices = inputDevicesByType;
     auto sortedInputTypes = sortDeviceTypes(inputDevicesByType);
 
     for (const auto& [typeName, devices] : sortedInputTypes)
@@ -796,6 +811,7 @@ void AudioServerSettingsComponent::updateDeviceTrees()
 
     // Populate output devices grouped by type (ASIO, WASAPI, etc.)
     auto outputDevicesByType = server->getOutputDevicesByType();
+    lastOutputDevices = outputDevicesByType;
     auto sortedOutputTypes = sortDeviceTypes(outputDevicesByType);
 
     for (const auto& [typeName, devices] : sortedOutputTypes)
@@ -836,6 +852,8 @@ void AudioServerSettingsComponent::updateMappingMatrix()
 {
     std::vector<ChannelMappingMatrix::MappingRow> inputRows;
     std::vector<ChannelMappingMatrix::MappingRow> outputRows;
+    std::set<juce::String> loadedInputDevices;
+    std::set<juce::String> loadedOutputDevices;
 
     // Collect subscribed channels from input tree
     // Structure: Root > DeviceType > Device > Channel
@@ -852,6 +870,12 @@ void AudioServerSettingsComponent::updateMappingMatrix()
             auto* deviceItem = dynamic_cast<DeviceChannelTreeItem*>(typeItem->getSubItem(j));
             if (!deviceItem || deviceItem->getType() != DeviceChannelTreeItem::ItemType::Device)
                 continue;
+
+            if (deviceItem->getNumSubItems() > 0)
+            {
+                loadedInputDevices.insert(deviceType + "|" + deviceItem->getDeviceName());
+                loadedInputDevices.insert("|" + deviceItem->getDeviceName());
+            }
 
             for (int k = 0; k < deviceItem->getNumSubItems(); ++k)
             {
@@ -885,6 +909,12 @@ void AudioServerSettingsComponent::updateMappingMatrix()
             if (!deviceItem || deviceItem->getType() != DeviceChannelTreeItem::ItemType::Device)
                 continue;
 
+            if (deviceItem->getNumSubItems() > 0)
+            {
+                loadedOutputDevices.insert(deviceType + "|" + deviceItem->getDeviceName());
+                loadedOutputDevices.insert("|" + deviceItem->getDeviceName());
+            }
+
             for (int k = 0; k < deviceItem->getNumSubItems(); ++k)
             {
                 auto* channelItem = dynamic_cast<DeviceChannelTreeItem*>(deviceItem->getSubItem(k));
@@ -901,6 +931,12 @@ void AudioServerSettingsComponent::updateMappingMatrix()
         }
     }
 
+    for (auto& row : inputMappingMatrix->getSubscribedChannels())
+        if (loadedInputDevices.count(row.deviceType + "|" + row.deviceName) == 0)
+            inputRows.push_back(row);
+    for (auto& row : outputMappingMatrix->getSubscribedChannels())
+        if (loadedOutputDevices.count(row.deviceType + "|" + row.deviceName) == 0)
+            outputRows.push_back(row);
     inputMappingMatrix->setSubscribedChannels(inputRows);
     outputMappingMatrix->setSubscribedChannels(outputRows);
 }
@@ -1050,6 +1086,47 @@ void AudioServerSettingsComponent::applySubscriptions()
     }
 
     atk::logging::info("AudioServerSettingsComponent::applySubscriptions", "applied subscriptions and routing");
+}
+
+juce::StringArray AudioServerSettingsComponent::getObsChannelNames(int numChannels)
+{
+    juce::StringArray speakers;
+    switch (numChannels)
+    {
+    case 1:
+        speakers = {"C"};
+        break;
+    case 2:
+        speakers = {"L", "R"};
+        break;
+    case 3:
+        speakers = {"L", "R", "LFE"};
+        break;
+    case 4:
+        speakers = {"L", "R", "C", "Cs"};
+        break;
+    case 5:
+        speakers = {"L", "R", "C", "LFE", "Cs"};
+        break;
+    case 6:
+        speakers = {"L", "R", "C", "LFE", "Ls", "Rs"};
+        break;
+    case 8:
+        speakers = {"L", "R", "C", "LFE", "Lrs", "Rrs", "Ls", "Rs"};
+        break;
+    default:
+        break;
+    }
+
+    juce::StringArray names;
+    for (int channel = 0; channel < numChannels; ++channel)
+    {
+        juce::String name(channel + 1);
+        if (channel < speakers.size())
+            name += "/" + speakers[channel];
+        names.add(name);
+    }
+    return names;
 }
 
 void AudioServerSettingsComponent::setClientChannelInfo(
@@ -1316,6 +1393,7 @@ void AudioServerSettingsComponent::clearAllDeviceSubscriptions(DeviceChannelTree
 
 void AudioServerSettingsComponent::timerCallback()
 {
+    auto stagedState = getSubscriptionState();
     // Refresh device tree nodes that are currently open
     // This ensures that if a device's channel count changes at runtime,
     // the tree view is updated to show the new channels
@@ -1345,7 +1423,8 @@ void AudioServerSettingsComponent::timerCallback()
                     bool isInput = deviceItem->isInputDevice();
 
                     // Get current channel count
-                    juce::StringArray channelNames = server->getDeviceChannelNames(deviceName, isInput);
+                    auto key = typeItem->getItemName() + "|" + deviceName;
+                    juce::StringArray channelNames = server->getDeviceChannelNames(key, isInput);
                     int newChannelCount = static_cast<int>(channelNames.size());
 
                     // Only refresh if channel count changed
@@ -1392,6 +1471,16 @@ void AudioServerSettingsComponent::timerCallback()
     // Refresh both input and output trees
     refreshOpenDeviceNodes(inputRootItem.get());
     refreshOpenDeviceNodes(outputRootItem.get());
+    setSubscriptionState(stagedState, false);
+}
+
+void AudioServerSettingsComponent::audioServerDeviceListChanged()
+{
+    auto state = getSubscriptionState();
+    if (lastInputDevices != server->getInputDevicesByType() || lastOutputDevices != server->getOutputDevicesByType())
+        updateDeviceTrees();
+    timerCallback();
+    setSubscriptionState(state, false);
 }
 
 void AudioServerSettingsComponent::updateDeviceSettings(const juce::String& deviceName)

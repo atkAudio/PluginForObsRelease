@@ -9,7 +9,13 @@ function(set_target_properties_plugin target)
     set(options "")
     set(oneValueArgs "")
     set(multiValueArgs PROPERTIES)
-    cmake_parse_arguments(PARSE_ARGV 0 _STPO "${options}" "${oneValueArgs}" "${multiValueArgs}")
+    cmake_parse_arguments(
+        PARSE_ARGV 0
+        _STPO
+        "${options}"
+        "${oneValueArgs}"
+        "${multiValueArgs}"
+    )
 
     message(DEBUG "Setting additional properties for target ${target}...")
 
@@ -37,35 +43,6 @@ function(set_target_properties_plugin target)
                 ${PLUGIN_VERSION_MAJOR}
             PREFIX
                 ""
-    )
-
-    message(STATUS "Installing target ${target} to:")
-    message(STATUS "  - LIBRARY: ${CMAKE_INSTALL_LIBDIR}/obs-plugins")
-    message(STATUS "  - RUNTIME: ${CMAKE_INSTALL_BINDIR}")
-
-    install(
-        TARGETS
-            ${target}
-        RUNTIME
-            DESTINATION ${CMAKE_INSTALL_BINDIR}
-        LIBRARY
-            DESTINATION ${CMAKE_INSTALL_LIBDIR}/obs-plugins
-    )
-
-    # Additional install for portable component with custom directory structure
-    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-        set(_portable_arch "64bit")
-    else()
-        set(_portable_arch "32bit")
-    endif()
-
-    install(
-        TARGETS
-            ${target}
-        RUNTIME
-            DESTINATION obs-plugins/${_portable_arch}
-        LIBRARY
-            DESTINATION obs-plugins/${_portable_arch}
     )
 
     if(TARGET plugin-support)
@@ -108,16 +85,6 @@ function(target_install_resources target)
             source_group("Resources/${relative_path}" FILES "${data_file}")
         endforeach()
 
-        message(STATUS "Installing data directory for ${target} to:")
-        message(STATUS "  - DESTINATION: ${CMAKE_INSTALL_DATAROOTDIR}/obs/obs-plugins/${target}")
-
-        install(
-            DIRECTORY
-                "${CMAKE_CURRENT_SOURCE_DIR}/data/"
-            DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/obs/obs-plugins/${target}
-            USE_SOURCE_PERMISSIONS
-        )
-
         add_custom_command(
             TARGET ${target}
             POST_BUILD
@@ -136,7 +103,12 @@ endfunction()
 function(target_add_resource target resource)
     message(DEBUG "Add resource '${resource}' to target ${target} at destination '${target_destination}'...")
 
-    install(FILES "${resource}" DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/obs/obs-plugins/${target})
+    install(
+        FILES
+            "${resource}"
+        DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/obs/obs-modules/plugins/${target}
+        COMPONENT plugin
+    )
 
     add_custom_command(
         TARGET ${target}

@@ -100,7 +100,7 @@ function(atk_enable_test_sanitizer target_name)
     set(ATK_TEST_SANITIZER
         "none"
         CACHE STRING
-        "Sanitizer for the test executable: none, address-undefined-leak, thread, or realtime"
+        "Sanitizer for test targets: none, address-undefined-leak, thread, or realtime"
     )
     set_property(
         CACHE
@@ -131,6 +131,32 @@ function(atk_enable_test_sanitizer target_name)
         set(sanitizer_flags "-fsanitize=thread")
     elseif(ATK_TEST_SANITIZER STREQUAL "realtime")
         set(sanitizer_flags "-fsanitize=realtime")
+        include(CheckCXXSourceCompiles)
+        include(CMakePushCheckState)
+        cmake_push_check_state(RESET)
+        set(CMAKE_REQUIRED_FLAGS "${sanitizer_flags}")
+        set(CMAKE_REQUIRED_LINK_OPTIONS "${sanitizer_flags}")
+        check_cxx_source_compiles(
+            "
+            #include <sanitizer/rtsan_interface.h>
+            #if !__has_feature(realtime_sanitizer) || !__has_cpp_attribute(clang::nonblocking)
+            #error RealtimeSanitizer and clang::nonblocking are required
+            #endif
+            void realtimeEntry() [[clang::nonblocking]] {}
+            int main() {
+                __rtsan::ScopedDisabler disabler;
+                realtimeEntry();
+            }
+            "
+            ATK_HAS_RTSAN
+        )
+        cmake_pop_check_state()
+        if(NOT ATK_HAS_RTSAN)
+            message(
+                FATAL_ERROR
+                "RTSan requires Clang with -fsanitize=realtime, clang::nonblocking, and the RTSan runtime"
+            )
+        endif()
     else()
         message(FATAL_ERROR "Unknown ATK_TEST_SANITIZER value: ${ATK_TEST_SANITIZER}")
     endif()

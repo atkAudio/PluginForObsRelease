@@ -62,6 +62,7 @@ public:
         );
 
         audioGraph.prepareToPlay(sampleRate, blockSize);
+        midiMessages.ensureSize(MIDI_BUFFER_RESERVE_BYTES);
         isPrepared = true;
         loadMeasurer.reset(sampleRate, blockSize);
     }
@@ -99,7 +100,7 @@ public:
 
         juce::AudioProcessLoadMeasurer::ScopedTimer timer(loadMeasurer, numSamples);
 
-        juce::MidiBuffer midiMessages;
+        midiMessages.clear();
         midiClient.getPendingMidi(midiMessages, numSamples, sampleRate);
 
         juce::AudioBuffer<float> audioBuffer(outputChannelData, numOutputChannels, numSamples);
@@ -182,6 +183,8 @@ private:
     int blockSize = 512;
     bool isPrepared = false;
     juce::AudioProcessLoadMeasurer loadMeasurer;
+    static constexpr int MIDI_BUFFER_RESERVE_BYTES = 4096;
+    juce::MidiBuffer midiMessages; // Audio thread only; reused so incoming MIDI doesn't allocate per block
     juce::MidiOutput* midiOutput = nullptr;
     mutable float peakCpuLoad = 0.0f;
     mutable double peakCpuTime = 0.0;
@@ -289,9 +292,8 @@ void atk::PluginHost2::handleAsyncUpdate()
     }
 
     auto* savedState = xml->getChildByName("DEVICESETUP");
-    auto& deviceManager = *audioDeviceManager;
     if (savedState)
-        deviceManager.initialise(256, 256, savedState, true);
+        moduleDeviceManager->restoreDeviceState(*savedState);
 
     juce::XmlElement* filterGraph = xml->getChildByName("FILTERGRAPH");
     if (filterGraph != nullptr)
@@ -317,7 +319,7 @@ void atk::PluginHost2::getState(std::string& s)
 {
     juce::XmlElement xml("atkAudioPluginHost2State");
 
-    auto state = audioDeviceManager->createStateXml();
+    auto state = moduleDeviceManager->createDeviceStateXml();
     if (state != nullptr)
         xml.addChildElement(state.release());
 

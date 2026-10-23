@@ -1,0 +1,8 @@
+{
+  "id": "@_name@",
+  "name": "@_name@",
+  "display_name": "@PLUGIN_DISPLAY_NAME@",
+  "version": "@PROJECT_VERSION@",
+  "build_timestamp": "@PLUGIN_BUILD_TIMESTAMP@",
+  "manifest_url": "@UPDATE_MANIFEST_URL@"
+}

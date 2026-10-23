@@ -71,6 +71,7 @@ struct MidiControlHotkeyTarget
 {
     int targetType = midi_control_hotkey_target_type_frontend;
     uint64_t hotkeyId = 0;
+    juce::String hotkeyName;
 };
 
 enum MidiControlMappingContextRange
@@ -97,6 +98,7 @@ enum MidiControlActivationMode
 struct MidiControlMapping
 {
     juce::String mappingId;
+    juce::String label;
     juce::String inputDeviceName;
     int outputMode = midi_control_output_mode_none;
     juce::String outputDeviceName;
@@ -173,6 +175,7 @@ juce::String getMidiControlSourceActionTypeDisplayName(int sourceActionType);
 std::vector<MidiControlTargetOption> getMidiControlSourceActionTypeOptions();
 
 juce::String createMidiControlHotkeyIdTargetToken(uint64_t hotkeyId);
+juce::String createMidiControlHotkeyNameTargetToken(juce::String hotkeyName);
 bool parseMidiControlHotkeyTargetToken(const juce::String& token, MidiControlHotkeyTarget& target);
 
 juce::String createMidiControlMappingId();

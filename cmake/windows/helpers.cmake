@@ -9,7 +9,13 @@ function(set_target_properties_plugin target)
     set(options "")
     set(oneValueArgs "")
     set(multiValueArgs PROPERTIES)
-    cmake_parse_arguments(PARSE_ARGV 0 _STPO "${options}" "${oneValueArgs}" "${multiValueArgs}")
+    cmake_parse_arguments(
+        PARSE_ARGV 0
+        _STPO
+        "${options}"
+        "${oneValueArgs}"
+        "${multiValueArgs}"
+    )
 
     message(DEBUG "Setting additional properties for target ${target}...")
 
@@ -39,34 +45,6 @@ function(set_target_properties_plugin target)
                 ${PLUGIN_VERSION}
     )
 
-    install(TARGETS ${target} RUNTIME DESTINATION "${target}/bin/64bit" LIBRARY DESTINATION "${target}/bin/64bit")
-
-    install(
-        FILES
-            "$<TARGET_PDB_FILE:${target}>"
-        CONFIGURATIONS
-            RelWithDebInfo
-            Debug
-        DESTINATION "${target}/bin/64bit"
-        OPTIONAL
-    )
-
-    # Additional install for portable component with custom directory structure
-    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-        set(_portable_arch "64bit")
-    else()
-        set(_portable_arch "32bit")
-    endif()
-
-    install(
-        TARGETS
-            ${target}
-        RUNTIME
-            DESTINATION obs-plugins/${_portable_arch}
-        LIBRARY
-            DESTINATION obs-plugins/${_portable_arch}
-    )
-
     if(TARGET plugin-support)
         target_link_libraries(${target} PRIVATE plugin-support)
     endif()
@@ -91,11 +69,10 @@ function(set_target_properties_plugin target)
             TARGET ${target}
             POST_BUILD
             COMMAND
-                "${CMAKE_COMMAND}"
-                "-DCONFIG=$<CONFIG>"
+                "${CMAKE_COMMAND}" "-DCONFIG=$<CONFIG>"
                 "-DSRC_DIR=${CMAKE_SOURCE_DIR}/_deps/x64/obs-deps-qt6-${QT6_VERSION}-x64/bin"
-                "-DDST_DIR=$<TARGET_FILE_DIR:${target}>"
-                -P "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/copy_qt_debug_dlls.cmake"
+                "-DDST_DIR=$<TARGET_FILE_DIR:${target}>" -P
+                "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/copy_qt_debug_dlls.cmake"
             COMMENT "Copy Qt6 debug DLLs for Debug config"
             VERBATIM
         )
@@ -133,8 +110,6 @@ function(target_install_resources target)
             source_group("Resources/${relative_path}" FILES "${data_file}")
         endforeach()
 
-        install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data/" DESTINATION "${target}/data" USE_SOURCE_PERMISSIONS)
-
         add_custom_command(
             TARGET ${target}
             POST_BUILD
@@ -153,7 +128,7 @@ endfunction()
 function(target_add_resource target resource)
     message(DEBUG "Add resource '${resource}' to target ${target} at destination '${target_destination}'...")
 
-    install(FILES "${resource}" DESTINATION "${target}/data")
+    install(FILES "${resource}" DESTINATION "${target}/data" COMPONENT plugin)
 
     add_custom_command(
         TARGET ${target}

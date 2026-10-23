@@ -59,6 +59,17 @@ target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::obs-frontend-api)
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE ENABLE_FRONTEND_API)
 
 # Qt is always required for proper window parenting
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND ATK_TEST_SANITIZER AND NOT ATK_TEST_SANITIZER STREQUAL "none")
+    if(NOT EXISTS "${ATK_SANITIZER_QT_ROOT}/sanitizer-qt.json")
+        message(FATAL_ERROR "Run bash build-aux/run-sanitizers.sh to prepare the matching instrumented Qt runtime")
+    endif()
+    file(READ "${ATK_SANITIZER_QT_ROOT}/sanitizer-qt.json" _sanitizer_qt_metadata)
+    string(JSON _qt_sanitizer GET "${_sanitizer_qt_metadata}" sanitizer)
+    string(JSON _qt_sanitizer_version GET "${_sanitizer_qt_metadata}" version)
+    if(NOT _qt_sanitizer STREQUAL ATK_TEST_SANITIZER)
+        message(FATAL_ERROR "Qt sanitizer ${_qt_sanitizer} does not match ${ATK_TEST_SANITIZER}")
+    endif()
+endif()
 find_package(
     Qt6
     COMPONENTS
@@ -66,6 +77,25 @@ find_package(
         Core
     REQUIRED
 )
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND ATK_TEST_SANITIZER AND NOT ATK_TEST_SANITIZER STREQUAL "none")
+    if(NOT Qt6_VERSION STREQUAL _qt_sanitizer_version)
+        message(FATAL_ERROR "Qt package version ${Qt6_VERSION} does not match instrumented Qt ${_qt_sanitizer_version}")
+    endif()
+    foreach(_component Core Gui Widgets)
+        file(REAL_PATH "${Qt6${_component}_DIR}" _qt_component_dir)
+        cmake_path(
+            IS_PREFIX
+            ATK_SANITIZER_QT_ROOT
+            "${_qt_component_dir}"
+            NORMALIZE
+            _qt_is_instrumented
+        )
+        if(NOT _qt_is_instrumented)
+            message(FATAL_ERROR "Qt ${_component} resolved outside the instrumented runtime: ${_qt_component_dir}")
+        endif()
+    endforeach()
+endif()
+atk_remove_qt_agl_dependency()
 target_link_libraries(
     ${CMAKE_PROJECT_NAME}
     PRIVATE
@@ -106,18 +136,12 @@ set_target_properties(
 string(JSON PLUGIN_DISPLAY_NAME GET ${buildspec} displayName)
 string(JSON PLUGIN_AUTHOR GET ${buildspec} author)
 string(JSON PLUGIN_WEBSITE GET ${buildspec} website)
-string(
-    JSON PLUGIN_OBS_VERSION_REQUIRED
-    GET ${buildspec}
-    dependencies
-    obs-studio
-    version
-)
 string(TIMESTAMP PLUGIN_YEAR "%Y")
 set(PLUGIN_AUTHOR "${PLUGIN_AUTHOR}")
 
 configure_file(src/config.h.in config.h @ONLY)
 
+include(./cmake/common/plugin_manifest.cmake)
 include(./cmake/common/plugin-cpack.cmake)
 include(./cmake/common/install_after_build.cmake)
 

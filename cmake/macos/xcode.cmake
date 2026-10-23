@@ -70,7 +70,11 @@ set(CMAKE_XCODE_ATTRIBUTE_GCC_INLINES_ARE_PRIVATE_EXTERN YES)
 set(CMAKE_XCODE_ATTRIBUTE_DEAD_CODE_STRIPPING YES)
 
 # Build active architecture only in Debug configuration
-set(CMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH[variant=Debug] YES)
+if(DEFINED ENV{CI} OR DEFINED ENV{GITHUB_ACTIONS})
+    set(CMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH[variant=Debug] NO)
+else()
+    set(CMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH[variant=Debug] YES)
+endif()
 
 # Enable testability in Debug configuration
 set(CMAKE_XCODE_ATTRIBUTE_ENABLE_TESTABILITY[variant=Debug] YES)

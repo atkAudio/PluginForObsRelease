@@ -343,6 +343,9 @@ public:
     /** Returns the list of connections in the graph. */
     std::vector<Connection> getConnections() const;
 
+    /** Bytes held by latency-compensation delay lines. Call from the message thread. */
+    size_t getDelayCompensationMemoryBytes() const;
+
     /** Returns true if the given connection exists. */
     bool isConnected(const Connection&) const noexcept;
 

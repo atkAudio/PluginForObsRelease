@@ -14,34 +14,6 @@ namespace atk
 class AudioServer;
 class AudioClient;
 
-class AudioDeviceEnumerator
-{
-public:
-    static juce::AudioDeviceManager* ensureEnumerator();
-    static juce::StringArray getAvailableInputDevices();
-    static juce::StringArray getAvailableOutputDevices();
-    static std::map<juce::String, juce::StringArray> getInputDevicesByType();
-    static std::map<juce::String, juce::StringArray> getOutputDevicesByType();
-    static int getDeviceNumChannels(const juce::String& deviceName, bool isInput);
-    static juce::StringArray getDeviceChannelNames(const juce::String& deviceName, bool isInput);
-    static juce::Array<double> getAvailableSampleRates(const juce::String& deviceName);
-    static juce::Array<int> getAvailableBufferSizes(const juce::String& deviceName);
-    static bool getCurrentHardwareSetup(const juce::String& deviceName, double& sampleRate, int& bufferSize);
-
-    static void shutdown();
-
-private:
-    static std::mutex enumeratorMutex;
-    static std::unique_ptr<juce::AudioDeviceManager> enumerator;
-    static std::mutex cacheMutex;
-    static std::unordered_map<juce::String, int> inputChannelCache;
-    static std::unordered_map<juce::String, int> outputChannelCache;
-    static std::unordered_map<juce::String, juce::StringArray> inputChannelNamesCache;
-    static std::unordered_map<juce::String, juce::StringArray> outputChannelNamesCache;
-    static std::unordered_map<juce::String, juce::Array<double>> sampleRatesCache;
-    static std::unordered_map<juce::String, juce::Array<int>> bufferSizesCache;
-};
-
 struct ChannelSubscription
 {
     juce::String deviceName;
@@ -210,7 +182,7 @@ public:
     AudioDeviceHandler(const juce::String& deviceName, const juce::String& deviceKey);
     ~AudioDeviceHandler() override;
 
-    bool openDevice(const juce::AudioDeviceManager::AudioDeviceSetup& preferredSetup);
+    bool openDevice();
     void closeDevice();
     bool isDeviceOpen() const;
 
@@ -276,6 +248,9 @@ public:
     struct DirectCallbackInfo
     {
         juce::AudioIODeviceCallback* callback;
+        std::atomic<bool> prepared{false};
+        std::atomic<bool> enabled{true};
+        std::atomic<int> activeCalls{0};
         juce::AudioBuffer<float> tempOutputBuffer;
         std::vector<float*> outputPointers;
     };
@@ -307,7 +282,9 @@ public:
 
     bool isRecoveryPending() const
     {
-        return recoveryPending.load(std::memory_order_acquire);
+        return recoveryPending.load(std::memory_order_acquire)
+            || desiredSetupRevision.load(std::memory_order_acquire)
+                   != appliedSetupRevision.load(std::memory_order_acquire);
     }
 
     bool isRunningNow() const
@@ -330,11 +307,18 @@ public:
     void markRecoveryPending();
     void clearRecoveryPending();
     void resetSubscriptionBuffersAfterRecovery();
+    void preparePendingDirectCallbacks();
+    std::atomic<bool> activationRequested{false};
 
 private:
     juce::String deviceName;
     juce::String deviceKey;
     std::unique_ptr<juce::AudioIODevice> device;
+    std::atomic<bool> deviceOpen{false};
+    std::atomic<double> currentSampleRate{0.0};
+    std::atomic<int> currentBufferSize{0};
+    std::atomic<int> currentChannelCount{0};
+    mutable std::mutex setupMutex;
 
     std::unordered_map<void*, ClientBuffers> clientBuffers;
     std::unordered_map<void*, DesiredClientSubscriptions> desiredClientSubscriptions;
@@ -352,6 +336,8 @@ private:
     juce::AudioDeviceManager::AudioDeviceSetup preferredRecoverySetup;
     bool hasPreferredRecoverySetup = false;
     std::atomic<bool> recoveryPending{false};
+    std::atomic<uint64_t> desiredSetupRevision{0};
+    std::atomic<uint64_t> appliedSetupRevision{0};
     double lastRecoveryAttemptMs = 0.0;
     std::atomic<bool> isRunning{false};
 };
@@ -376,8 +362,11 @@ public:
     void addListener(Listener* listener);
     void removeListener(Listener* listener);
 
-    void initialize();
+    void initialize(std::unique_ptr<juce::AudioDeviceManager> nativeDeviceManager = {});
     void shutdown();
+
+    std::unique_ptr<juce::AudioIODevice> createNativeDevice(const juce::String& deviceKey);
+    void requestDeviceActivation(const juce::String& deviceKey);
 
     void registerClient(void* clientId, const AudioClientState& state, int bufferSize = 8192);
     void unregisterClient(void* clientId);
@@ -412,6 +401,7 @@ public:
         const juce::Array<int>& bufferSizes
     );
     void invalidateDeviceCache(const juce::String& deviceName);
+    void cacheDeviceSetup(const juce::String& deviceKey, const juce::AudioDeviceManager::AudioDeviceSetup& setup);
 
     bool registerDirectCallback(
         const juce::String& deviceName,
@@ -429,6 +419,7 @@ private:
     void changeListenerCallback(juce::ChangeBroadcaster* source) override;
     void timerCallback() override;
     void setupDeviceEnumeratorListeners();
+    void scanDeviceCatalog();
     void attemptPendingDeviceRecovery(const juce::String& reason);
     bool shouldRecoverDevice(AudioDeviceHandler* handler) const;
 
@@ -478,7 +469,7 @@ private:
     std::unordered_map<void*, ClientInfo> clients;
 
     mutable std::mutex devicesMutex;
-    std::unordered_map<juce::String, std::unique_ptr<AudioDeviceHandler>> deviceHandlers;
+    std::unordered_map<juce::String, std::shared_ptr<AudioDeviceHandler>> deviceHandlers;
 
     mutable std::mutex deviceEnumeratorMutex;
     mutable std::unique_ptr<juce::AudioDeviceManager> deviceEnumerator;
@@ -492,6 +483,15 @@ private:
     mutable std::mutex deviceCapabilitiesCacheMutex;
     mutable std::unordered_map<juce::String, juce::Array<double>> deviceSampleRatesCache;
     mutable std::unordered_map<juce::String, juce::Array<int>> deviceBufferSizesCache;
+    mutable std::unordered_map<juce::String, juce::AudioDeviceManager::AudioDeviceSetup> deviceSetupCache;
+
+    mutable std::mutex catalogMutex;
+    std::map<juce::String, juce::StringArray> inputDeviceCatalog;
+    std::map<juce::String, juce::StringArray> outputDeviceCatalog;
+    mutable std::atomic<bool> scanRequested{false};
+    std::atomic<bool> catalogChanged{false};
+    std::atomic<bool> devicesChanged{false};
+    std::atomic<bool> catalogReady{false};
 
     mutable std::mutex deviceTypeCacheMutex;
     mutable std::unordered_map<juce::String, juce::String> deviceNameToTypeCache;
@@ -499,6 +499,7 @@ private:
     juce::ListenerList<Listener> listeners;
 
     std::atomic<bool> initialized{false};
+    bool processingDeviceRequests = false;
 
     enum
     {

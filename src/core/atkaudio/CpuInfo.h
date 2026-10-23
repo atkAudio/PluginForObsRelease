@@ -88,6 +88,18 @@ inline int getNumPhysicalCpus() noexcept
 #endif
 }
 
+// Apple Silicon's highest-performance CPU level; Intel Macs have no perflevel keys.
+inline int getNumPerformanceCpus() noexcept
+{
+#ifdef __APPLE__
+    int count = 0;
+    size_t size = sizeof(count);
+    if (sysctlbyname("hw.perflevel0.physicalcpu", &count, &size, nullptr, 0) == 0 && count > 0)
+        return count;
+#endif
+    return getNumPhysicalCpus();
+}
+
 // Returns mapping of physical core indices to their primary logical core IDs
 // On SMT/HT systems, returns the first logical core of each physical core
 inline std::vector<int> getPhysicalCoreMapping() noexcept

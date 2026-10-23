@@ -13,6 +13,7 @@
 !.gersemirc
 !.gitattributes
 !.gitignore
+!.releaserc.json
 !buildspec.json
 !CMakeLists.txt
 !CMakePresets.json
@@ -20,8 +21,6 @@
 !LICENSE*
 !*.cmake
 !linux-*.sh
-!package.json
-!package-lock.json
 !tests/
 !tests/**
 !docs/

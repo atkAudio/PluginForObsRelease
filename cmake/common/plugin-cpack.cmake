@@ -20,7 +20,6 @@ set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_BINARY_DIR}/LICENSE.txt")
 set(CPACK_PACKAGE_VENDOR "${AUTHOR}")
 # Use PATHNAME for package name (no spaces), DISPLAYNAME for display purposes
 if(UNIX AND NOT APPLE)
-    # Linux DEB requires package name without spaces
     set(CPACK_PACKAGE_NAME "${PATHNAME}")
 else()
     set(CPACK_PACKAGE_NAME "${DISPLAYNAME}")
@@ -30,7 +29,6 @@ endif()
 if(WIN32)
     atk_get_windows_target_arch(_win_target_arch)
 endif()
-atk_get_obs_arch_dir(_obs_arch_dir)
 
 # Include architecture in package name only for Windows ARM64
 # Include build type in filename for local builds (non-CI)
@@ -74,56 +72,73 @@ set(CPACK_COMPONENT_PLUGIN_REQUIRED TRUE)
 # Get the target name from buildspec
 string(JSON TARGET_NAME GET "${_buildspec_json}" name)
 
-# Hardcoded install replication - copy exact patterns from helpers with custom components
-
-# Plugin component - replicate helper install patterns exactly
+# Native plugin installation is owned here, not duplicated in platform helpers.
 if(WIN32)
-    # Windows: copy cmake/windows/helpers.cmake patterns
-    install(
-        TARGETS
-            ${TARGET_NAME}
-        RUNTIME
-            DESTINATION "${TARGET_NAME}/bin/64bit"
-            COMPONENT plugin
-        LIBRARY
-            DESTINATION "${TARGET_NAME}/bin/64bit"
-            COMPONENT plugin
-    )
-
-    # Install scanner alongside the main plugin
-    if(TARGET ${TARGET_NAME}_scanner)
+    # NSIS selects the plugin folder itself; normal CMake installs select its parent.
+    foreach(component IN ITEMS plugin installer)
+        if(component STREQUAL "installer")
+            set(destination .)
+            set(data_destination data)
+            set(exclude_from_all EXCLUDE_FROM_ALL)
+        else()
+            set(destination "${TARGET_NAME}")
+            set(data_destination "${TARGET_NAME}/data")
+            set(exclude_from_all "")
+        endif()
         install(
             TARGETS
-                ${TARGET_NAME}_scanner
+                ${TARGET_NAME}
             RUNTIME
-                DESTINATION "${TARGET_NAME}/bin/64bit"
-                COMPONENT plugin
+                DESTINATION "${destination}"
+                COMPONENT ${component}
+            ${exclude_from_all}
+            LIBRARY
+                DESTINATION "${destination}"
+                COMPONENT ${component}
+            ${exclude_from_all}
         )
-    endif()
 
-    # Include PDB files for debugging (x64 only, not ARM64)
-    if(NOT _win_target_arch STREQUAL "ARM64")
+        if(TARGET ${TARGET_NAME}_scanner)
+            install(
+                TARGETS
+                    ${TARGET_NAME}_scanner
+                RUNTIME
+                    DESTINATION "${destination}"
+                    COMPONENT ${component}
+                ${exclude_from_all}
+            )
+        endif()
+
+        if(component STREQUAL "installer" OR NOT _win_target_arch STREQUAL "ARM64")
+            install(
+                FILES
+                    $<TARGET_PDB_FILE:${TARGET_NAME}>
+                DESTINATION "${destination}"
+                COMPONENT ${component}
+                OPTIONAL
+                ${exclude_from_all}
+            )
+        endif()
+
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data")
+            install(
+                DIRECTORY
+                    "${CMAKE_CURRENT_SOURCE_DIR}/data/"
+                DESTINATION "${data_destination}"
+                USE_SOURCE_PERMISSIONS
+                COMPONENT ${component}
+                ${exclude_from_all}
+            )
+        endif()
         install(
             FILES
-                $<TARGET_PDB_FILE:${TARGET_NAME}>
-            DESTINATION "${TARGET_NAME}/bin/64bit"
-            COMPONENT plugin
-            OPTIONAL
+                "${ATK_PLUGIN_MANIFEST}"
+            DESTINATION "${data_destination}"
+            COMPONENT ${component}
+            ${exclude_from_all}
         )
-    endif()
-
-    # Windows data install pattern
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data")
-        install(
-            DIRECTORY
-                "${CMAKE_CURRENT_SOURCE_DIR}/data/"
-            DESTINATION "${TARGET_NAME}/data"
-            USE_SOURCE_PERMISSIONS
-            COMPONENT plugin
-        )
-    endif()
+    endforeach()
 elseif(APPLE)
-    # macOS: copy cmake/macos/helpers.cmake patterns
     install(
         TARGETS
             ${TARGET_NAME}
@@ -132,20 +147,13 @@ elseif(APPLE)
             COMPONENT plugin
     )
 
-    # Note: Scanner is copied into bundle during build (POST_BUILD in scanner/CMakeLists.txt)
-    # This ensures it's included in the bundle before CPack packages it.
-    # Do NOT install scanner separately here - it would be redundant and already in the bundle.
-
-    # macOS: data files are installed inside bundle Resources/ via MACOSX_PACKAGE_LOCATION
-    # No separate data directory needed (unlike Windows/Linux)
+    # Resources and scanner are already included in the bundle.
 else()
-    # Linux: Install plugin to system directories
-    # Install .so file to system obs-plugins directory
     install(
         TARGETS
             ${TARGET_NAME}
         LIBRARY
-            DESTINATION ${CMAKE_INSTALL_LIBDIR}/obs-plugins
+            DESTINATION ${CMAKE_INSTALL_LIBDIR}/obs-modules/plugins
             COMPONENT plugin
     )
 
@@ -155,21 +163,26 @@ else()
             TARGETS
                 ${TARGET_NAME}_scanner
             RUNTIME
-                DESTINATION ${CMAKE_INSTALL_LIBDIR}/obs-plugins
+                DESTINATION ${CMAKE_INSTALL_LIBDIR}/obs-modules/plugins
                 COMPONENT plugin
         )
     endif()
 
-    # Linux data install to system obs-plugins directory
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data")
         install(
             DIRECTORY
                 "${CMAKE_CURRENT_SOURCE_DIR}/data/"
-            DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/obs/obs-plugins/${TARGET_NAME}
+            DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/obs/obs-modules/plugins/${TARGET_NAME}
             USE_SOURCE_PERMISSIONS
             COMPONENT plugin
         )
     endif()
+    install(
+        FILES
+            "${ATK_PLUGIN_MANIFEST}"
+        DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/obs/obs-modules/plugins/${TARGET_NAME}
+        COMPONENT plugin
+    )
 
     # Extract debug symbols during CPack install (CI builds only)
     if(DEFINED ENV{CI})
@@ -182,14 +195,14 @@ else()
                 CODE
                     "
         if(DEFINED ENV{DESTDIR})
-          set(SO_FILE \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/obs-plugins/${TARGET_NAME}.so\")
+          set(SO_FILE \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/obs-modules/plugins/${TARGET_NAME}.so\")
         else()
-          set(SO_FILE \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/obs-plugins/${TARGET_NAME}.so\")
+          set(SO_FILE \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/obs-modules/plugins/${TARGET_NAME}.so\")
         endif()
         if(EXISTS \"\${SO_FILE}\")
-          execute_process(COMMAND ${CMAKE_OBJCOPY} --only-keep-debug \"\${SO_FILE}\" \"${CMAKE_CURRENT_BINARY_DIR}/${TARGET_NAME}.so.debug\")
-          execute_process(COMMAND ${CMAKE_OBJCOPY} --strip-debug \"\${SO_FILE}\")
-          execute_process(COMMAND ${CMAKE_OBJCOPY} --add-gnu-debuglink=${TARGET_NAME}.so.debug \"\${SO_FILE}\")
+          execute_process(COMMAND ${CMAKE_OBJCOPY} --only-keep-debug \"\${SO_FILE}\" \"${CMAKE_CURRENT_BINARY_DIR}/${TARGET_NAME}.so.debug\" COMMAND_ERROR_IS_FATAL ANY)
+          execute_process(COMMAND ${CMAKE_OBJCOPY} --strip-debug \"\${SO_FILE}\" COMMAND_ERROR_IS_FATAL ANY)
+          execute_process(COMMAND ${CMAKE_OBJCOPY} \"--add-gnu-debuglink=${CMAKE_CURRENT_BINARY_DIR}/${TARGET_NAME}.so.debug\" \"\${SO_FILE}\" COMMAND_ERROR_IS_FATAL ANY)
         endif()
       "
                 COMPONENT plugin
@@ -203,42 +216,74 @@ endif()
 # ============================================================================
 
 if(WIN32)
-    install(FILES $<TARGET_PDB_FILE:${TARGET_NAME}> DESTINATION . COMPONENT debugsymbols)
+    install(FILES $<TARGET_PDB_FILE:${TARGET_NAME}> DESTINATION . COMPONENT debugsymbols EXCLUDE_FROM_ALL)
 elseif(APPLE)
     install(
         DIRECTORY
             "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/${TARGET_NAME}.plugin.dSYM"
         DESTINATION .
         COMPONENT debugsymbols
+        EXCLUDE_FROM_ALL
     )
 elseif(UNIX AND DEFINED ENV{CI})
-    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/${TARGET_NAME}.so.debug" DESTINATION . COMPONENT debugsymbols OPTIONAL)
+    install(
+        FILES
+            "${CMAKE_CURRENT_BINARY_DIR}/${TARGET_NAME}.so.debug"
+        DESTINATION .
+        COMPONENT debugsymbols
+        OPTIONAL
+        EXCLUDE_FROM_ALL
+    )
 endif()
 
-# Function to create portable install pattern (flat structure for ZIP)
-function(create_portable_installs target_name portable_arch_dir)
+# Manual ZIP payloads use the OBS 33 per-plugin layout (a bundle on macOS).
+function(create_portable_installs target_name)
     message(STATUS "Creating portable install commands for target '${target_name}'")
+    if(APPLE)
+        set(portable_destination .)
+    else()
+        set(portable_destination "plugins/${target_name}")
+    endif()
 
-    # Portable install uses flat obs-plugins structure regardless of platform
     install(
         TARGETS
             ${target_name}
         RUNTIME
-            DESTINATION obs-plugins/${portable_arch_dir}
+            DESTINATION "${portable_destination}"
             COMPONENT portable
+            EXCLUDE_FROM_ALL
         LIBRARY
-            DESTINATION obs-plugins/${portable_arch_dir}
+            DESTINATION "${portable_destination}"
             COMPONENT portable
+            EXCLUDE_FROM_ALL
     )
 
     # Install scanner for portable component
-    if(TARGET ${TARGET_NAME}_scanner)
+    if(NOT APPLE AND TARGET ${target_name}_scanner)
         install(
             TARGETS
-                ${TARGET_NAME}_scanner
+                ${target_name}_scanner
             RUNTIME
-                DESTINATION obs-plugins/${portable_arch_dir}
+                DESTINATION "${portable_destination}"
                 COMPONENT portable
+                EXCLUDE_FROM_ALL
+        )
+    endif()
+
+    if(NOT APPLE)
+        install(
+            DIRECTORY
+                "${CMAKE_SOURCE_DIR}/data/"
+            DESTINATION "${portable_destination}/data"
+            COMPONENT portable
+            EXCLUDE_FROM_ALL
+        )
+        install(
+            FILES
+                "${ATK_PLUGIN_MANIFEST}"
+            DESTINATION "${portable_destination}/data"
+            COMPONENT portable
+            EXCLUDE_FROM_ALL
         )
     endif()
 
@@ -253,24 +298,25 @@ function(create_portable_installs target_name portable_arch_dir)
                 CODE
                     "
         if(DEFINED ENV{DESTDIR})
-                    set(SO_FILE \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/obs-plugins/${portable_arch_dir}/${target_name}.so\")
+                    set(SO_FILE \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${portable_destination}/${target_name}.so\")
         else()
-                    set(SO_FILE \"\${CMAKE_INSTALL_PREFIX}/obs-plugins/${portable_arch_dir}/${target_name}.so\")
+                    set(SO_FILE \"\${CMAKE_INSTALL_PREFIX}/${portable_destination}/${target_name}.so\")
         endif()
         if(EXISTS \"\${SO_FILE}\")
-          execute_process(COMMAND ${CMAKE_OBJCOPY} --only-keep-debug \"\${SO_FILE}\" \"${CMAKE_CURRENT_BINARY_DIR}/${target_name}.so.debug\")
-          execute_process(COMMAND ${CMAKE_OBJCOPY} --strip-debug \"\${SO_FILE}\")
-          execute_process(COMMAND ${CMAKE_OBJCOPY} --add-gnu-debuglink=${target_name}.so.debug \"\${SO_FILE}\")
+          execute_process(COMMAND ${CMAKE_OBJCOPY} --only-keep-debug \"\${SO_FILE}\" \"${CMAKE_CURRENT_BINARY_DIR}/${target_name}.so.debug\" COMMAND_ERROR_IS_FATAL ANY)
+          execute_process(COMMAND ${CMAKE_OBJCOPY} --strip-debug \"\${SO_FILE}\" COMMAND_ERROR_IS_FATAL ANY)
+          execute_process(COMMAND ${CMAKE_OBJCOPY} \"--add-gnu-debuglink=${CMAKE_CURRENT_BINARY_DIR}/${target_name}.so.debug\" \"\${SO_FILE}\" COMMAND_ERROR_IS_FATAL ANY)
         endif()
       "
                 COMPONENT portable
+                EXCLUDE_FROM_ALL
             )
         endif()
     endif()
 endfunction()
 
 # Create portable install commands
-create_portable_installs(${TARGET_NAME} ${_obs_arch_dir})
+create_portable_installs(${TARGET_NAME})
 
 set(CPACK_NSIS_CONTACT "${EMAIL}")
 set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
@@ -315,48 +361,14 @@ set(CPACK_PACKAGE_ICON "${ICON_PATH}")
 
 if(WIN32)
     set(CPACK_GENERATOR "NSIS")
-    set(CPACK_PACKAGE_INSTALL_DIRECTORY " ") # for some reason this is required for NSIS
+    set(CPACK_PACKAGE_INSTALL_DIRECTORY "${PATHNAME}")
+    set(CPACK_COMPONENTS_ALL installer)
+    set(CPACK_COMPONENT_INSTALLER_DISPLAY_NAME "${DISPLAYNAME}")
+    set(CPACK_COMPONENT_INSTALLER_REQUIRED TRUE)
+    set(CPACK_INSTALL_CMAKE_PROJECTS "${CMAKE_BINARY_DIR};${PROJECT_NAME};installer;/")
     set(CPACK_PACKAGE_INSTALL_REGISTRY_KEY "${PROJECT_NAME}")
     set(CPACK_PACKAGE_EXTENSION "exe")
-
-    # Configure NSIS preinstall architecture checks.
-    set(CPACK_NSIS_EXTRA_PREINSTALL_COMMANDS "")
-
-    if(_win_target_arch STREQUAL "ARM64")
-        # Simple architecture check for ARM64 installer
-        set(CPACK_NSIS_EXTRA_PREINSTALL_COMMANDS
-            "
-      ; Simple architecture check for ARM64
-      \${If} \${RunningX64}
-        MessageBox MB_ICONSTOP 'This installer is for Windows ARM64 only. Please download the x64 version for your system.'
-        Abort
-      \${EndIf}
-    "
-        )
-    endif()
-
-    # CPack NSIS does not reliably populate ARP DisplayIcon from icon settings alone.
-    # Install icon.ico and write DisplayIcon explicitly for Control Panel uninstall list.
-    if(EXISTS "${CMAKE_SOURCE_DIR}/assets/icon.ico")
-        set(_nsis_icon_install_commands
-            "
-            File \\\"${ICON_PATH}\\\"
-            WriteRegStr SHCTX \\\"Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\${CPACK_PACKAGE_INSTALL_REGISTRY_KEY}\\\" \\\"DisplayIcon\\\" \\\"\$INSTDIR\\\\icon.ico\\\""
-        )
-
-        if(CPACK_NSIS_EXTRA_INSTALL_COMMANDS)
-            string(APPEND CPACK_NSIS_EXTRA_INSTALL_COMMANDS "\n${_nsis_icon_install_commands}")
-        else()
-            set(CPACK_NSIS_EXTRA_INSTALL_COMMANDS "${_nsis_icon_install_commands}")
-        endif()
-
-        set(_nsis_icon_uninstall_commands "Delete \\\"\$INSTDIR\\\\icon.ico\\\"")
-        if(CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS)
-            string(APPEND CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS "\n${_nsis_icon_uninstall_commands}")
-        else()
-            set(CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS "${_nsis_icon_uninstall_commands}")
-        endif()
-    endif()
+    set(CPACK_PROJECT_CONFIG_FILE "${CMAKE_SOURCE_DIR}/cmake/windows/CPackConfigUnified.cmake")
 elseif(APPLE)
     set(CPACK_GENERATOR "productbuild")
 
@@ -379,41 +391,17 @@ elseif(APPLE)
 
     message(STATUS "CPack productbuild will install plugin to: ${CMAKE_INSTALL_PREFIX}")
 else()
-    # Linux - use DEB package format only (installs to system directories)
-    set(CPACK_GENERATOR "DEB")
-
-    # Use DESTDIR for system-wide installation
-    set(CPACK_SET_DESTDIR ON)
-    set(CPACK_INSTALL_PREFIX "/usr")
-
-    # Configure DEB package specific settings
-    set(CPACK_DEBIAN_PACKAGE_MAINTAINER "${AUTHOR} <${EMAIL}>")
-    set(CPACK_DEBIAN_PACKAGE_SECTION "video")
-    set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
-    set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "${WEBSITE}")
-    set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
-    set(CPACK_DEBIAN_PACKAGE_LICENSE "AGPL-3.0")
-    set(CPACK_DEBIAN_PACKAGE_DESCRIPTION
-        "${DISPLAYNAME} for OBS Studio
- Audio plugin that provides advanced audio processing capabilities
- for OBS Studio streaming and recording software."
-    )
-
-    # System-wide installation may need obs-studio dependency
-    set(CPACK_DEBIAN_PACKAGE_DEPENDS "")
-
-    # Control debug symbol package generation
-    set(CPACK_DEBIAN_DEBUGINFO_PACKAGE OFF)
-
-    # Linux-specific: Force CPack to use ONLY install() commands for plugin component
-    set(CPACK_DEB_COMPONENT_INSTALL OFF)
-    set(CPACK_INSTALL_CMAKE_PROJECTS "${CMAKE_BINARY_DIR};${PROJECT_NAME};plugin;/")
-    set(CPACK_INSTALLED_DIRECTORIES)
-
-    message(STATUS "CPack DEB will install plugin to system directories")
-    message(STATUS "CPack DEB components: ${CPACK_COMPONENTS_ALL}")
-    message(STATUS "CPack DEB generator: ${CPACK_GENERATOR}")
-    message(STATUS "CPack DEB package file name: ${CPACK_PACKAGE_FILE_NAME}")
+    set(CPACK_GENERATOR "TGZ")
+    set(CPACK_PACKAGE_EXTENSION "tar.gz")
+    set(CPACK_PACKAGE_FILE_NAME "${PATHNAME}-${PROJECT_VERSION}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
+    set(CPACK_SET_DESTDIR OFF)
+    set(CPACK_INSTALL_PREFIX "")
+    set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY OFF)
+    set(CPACK_ARCHIVE_COMPONENT_INSTALL OFF)
+    set(CPACK_COMPONENTS_ALL portable)
+    set(CPACK_INSTALL_CMAKE_PROJECTS "${CMAKE_BINARY_DIR};${PROJECT_NAME};portable;/")
+    set(CPACK_INSTALLED_DIRECTORIES "")
+    install(PROGRAMS "${CMAKE_SOURCE_DIR}/cmake/linux/install.sh" DESTINATION . COMPONENT portable EXCLUDE_FROM_ALL)
 endif()
 
 # Set package output directory to packages/ in the source root
@@ -453,6 +441,7 @@ endif()
 
 # Override settings for debug symbols package
 set(CPACK_GENERATOR "ZIP")
+set(CPACK_PACKAGE_EXTENSION "zip")
 set(CPACK_PACKAGE_FILE_NAME "${DEBUG_PACKAGE_FILE_NAME}")
 set(CPACK_PACKAGE_DIRECTORY "${CMAKE_SOURCE_DIR}/packages")
 set(CPACK_INSTALL_CMAKE_PROJECTS "${CMAKE_BINARY_DIR};${PROJECT_NAME};debugsymbols;/")
@@ -480,76 +469,8 @@ include("${_cmake_builtin_cpack}")
 set(CMAKE_MESSAGE_LOG_LEVEL ${CMAKE_MESSAGE_LOG_LEVEL_BACKUP})
 
 # ============================================================================
-# SOURCE ARCHIVE GENERATION
+# PORTABLE INSTALLER CONFIGURATION
 # ============================================================================
-# Only generate on Linux x86_64 to avoid duplicate artifacts
-if(UNIX AND NOT APPLE AND (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64"))
-    set(SOURCE_ARCHIVE_NAME "${PATHNAME}-${PROJECT_VERSION}-source.tar.gz")
-    set(SOURCE_ARCHIVE_OUTPUT "${CPACK_PACKAGE_DIRECTORY}/${SOURCE_ARCHIVE_NAME}")
-
-    find_package(Git QUIET)
-
-    if(GIT_FOUND)
-        execute_process(
-            COMMAND
-                "${GIT_EXECUTABLE}" rev-parse --is-inside-work-tree
-            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-            RESULT_VARIABLE GIT_REPO_CHECK
-            OUTPUT_QUIET
-            ERROR_QUIET
-        )
-
-        if(GIT_REPO_CHECK EQUAL 0)
-            message(STATUS "Source archive will be generated: ${SOURCE_ARCHIVE_NAME}")
-
-            add_custom_command(
-                OUTPUT
-                    "${SOURCE_ARCHIVE_OUTPUT}"
-                COMMAND
-                    ${CMAKE_COMMAND} -E remove -f "${SOURCE_ARCHIVE_OUTPUT}"
-                COMMAND
-                    "${GIT_EXECUTABLE}" archive -o "${SOURCE_ARCHIVE_OUTPUT}" HEAD --worktree-attributes
-                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-                COMMENT "Creating source archive ${SOURCE_ARCHIVE_NAME}"
-                VERBATIM
-            )
-
-            add_custom_target(generate_source_archive ALL DEPENDS "${SOURCE_ARCHIVE_OUTPUT}")
-
-            message(STATUS "Source archive location: ${SOURCE_ARCHIVE_OUTPUT}")
-        else()
-            message(STATUS "Not in a git repository - source archive will not be generated")
-        endif()
-    else()
-        message(STATUS "Git not found - source archive will not be generated")
-    endif()
-else()
-    message(STATUS "Source archive generation skipped (only Linux x86_64)")
-endif()
-
-# ============================================================================
-# PORTABLE INSTALLER CONFIGURATION (Define before first CPack include)
-# ============================================================================
-
-set(PORTABLE_ARCH_DIR "${_obs_arch_dir}")
-
-# Install portable installer script for Linux only
-if(UNIX AND NOT APPLE)
-    install(
-        FILES
-            "${CMAKE_SOURCE_DIR}/cmake/linux/install.sh"
-        DESTINATION .
-        COMPONENT portable
-        PERMISSIONS
-            OWNER_READ
-            OWNER_WRITE
-            OWNER_EXECUTE
-            GROUP_READ
-            GROUP_EXECUTE
-            WORLD_READ
-            WORLD_EXECUTE
-    )
-endif()
 
 # Configure portable installer CPack settings
 set(CPACK_GENERATOR "ZIP")
@@ -562,7 +483,10 @@ if(WIN32 AND _win_target_arch STREQUAL "ARM64")
     set(CPACK_PACKAGE_FILE_NAME "portable-${PATHNAME}-${PROJECT_VERSION}-${PORTABLE_OS_NAME}-arm64")
 endif()
 if(UNIX AND NOT APPLE)
-    set(CPACK_PACKAGE_FILE_NAME "portable-${PATHNAME}-${PROJECT_VERSION}-${PORTABLE_OS_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
+    set(CPACK_GENERATOR "TGZ")
+    set(CPACK_PACKAGE_EXTENSION "tar.gz")
+    set(CPACK_ARCHIVE_COMPONENT_INSTALL OFF)
+    set(CPACK_PACKAGE_FILE_NAME "${PATHNAME}-${PROJECT_VERSION}-${PORTABLE_OS_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
 endif()
 
 # Use portable component only
@@ -583,9 +507,8 @@ set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY OFF)
 # Set custom config file path for portable installer
 set(CPACK_OUTPUT_CONFIG_FILE "${CMAKE_BINARY_DIR}/CPackConfigPortable.cmake")
 
-message(STATUS "Portable ZIP installer configuration:")
+message(STATUS "Portable ${CPACK_GENERATOR} installer configuration:")
 message(STATUS "  - Package name: ${CPACK_PACKAGE_FILE_NAME}")
-message(STATUS "  - Architecture: ${PORTABLE_ARCH_DIR}")
 message(STATUS "  - Component: portable")
 message(STATUS "  - No top-level directory: ${CPACK_INCLUDE_TOPLEVEL_DIRECTORY}")
 message(STATUS "  - Config file: ${CPACK_OUTPUT_CONFIG_FILE}")

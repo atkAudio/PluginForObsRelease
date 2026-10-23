@@ -1,4 +1,5 @@
 #include "midi_control_controller.h"
+#include "midi_control_mappings_table_model.h"
 
 #include <atkaudio/GlobalSettings.h>
 #include <atkaudio/Logging.h>
@@ -237,44 +238,44 @@ struct ResolvedTargetSource
     bool usedNameFallback = false;
 };
 
-struct HotkeyIdLookupContext
+struct HotkeyNameLookupContext
 {
-    obs_hotkey_id wantedId = OBS_INVALID_HOTKEY_ID;
-    bool isFrontend = false;
+    juce::String wantedName;
+    obs_hotkey_id resolvedId = OBS_INVALID_HOTKEY_ID;
+    int matchCount = 0;
 };
-
-bool isFrontendHotkeyIdFromObs(obs_hotkey_id hotkeyId)
-{
-    HotkeyIdLookupContext lookupContext;
-    lookupContext.wantedId = hotkeyId;
-
-    obs_enum_hotkeys(
-        [](void* privateData, obs_hotkey_id id, obs_hotkey_t* key)
-        {
-            auto* context = static_cast<HotkeyIdLookupContext*>(privateData);
-            if (context == nullptr || key == nullptr)
-                return true;
-
-            if (id != context->wantedId)
-                return true;
-
-            context->isFrontend = obs_hotkey_get_registerer_type(key) == OBS_HOTKEY_REGISTERER_FRONTEND;
-            return false;
-        },
-        &lookupContext
-    );
-
-    return lookupContext.isFrontend;
-}
 
 obs_hotkey_id resolveHotkeyIdFromMappingTarget(const MidiControlMapping& mapping)
 {
     MidiControlHotkeyTarget target;
-    if (!parseMidiControlHotkeyTargetToken(mapping.targetUuid, target))
+    if (!parseMidiControlHotkeyTargetToken(mapping.targetUuid, target) || target.hotkeyName.isEmpty())
         return OBS_INVALID_HOTKEY_ID;
 
-    auto hotkeyId = obs_hotkey_id(target.hotkeyId);
-    return isFrontendHotkeyIdFromObs(hotkeyId) ? hotkeyId : OBS_INVALID_HOTKEY_ID;
+    HotkeyNameLookupContext lookupContext;
+    lookupContext.wantedName = target.hotkeyName;
+
+    obs_enum_hotkeys(
+        [](void* privateData, obs_hotkey_id id, obs_hotkey_t* key)
+        {
+            auto* context = static_cast<HotkeyNameLookupContext*>(privateData);
+            if (context == nullptr || key == nullptr)
+                return true;
+
+            if (obs_hotkey_get_registerer_type(key) != OBS_HOTKEY_REGISTERER_FRONTEND)
+                return true;
+
+            auto* name = obs_hotkey_get_name(key);
+            if (name == nullptr || context->wantedName != juce::String(name))
+                return true;
+
+            context->resolvedId = id;
+            ++context->matchCount;
+            return true;
+        },
+        &lookupContext
+    );
+
+    return lookupContext.matchCount == 1 ? lookupContext.resolvedId : OBS_INVALID_HOTKEY_ID;
 }
 
 juce::String createEffectParmLayerToken(juce::String filterUuid)
@@ -1117,7 +1118,7 @@ void activateSceneSource(obs_source_t* sceneSource)
     }
 }
 
-void activateAdjacentScene(bool next)
+bool activateAdjacentScene(bool next)
 {
     obs_frontend_source_list sceneList = {};
     obs_frontend_get_scenes(&sceneList);
@@ -1125,7 +1126,7 @@ void activateAdjacentScene(bool next)
     if (sceneList.sources.num == 0)
     {
         obs_frontend_source_list_free(&sceneList);
-        return;
+        return false;
     }
 
     obs_source_t* currentScene = nullptr;
@@ -1159,6 +1160,7 @@ void activateAdjacentScene(bool next)
         obs_source_release(currentScene);
 
     obs_frontend_source_list_free(&sceneList);
+    return currentIndex >= 0;
 }
 
 void onFrontendEvent(enum ::obs_frontend_event event, void* privateData)
@@ -1272,7 +1274,14 @@ MidiControlController* MidiControlController::getInstanceWithoutCreating()
 
 MidiControlController::MidiControlController()
     : midiClient(65536)
+    , mappingsModel(std::make_unique<MidiControlMappingsTableModel>())
+    , mappings(mappingsModel->getMappings())
 {
+    mappingsModel->setEditHandler(
+        [](void* context, const juce::String& mappingId, const MidiControlMapping& mapping, juce::String& error)
+        { return static_cast<MidiControlController*>(context)->updateMapping(mappingId, mapping, error); },
+        this
+    );
 }
 
 MidiControlController::~MidiControlController()
@@ -1288,7 +1297,7 @@ void MidiControlController::initialize()
 
     runtimeStopping = false;
 
-    mappings = atk::settings::getMidiControlMappings();
+    mappingsModel->setMappings(atk::settings::getMidiControlMappings());
     obsFilterPollEnabled = requiresObsFilterPoll(mappings);
     ObsFilterLastTouchedTracker::getInstance().markParameterKeyCacheDirty();
     subscriptions = atk::settings::getMidiControlSubscriptions();
@@ -1418,6 +1427,7 @@ void MidiControlController::resetRuntimeState()
     pendingFeedbackMappingIds.clear();
     delayedFeedbackByMappingId.clear();
     learnState = MidiControlLearnState{};
+    mappingsModel->setLearnState(false, {});
     feedbackRefreshRequested.store(false, std::memory_order_release);
     pluginLastTouchedFeedbackPending.store(false, std::memory_order_release);
     obsFilterLastTouchedFeedbackPending.store(false, std::memory_order_release);
@@ -1576,7 +1586,131 @@ void MidiControlController::setMappings(const std::vector<MidiControlMapping>& n
     if (!validateMidiControlMappings(newMappings, validationError))
         failFast("MidiControlController::setMappings", validationError);
 
-    mappings = newMappings;
+    mappingsModel->setMappings(newMappings);
+    mappingConfigurationChanged();
+}
+
+MidiControlMappingsTableModel* MidiControlController::getMappingsModel()
+{
+    return mappingsModel.get();
+}
+
+bool MidiControlController::validateMappings(
+    const std::vector<MidiControlMapping>& candidateMappings,
+    juce::String& errorMessage
+)
+{
+    if (!validateMidiControlMappings(candidateMappings, errorMessage))
+        return false;
+
+    for (auto& mapping : candidateMappings)
+    {
+        if (mapping.actionType != midi_control_action_type_media || mapping.targetUuid.isEmpty())
+            continue;
+
+        auto* source = obs_get_source_by_uuid(mapping.targetUuid.toRawUTF8());
+        if (source == nullptr)
+        {
+            errorMessage = "media mapping target does not exist in mapping " + mapping.mappingId;
+            return false;
+        }
+
+        bool controllableMedia = (obs_source_get_output_flags(source) & OBS_SOURCE_CONTROLLABLE_MEDIA) != 0;
+        obs_source_release(source);
+        if (!controllableMedia)
+        {
+            errorMessage = "media mapping target is not a controllable media source in mapping " + mapping.mappingId;
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool MidiControlController::trySetMappings(
+    const std::vector<MidiControlMapping>& newMappings,
+    juce::String& errorMessage
+)
+{
+    if (!validateMappings(newMappings, errorMessage))
+        return false;
+
+    cancelLearning();
+    setMappings(newMappings);
+    return true;
+}
+
+bool MidiControlController::updateMapping(
+    const juce::String& mappingId,
+    const MidiControlMapping& mapping,
+    juce::String& errorMessage
+)
+{
+    auto candidateMappings = mappings;
+    for (int row = 0; row < int(candidateMappings.size()); ++row)
+    {
+        if (candidateMappings[size_t(row)].mappingId != mappingId)
+            continue;
+
+        if (mapping.mappingId != mappingId)
+            break;
+
+        candidateMappings[size_t(row)] = mapping;
+        if (!validateMappings(candidateMappings, errorMessage))
+            return false;
+
+        mappingsModel->replaceMapping(row, mapping);
+        mappingConfigurationChanged();
+        return true;
+    }
+
+    errorMessage = "Mapping no longer exists.";
+    return false;
+}
+
+bool MidiControlController::addMapping(const MidiControlMapping& mapping, juce::String& errorMessage)
+{
+    auto candidateMappings = mappings;
+    candidateMappings.push_back(mapping);
+    return trySetMappings(candidateMappings, errorMessage);
+}
+
+bool MidiControlController::cloneMapping(const juce::String& mappingId, juce::String& errorMessage)
+{
+    auto candidateMappings = mappings;
+    for (int row = 0; row < int(candidateMappings.size()); ++row)
+    {
+        if (candidateMappings[size_t(row)].mappingId != mappingId)
+            continue;
+
+        auto clonedMapping = candidateMappings[size_t(row)];
+        clonedMapping.mappingId = createMidiControlMappingId();
+        clonedMapping.enabled = false;
+        candidateMappings.insert(candidateMappings.begin() + row + 1, clonedMapping);
+        return trySetMappings(candidateMappings, errorMessage);
+    }
+
+    errorMessage = "Mapping no longer exists.";
+    return false;
+}
+
+bool MidiControlController::removeMappings(const std::vector<juce::String>& mappingIds, juce::String& errorMessage)
+{
+    auto candidateMappings = mappings;
+    candidateMappings.erase(
+        std::remove_if(
+            candidateMappings.begin(),
+            candidateMappings.end(),
+            [&mappingIds](const MidiControlMapping& mapping)
+            { return std::find(mappingIds.begin(), mappingIds.end(), mapping.mappingId) != mappingIds.end(); }
+        ),
+        candidateMappings.end()
+    );
+    return trySetMappings(candidateMappings, errorMessage);
+}
+
+void MidiControlController::mappingConfigurationChanged()
+{
     obsFilterPollEnabled = requiresObsFilterPoll(mappings);
     ObsFilterLastTouchedTracker::getInstance().markParameterKeyCacheDirty();
     pickupStates.clear();
@@ -1589,14 +1723,15 @@ void MidiControlController::setMappings(const std::vector<MidiControlMapping>& n
 
     if (!isRuntimeActive() || initialStateRestorePending)
     {
-        atk::settings::setMidiControlMappings(newMappings);
+        atk::settings::setMidiControlMappings(mappings);
         return;
     }
 
     rebuildSourceObservers();
     enqueueAllMappingsForFeedback();
 
-    atk::settings::setMidiControlMappings(newMappings);
+    atk::settings::setMidiControlMappings(mappings);
+    MidiControlLastTouchedHelperDialog::refreshIfOpen();
 }
 
 MidiClientState MidiControlController::getSubscriptions() const
@@ -1642,6 +1777,8 @@ void MidiControlController::beginLearning(const juce::String& mappingId)
 {
     learnState.active = true;
     learnState.mappingId = mappingId;
+    learnState.errorMessage.clear();
+    mappingsModel->setLearnState(true, mappingId);
     notifyLearnStateChanged(learnState);
 }
 
@@ -1649,6 +1786,8 @@ void MidiControlController::cancelLearning()
 {
     learnState.active = false;
     learnState.mappingId.clear();
+    learnState.errorMessage.clear();
+    mappingsModel->setLearnState(false, {});
     notifyLearnStateChanged(learnState);
 }
 
@@ -2147,6 +2286,55 @@ void MidiControlController::handleTbarValueChanged()
     }
 }
 
+void MidiControlController::setMonitorEnabled(bool enabled)
+{
+    monitorEnabled = enabled;
+    if (!enabled)
+        clearMonitorEntries();
+}
+
+void MidiControlController::clearMonitorEntries()
+{
+    monitorEntries.clear();
+}
+
+std::vector<MidiControlMonitorEntry> MidiControlController::takeMonitorEntries()
+{
+    std::vector<MidiControlMonitorEntry> entries(monitorEntries.begin(), monitorEntries.end());
+    monitorEntries.clear();
+    return entries;
+}
+
+void MidiControlController::recordMonitorEvent(
+    const MidiInputEvent& event,
+    const MidiControlMapping* mapping,
+    juce::String result
+)
+{
+    if (!monitorEnabled)
+        return;
+
+    MidiControlMonitorEntry entry;
+    entry.timestampMs = juce::Time::currentTimeMillis();
+    entry.event = event;
+    entry.result = result;
+    if (mapping != nullptr)
+    {
+        entry.mappingLabel = mapping->label.isNotEmpty() ? mapping->label : mapping->mappingId;
+        for (auto& option : getMidiControlActionOptions())
+            if (option.actionType == mapping->actionType)
+                entry.action = option.displayName;
+        entry.target = mapping->targetName.isNotEmpty() ? mapping->targetName : mapping->targetUuid;
+        if (mapping->targetLayerName.isNotEmpty())
+            entry.target += " / " + mapping->targetLayerName;
+        if (mapping->targetParameterName.isNotEmpty())
+            entry.target += " / " + mapping->targetParameterName;
+    }
+    if (monitorEntries.size() == MONITOR_CAPACITY)
+        monitorEntries.pop_front();
+    monitorEntries.push_back(std::move(entry));
+}
+
 void MidiControlController::processEvent(const MidiInputEvent& event)
 {
     handleLearningEvent(event);
@@ -2154,18 +2342,26 @@ void MidiControlController::processEvent(const MidiInputEvent& event)
     dispatchMappingsScratch.clear();
     dispatchMappingsScratch.reserve(mappings.size());
     int maxSpecificity = -1;
+    bool matchedInput = false;
 
     for (auto& mapping : mappings)
     {
-        if (!mapping.enabled)
-            continue;
-
         if (!matchesMappingInput(mapping, event))
             continue;
 
+        matchedInput = true;
+        if (!mapping.enabled)
+        {
+            recordMonitorEvent(event, &mapping, "Skipped (disabled)");
+            continue;
+        }
+
         auto specificity = getMappingContextSpecificity(mapping);
         if (specificity < 0)
+        {
+            recordMonitorEvent(event, &mapping, "Skipped (inactive context)");
             continue;
+        }
 
         if (specificity > maxSpecificity)
             maxSpecificity = specificity;
@@ -2176,11 +2372,33 @@ void MidiControlController::processEvent(const MidiInputEvent& event)
     for (auto& entry : dispatchMappingsScratch)
     {
         auto* mapping = entry.first;
-        if (mapping == nullptr || entry.second != maxSpecificity)
+        if (mapping == nullptr)
             continue;
 
+        if (entry.second != maxSpecificity)
+        {
+            recordMonitorEvent(event, mapping, "Skipped (less specific mapping)");
+            continue;
+        }
+
+        MidiControlMapping capturedMapping;
+        if (monitorEnabled)
+            capturedMapping = *mapping;
+        monitorDispatchResult = midi_control_dispatch_skipped;
         dispatchMapping(*mapping, event);
+        if (monitorEnabled)
+        {
+            juce::String result = "Skipped";
+            if (monitorDispatchResult == midi_control_dispatch_dispatched)
+                result = "Dispatched";
+            else if (monitorDispatchResult == midi_control_dispatch_target_unavailable)
+                result = "Target unavailable";
+            recordMonitorEvent(event, &capturedMapping, result);
+        }
     }
+
+    if (!matchedInput)
+        recordMonitorEvent(event, nullptr, "Unmatched");
 }
 
 void MidiControlController::handleLearningEvent(const MidiInputEvent& event)
@@ -2194,6 +2412,33 @@ void MidiControlController::handleLearningEvent(const MidiInputEvent& event)
     learnState.event = event;
     learnState.sequence += 1;
     learnState.active = false;
+    for (auto mapping : mappings)
+    {
+        if (mapping.mappingId != learnState.mappingId)
+            continue;
+
+        mapping.inputDeviceName = event.inputDeviceName;
+        mapping.channel = event.message.getChannel();
+        if (event.message.isController())
+        {
+            mapping.messageType = midi_control_message_type_cc;
+            mapping.data1 = event.message.getControllerNumber();
+        }
+        else if (event.message.isNoteOn())
+        {
+            mapping.messageType = midi_control_message_type_note;
+            mapping.data1 = event.message.getNoteNumber();
+        }
+        else
+        {
+            mapping.messageType = midi_control_message_type_program_change;
+            mapping.data1 = event.message.getProgramChangeNumber();
+        }
+
+        updateMapping(mapping.mappingId, mapping, learnState.errorMessage);
+        break;
+    }
+    mappingsModel->setLearnState(false, {});
     notifyLearnStateChanged(learnState);
 }
 
@@ -2248,10 +2493,14 @@ void MidiControlController::dispatchHotkeyMapping(const MidiControlMapping& mapp
 
     auto hotkeyId = resolveHotkeyIdFromMappingTarget(mapping);
     if (hotkeyId == OBS_INVALID_HOTKEY_ID)
+    {
+        monitorDispatchResult = midi_control_dispatch_target_unavailable;
         return;
+    }
 
     obs_hotkey_trigger_routed_callback(hotkeyId, true);
     obs_hotkey_trigger_routed_callback(hotkeyId, false);
+    monitorDispatchResult = midi_control_dispatch_dispatched;
 }
 
 void MidiControlController::dispatchMappingContextSwitch(const MidiControlMapping& mapping, const MidiInputEvent& event)
@@ -2311,6 +2560,7 @@ void MidiControlController::dispatchMappingContextSwitch(const MidiControlMappin
 
     activeBank = nextBank;
     activePreset = nextPreset;
+    monitorDispatchResult = midi_control_dispatch_dispatched;
     applyMappingContextChange();
     notifyActiveContextChanged(activeBank, activePreset);
 }
@@ -2335,7 +2585,10 @@ void MidiControlController::dispatchTransitionMapping(const MidiControlMapping& 
     resetTransitionState(transitionState, false);
 
     if (shouldActivateFromEvent(mapping, event.message))
+    {
         obs_frontend_preview_program_trigger_transition();
+        monitorDispatchResult = midi_control_dispatch_dispatched;
+    }
 }
 
 void MidiControlController::dispatchTransitionAbsoluteMapping(
@@ -2368,12 +2621,14 @@ void MidiControlController::dispatchTransitionAbsoluteMapping(
         transitionState.releasePending = true;
         transitionState.lastPosition = tbarMaxPosition;
         obs_frontend_set_tbar_position(tbarMaxPosition);
+        monitorDispatchResult = midi_control_dispatch_dispatched;
         return;
     }
 
     if (transitionState.lastPosition != tbarPosition)
     {
         obs_frontend_set_tbar_position(tbarPosition);
+        monitorDispatchResult = midi_control_dispatch_dispatched;
         transitionState.lastPosition = tbarPosition;
     }
 
@@ -2449,7 +2704,10 @@ bool MidiControlController::handleLastTouchedHoldTarget(const MidiControlMapping
     }
 
     if (holdStateChanged)
+    {
+        monitorDispatchResult = midi_control_dispatch_dispatched;
         requestFeedbackRefresh();
+    }
 
     return true;
 }
@@ -2460,14 +2718,24 @@ void MidiControlController::dispatchSceneMapping(const MidiControlMapping& mappi
         return;
 
     if (mapping.targetName == previousSceneTargetName)
-        activateAdjacentScene(false);
+    {
+        monitorDispatchResult =
+            activateAdjacentScene(false) ? midi_control_dispatch_dispatched : midi_control_dispatch_target_unavailable;
+    }
     else if (mapping.targetName == nextSceneTargetName)
-        activateAdjacentScene(true);
+    {
+        monitorDispatchResult =
+            activateAdjacentScene(true) ? midi_control_dispatch_dispatched : midi_control_dispatch_target_unavailable;
+    }
     else
     {
+        monitorDispatchResult = midi_control_dispatch_target_unavailable;
         auto* sceneSource = findTargetSource(mapping);
         if (isSceneSource(sceneSource))
+        {
             activateSceneSource(sceneSource);
+            monitorDispatchResult = midi_control_dispatch_dispatched;
+        }
 
         if (sceneSource != nullptr)
             obs_source_release(sceneSource);
@@ -2480,10 +2748,12 @@ void MidiControlController::dispatchSourceMapping(const MidiControlMapping& mapp
     if (!parseMidiControlSourceActionType(mapping.targetLayerToken, sourceActionType))
         return;
 
+    monitorDispatchResult = midi_control_dispatch_target_unavailable;
     auto* source = findTargetSource(mapping);
     if (source == nullptr)
         return;
 
+    monitorDispatchResult = midi_control_dispatch_skipped;
     if (!isSourceActiveForMapping(mapping, source))
     {
         obs_source_release(source);
@@ -2503,6 +2773,7 @@ void MidiControlController::dispatchLastTouchedMapping(const MidiControlMapping&
     if (handleLastTouchedHoldTarget(mapping, event))
         return;
 
+    monitorDispatchResult = midi_control_dispatch_target_unavailable;
     auto& lastTouchedTracker = LastTouchedParameterTracker::getInstance();
 
     int offset = -1;
@@ -2512,12 +2783,16 @@ void MidiControlController::dispatchLastTouchedMapping(const MidiControlMapping&
         if (!LastTouchedParameterTracker::getInstance().getParameterAtOffset(offset, parameterEntry))
             return;
 
+        monitorDispatchResult = midi_control_dispatch_skipped;
         if (!isLastTouchedEntryActiveForMapping(mapping, parameterEntry))
             return;
 
         auto* parameter = parameterEntry.parameter;
         if (parameter == nullptr)
+        {
+            monitorDispatchResult = midi_control_dispatch_target_unavailable;
             return;
+        }
 
         auto currentValue = juce::jlimit(0.0, 1.0, double(parameter->getValue()));
         auto nextValue = currentValue;
@@ -2617,6 +2892,7 @@ void MidiControlController::dispatchLastTouchedMapping(const MidiControlMapping&
         parameter->setValueNotifyingHost(float(nextValue));
         parameter->endChangeGesture();
         lastTouchedTracker.endInternalWrite(*parameter);
+        monitorDispatchResult = midi_control_dispatch_dispatched;
         return;
     }
 
@@ -2636,6 +2912,7 @@ void MidiControlController::dispatchLastTouchedMapping(const MidiControlMapping&
         return;
     }
 
+    monitorDispatchResult = midi_control_dispatch_skipped;
     if (!isObsFilterLastTouchedEntryActiveForMapping(mapping, parameterEntry))
         return;
 
@@ -2690,6 +2967,8 @@ void MidiControlController::dispatchLastTouchedMapping(const MidiControlMapping&
         return;
 
     if (!ObsFilterLastTouchedTracker::getInstance().setParameterNormalizedValue(parameterEntry, nextValue))
+    {
+        monitorDispatchResult = midi_control_dispatch_target_unavailable;
         logging::warning(
             "MidiControlController::dispatchLastTouchedMapping",
             "failed to write OBS filter parameter; sourceUuid="
@@ -2701,18 +2980,24 @@ void MidiControlController::dispatchLastTouchedMapping(const MidiControlMapping&
                 + " value="
                 + juce::String(nextValue, 4)
         );
+    }
     else
+    {
+        monitorDispatchResult = midi_control_dispatch_dispatched;
         requestFeedbackRefresh();
+    }
 }
 
 void MidiControlController::dispatchEffectParmMapping(const MidiControlMapping& mapping, const MidiInputEvent& event)
 {
+    monitorDispatchResult = midi_control_dispatch_target_unavailable;
     auto* source = findTargetSource(mapping);
     if (source == nullptr)
         return;
 
     if (!isSourceActiveForMapping(mapping, source))
     {
+        monitorDispatchResult = midi_control_dispatch_skipped;
         obs_source_release(source);
         return;
     }
@@ -2768,6 +3053,7 @@ void MidiControlController::dispatchEffectParmMapping(const MidiControlMapping& 
         return;
     }
 
+    monitorDispatchResult = midi_control_dispatch_skipped;
     auto nextValue = currentValue;
 
     if (isIncrementDecrementMode(mapping.interactionMode))
@@ -2882,9 +3168,12 @@ void MidiControlController::dispatchEffectParmMapping(const MidiControlMapping& 
 
     if (updated)
     {
+        monitorDispatchResult = midi_control_dispatch_dispatched;
         touchFeedbackState(mapping);
         requestFeedbackRefresh();
     }
+    else
+        monitorDispatchResult = midi_control_dispatch_target_unavailable;
 }
 
 void MidiControlController::handleSourceVolumeMapping(
@@ -2931,6 +3220,7 @@ void MidiControlController::handleSourceVolumeMapping(
             obs_source_set_volume(source, float(nextDeflection));
         }
 
+        monitorDispatchResult = midi_control_dispatch_dispatched;
         touchFeedbackState(mapping);
         return;
     }
@@ -2977,6 +3267,7 @@ void MidiControlController::handleSourceVolumeMapping(
         obs_source_set_volume(source, deflection);
     }
 
+    monitorDispatchResult = midi_control_dispatch_dispatched;
     touchFeedbackState(mapping);
 }
 
@@ -2997,11 +3288,13 @@ void MidiControlController::handleSourceDiscreteMapping(
         if (hasSourceActionType && sourceActionType == midi_control_source_action_type_mute)
         {
             obs_source_set_muted(source, value);
+            monitorDispatchResult = midi_control_dispatch_dispatched;
             touchFeedbackState(mapping);
         }
         else if (hasSourceActionType && sourceActionType == midi_control_source_action_type_monitoring)
         {
             setSourceMonitoringEnabled(source, value);
+            monitorDispatchResult = midi_control_dispatch_dispatched;
             touchFeedbackState(mapping);
         }
         else if (mapping.actionType == midi_control_action_type_media)
@@ -3011,16 +3304,25 @@ void MidiControlController::handleSourceDiscreteMapping(
                 return;
 
             if (mediaActionType == midi_control_media_action_type_play_pause)
+            {
                 obs_source_media_play_pause(source, !value);
+                monitorDispatchResult = midi_control_dispatch_dispatched;
+            }
             else if (mediaActionType == midi_control_media_action_type_restart)
             {
                 if (value)
+                {
                     obs_source_media_restart(source);
+                    monitorDispatchResult = midi_control_dispatch_dispatched;
+                }
             }
             else if (mediaActionType == midi_control_media_action_type_stop)
             {
                 if (value)
+                {
                     obs_source_media_stop(source);
+                    monitorDispatchResult = midi_control_dispatch_dispatched;
+                }
             }
         }
 
@@ -3043,11 +3345,13 @@ void MidiControlController::handleSourceDiscreteMapping(
     if (hasSourceActionType && sourceActionType == midi_control_source_action_type_mute)
     {
         obs_source_set_muted(source, stateValue);
+        monitorDispatchResult = midi_control_dispatch_dispatched;
         touchFeedbackState(mapping);
     }
     else if (hasSourceActionType && sourceActionType == midi_control_source_action_type_monitoring)
     {
         setSourceMonitoringEnabled(source, stateValue);
+        monitorDispatchResult = midi_control_dispatch_dispatched;
         touchFeedbackState(mapping);
     }
     else if (mapping.actionType == midi_control_action_type_media)
@@ -3057,11 +3361,20 @@ void MidiControlController::handleSourceDiscreteMapping(
             return;
 
         if (mediaActionType == midi_control_media_action_type_play_pause)
+        {
             obs_source_media_play_pause(source, isToggleMode ? !stateValue : false);
+            monitorDispatchResult = midi_control_dispatch_dispatched;
+        }
         else if (mediaActionType == midi_control_media_action_type_restart)
+        {
             obs_source_media_restart(source);
+            monitorDispatchResult = midi_control_dispatch_dispatched;
+        }
         else if (mediaActionType == midi_control_media_action_type_stop)
+        {
             obs_source_media_stop(source);
+            monitorDispatchResult = midi_control_dispatch_dispatched;
+        }
     }
 }
 
@@ -3522,7 +3835,7 @@ void MidiControlController::applyMappingAutoHeal(
     if (mappingIndex < 0)
         return;
 
-    auto& storedMapping = mappings[size_t(mappingIndex)];
+    auto storedMapping = mappings[size_t(mappingIndex)];
     auto changed = false;
 
     if (resolvedTargetUuid.isNotEmpty() && storedMapping.targetUuid != resolvedTargetUuid)
@@ -3539,6 +3852,8 @@ void MidiControlController::applyMappingAutoHeal(
 
     if (!changed)
         return;
+
+    mappingsModel->replaceMapping(mappingIndex, storedMapping);
 
     if (isRuntimeActive() && !initialStateRestorePending)
     {

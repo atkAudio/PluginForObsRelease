@@ -3,7 +3,6 @@ This file is part of the atkAudio plugin for OBS.
 It is distributed under the AGPLv3 license. See the LICENSE file for details.
 */
 
-#include "CompareVersionStrings.h"
 #include "config.h"
 #include "core/atkaudio/About.h"
 #include "core/atkaudio/GlobalSettings.h"
@@ -18,7 +17,6 @@ It is distributed under the AGPLv3 license. See the LICENSE file for details.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <string>
 
 #include <QtWidgets>
 
@@ -154,6 +152,15 @@ void openGlobalSettingsDialog(void* private_data)
     QCheckBox enableLoggingCheckBox("Enable logging");
     enableLoggingCheckBox.setChecked(atk::settings::isLoggingEnabled());
     layout.addWidget(&enableLoggingCheckBox);
+    QObject::connect(
+        &enableLoggingCheckBox,
+        &QCheckBox::toggled,
+        [](bool loggingEnabled)
+        {
+            atk::settings::setLoggingEnabled(loggingEnabled);
+            blog(LOG_INFO, "[atkAudio][SETTINGS] logging %s", loggingEnabled ? "enabled" : "disabled");
+        }
+    );
 
     auto* divider = new QFrame(&dialog);
     divider->setFrameShape(QFrame::HLine);
@@ -171,18 +178,7 @@ void openGlobalSettingsDialog(void* private_data)
     aboutText.setWordWrap(true);
     layout.addWidget(&aboutText);
 
-    QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-    layout.addWidget(&buttons);
-
-    QObject::connect(&buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    QObject::connect(&buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-
-    if (dialog.exec() == QDialog::Accepted)
-    {
-        const bool loggingEnabled = enableLoggingCheckBox.isChecked();
-        atk::settings::setLoggingEnabled(loggingEnabled);
-        blog(LOG_INFO, "[atkAudio][SETTINGS] logging %s", loggingEnabled ? "enabled" : "disabled");
-    }
+    dialog.exec();
 }
 
 void openMidiControlDialog(void* private_data)
@@ -228,22 +224,6 @@ bool obs_module_load(void)
         showDuplicateInstallAlert(loadedModuleConflict);
 
         atk::logging::error("OBS_API", "obs_module_load failed due duplicate atkAudio installation detection");
-        atk::settings::shutdown();
-        return false;
-    }
-
-    std::string obsCurrentVersion = obs_get_version_string();
-    std::string requiredVersion = PLUGIN_OBS_VERSION_REQUIRED;
-
-    if (CompareVersionStrings(obsCurrentVersion, requiredVersion) < 0)
-    {
-        obs_log(
-            LOG_ERROR,
-            "Incompatible OBS version: %s (required: %s)",
-            obsCurrentVersion.c_str(),
-            requiredVersion.c_str()
-        );
-        atk::logging::error("OBS_API", "obs_module_load failed due incompatible OBS version");
         atk::settings::shutdown();
         return false;
     }

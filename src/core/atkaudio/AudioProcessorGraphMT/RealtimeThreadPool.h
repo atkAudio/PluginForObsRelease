@@ -13,6 +13,7 @@
 #include <array>
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -162,7 +163,10 @@ private:
                 if (state.compare_exchange_weak(current, released, std::memory_order_acq_rel, std::memory_order_acquire))
                 {
                     if (released == closedAndDrained)
+                    {
+                        [[maybe_unused]] ScopedRealtimeSanitizerDisabler disabler;
                         spinAtomicNotifyAll(state);
+                    }
                     return;
                 }
             }
@@ -184,7 +188,9 @@ private:
             int current = state.load(std::memory_order_acquire);
             while (current != closedAndDrained)
             {
-                spinAtomicWaitRealtime(state, current);
+                // Wait for graph users to retire before the caller reuses graph storage.
+                [[maybe_unused]] ScopedRealtimeSanitizerDisabler disabler;
+                state.wait(current, std::memory_order_acquire);
                 current = state.load(std::memory_order_acquire);
             }
         }
@@ -234,7 +240,7 @@ private:
 
 public:
     static constexpr int kMaxWorkers = 32;
-    static constexpr size_t kMaxConcurrentDependencyGraphs = 64;
+    static constexpr size_t kMaxConcurrentDependencyGraphs = 1024;
 
     static RealtimeThreadPool* getInstance()
     {
@@ -260,10 +266,14 @@ public:
             return;
 
         if (numWorkers <= 0)
+#ifdef __APPLE__
+            numWorkers = (std::max)(1, getNumPerformanceCpus() - 1);
+#else
             numWorkers = (std::max)(1, getNumPhysicalCpus() - 2);
+#endif
+        numWorkers = (std::min)(numWorkers, kMaxWorkers);
 
-        auto physicalCores = getPhysicalCoreMapping();
-        const int numPhysical = static_cast<int>(physicalCores.size());
+        const int numPhysical = getNumPhysicalCpus();
 
         atk::logging::info(
             "RealtimeThreadPool::initialize",
@@ -273,16 +283,14 @@ public:
                 numPhysical
             )
         );
+#ifdef __APPLE__
+        atk::logging::info(
+            "RealtimeThreadPool::initialize",
+            "using default worker QoS until audio preparation configures Mach deadlines; no CPU pinning"
+        );
+#endif
         for (int i = 0; i < numWorkers; ++i)
-        {
-            int coreId = -1;
-            if (numPhysical > 2)
-                coreId = physicalCores[2 + (i % (numPhysical - 2))];
-            else if (numPhysical > 0)
-                coreId = physicalCores[i % numPhysical];
-
-            workers.push_back(std::make_unique<Worker>(*this, i, coreId));
-        }
+            workers.push_back(std::make_unique<Worker>(*this, i));
 
         for (auto& w : workers)
             w->waitUntilStarted();
@@ -311,7 +319,28 @@ public:
         return static_cast<int>(workers.size());
     }
 
-    // Submit a fire-and-forget task and wake one worker to consume it.
+    // Pool-wide budget, not a separate budget multiplied by the number of graphs.
+    // Called during audio preparation, outside processBlock.
+    bool configureAudioProcessing(double sampleRate, int blockSize)
+    {
+        if (!std::isfinite(sampleRate) || sampleRate <= 0.0 || blockSize <= 0)
+        {
+            atk::logging::error("RealtimeThreadPool::configureAudioProcessing", "invalid audio timing");
+            return false;
+        }
+#ifdef __APPLE__
+        const std::lock_guard<std::mutex> lock(schedulingMutex);
+        bool success = true;
+        for (const auto& worker : workers)
+            if (!worker->configureAudioProcessing(sampleRate, blockSize))
+                success = false;
+        return success;
+#else
+        return true;
+#endif
+    }
+
+    // Submit a fire-and-forget task; independent producers may already occupy workers.
     bool submitTask(void (*execute)(void*), void* userData)
     {
         if (!initialized.load(std::memory_order_acquire) || execute == nullptr)
@@ -319,7 +348,8 @@ public:
 
         if (taskQueue.tryPush(execute, userData))
         {
-            wakeFirstWorker();
+            // The first worker may be occupied by another producer's long-running task.
+            wakeAllWorkers();
             return true;
         }
         return false;
@@ -333,6 +363,13 @@ public:
 
         if (!graph || graph->empty())
             return true;
+
+        if (graph->getTaskCount() == 1 || isCalledFromWorkerThread())
+        {
+            graph->prepare();
+            graph->waitUntilDone();
+            return true;
+        }
 
         auto* slot = claimDispatchSlot();
         if (slot == nullptr)
@@ -412,14 +449,11 @@ private:
     class Worker
     {
     public:
-        explicit Worker(RealtimeThreadPool& p, int workerIdx, int coreId = -1)
+        explicit Worker(RealtimeThreadPool& p, int workerIdx)
             : pool(p)
             , workerIndex(workerIdx)
             , thread(&Worker::run, this)
         {
-            trySetRealtimePriority(thread);
-            if (coreId >= 0)
-                tryPinThreadToCore(thread, coreId);
         }
 
         ~Worker()
@@ -443,36 +477,46 @@ private:
 
         void signal()
         {
-            wakeFlag.store(true, std::memory_order_release);
+            wakeGeneration.fetch_add(1, std::memory_order_release);
             [[maybe_unused]] ScopedRealtimeSanitizerDisabler disabler;
-            spinAtomicNotifyOne(wakeFlag);
+            wakeGeneration.notify_one();
         }
 
-        void wakeNextWorker()
+#ifdef __APPLE__
+        bool configureAudioProcessing(double sampleRate, int blockSize)
         {
-            if (!pool.initialized.load(std::memory_order_acquire))
-                return;
-
-            const int total = static_cast<int>(pool.workers.size());
-            if (total <= 1)
-                return;
-
-            const int nextIndex = (workerIndex + 1) % total;
-            auto* nextWorker = pool.workers[nextIndex].get();
-            if (nextWorker)
-                nextWorker->signal();
+            if (trySetAudioDeadlinePriority(thread, sampleRate, blockSize))
+                return true;
+            atk::logging::warning(
+                "RealtimeThreadPool::configureAudioProcessing",
+                juce::String::formatted("worker %d retains its previous scheduling policy", workerIndex)
+            );
+            return false;
         }
+#endif
 
     private:
         void run()
         {
+            uint64_t observedWakeGeneration = wakeGeneration.load(std::memory_order_relaxed);
+#ifdef _WIN32
+            trySetCurrentWindowsRealtimePriority();
+#elif defined(__linux__)
+            trySetCurrentLinuxRealtimePriority();
+#endif
+#ifdef __APPLE__
+            trySetCurrentThreadAudioQos();
+#endif
             started.store(true, std::memory_order_release);
 
             while (!shouldExit.load(std::memory_order_acquire))
             {
-                spinAtomicWait(wakeFlag, false);
-                wakeFlag.store(false, std::memory_order_relaxed);
-
+                while (wakeGeneration.load(std::memory_order_acquire) == observedWakeGeneration
+                       && !shouldExit.load(std::memory_order_acquire))
+                    wakeGeneration.wait(observedWakeGeneration, std::memory_order_acquire);
+                observedWakeGeneration = wakeGeneration.load(std::memory_order_acquire);
+                if (shouldExit.load(std::memory_order_acquire))
+                    break;
                 // Process tasks as long as there's work available
                 bool didWork;
                 do
@@ -486,10 +530,7 @@ private:
                         if (auto* graph = lease.get())
                         {
                             if (graph->tryExecuteOneTask())
-                            {
                                 didWork = true;
-                                wakeNextWorker();
-                            }
 
                             if (didWork)
                             {
@@ -506,7 +547,6 @@ private:
                     RealtimeTaskQueue::Task task;
                     if (pool.taskQueue.tryPop(task))
                     {
-                        wakeNextWorker();
                         if (task.execute)
                             task.execute(task.userData);
                         didWork = true;
@@ -517,7 +557,7 @@ private:
 
         RealtimeThreadPool& pool;
         int workerIndex;
-        std::atomic<bool> wakeFlag{false};
+        std::atomic<uint64_t> wakeGeneration{0};
         std::atomic<bool> shouldExit{false};
         std::atomic<bool> started{false};
         size_t nextDispatchSlot = 0;
@@ -532,6 +572,9 @@ private:
     RealtimeTaskQueue taskQueue;
     std::array<DispatchSlot, kMaxConcurrentDependencyGraphs> dispatchSlots;
     std::atomic<bool> initialized{false};
+#ifdef __APPLE__
+    std::mutex schedulingMutex;
+#endif
 
     RealtimeThreadPool(const RealtimeThreadPool&) = delete;
     RealtimeThreadPool& operator=(const RealtimeThreadPool&) = delete;

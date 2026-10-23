@@ -57,6 +57,20 @@ public:
         , ownerSourceUuid(std::move(sourceUuid))
         , ownerFilterName(std::move(filterName))
     {
+    }
+
+    ~ProcessorRegistration() override
+    {
+        detach();
+    }
+
+    void attach()
+    {
+        if (attached)
+            return;
+
+        attached = true;
+
         auto& parameters = processor.getParameters();
         observedParameters.reserve(size_t(parameters.size()));
 
@@ -70,11 +84,19 @@ public:
         }
     }
 
-    ~ProcessorRegistration() override
+    void detach()
     {
+        if (!attached)
+            return;
+
+        attached = false;
+
         for (auto* parameter : observedParameters)
             if (parameter != nullptr)
                 parameter->removeListener(this);
+
+        observedParameters.clear();
+        activeGestureParameters.clear();
     }
 
 private:
@@ -125,6 +147,7 @@ private:
     std::vector<juce::AudioProcessorParameter*> observedParameters;
     std::unordered_set<int> activeGestureParameters;
     bool processorReportsGestures = false;
+    bool attached = false;
     juce::String ownerSourceUuid;
     juce::String ownerFilterName;
 };
@@ -141,44 +164,86 @@ void LastTouchedParameterTracker::registerProcessor(
     juce::String ownerFilterName
 )
 {
-    const juce::ScopedLock lock(trackerLock);
-    ensurePersistenceLoaded();
+    const juce::ScopedLock attachmentScope(attachmentLock);
 
-    auto existing = registrations.find(&processor);
-    if (existing != registrations.end())
-        return;
+    ProcessorRegistration* registrationToAttach = nullptr;
 
-    auto sourceUuid = ownerSourceUuid;
-    auto filterName = ownerFilterName;
+    {
+        const juce::ScopedLock lock(trackerLock);
+        ensurePersistenceLoaded();
 
-    registrations.emplace(
-        &processor,
-        std::make_unique<ProcessorRegistration>(*this, processor, std::move(ownerSourceUuid), std::move(ownerFilterName))
-    );
+        auto existing = registrations.find(&processor);
+        if (existing != registrations.end())
+            return;
 
-    updateProcessorParameterState(processor, sourceUuid, filterName);
+        auto sourceUuid = ownerSourceUuid;
+        auto filterName = ownerFilterName;
+
+        auto registration = std::make_unique<ProcessorRegistration>(
+            *this,
+            processor,
+            std::move(ownerSourceUuid),
+            std::move(ownerFilterName)
+        );
+
+        // Parameter listeners are only attached while tracking is enabled, so a disabled tracker
+        // never hooks into hosted plug-ins.
+        if (trackingEnabled)
+            registrationToAttach = registration.get();
+
+        registrations.emplace(&processor, std::move(registration));
+
+        updateProcessorParameterState(processor, sourceUuid, filterName);
+    }
+
+    // Registrations are only destroyed under attachmentLock, so the pointer stays valid here.
+    if (registrationToAttach != nullptr)
+        registrationToAttach->attach();
 }
 
 void LastTouchedParameterTracker::unregisterProcessor(juce::AudioProcessor& processor)
 {
-    const juce::ScopedLock lock(trackerLock);
-    ensurePersistenceLoaded();
+    const juce::ScopedLock attachmentScope(attachmentLock);
 
-    registrations.erase(&processor);
-    removeProcessorEntries(processor);
+    std::unique_ptr<ProcessorRegistration> removed;
+
+    {
+        const juce::ScopedLock lock(trackerLock);
+        ensurePersistenceLoaded();
+
+        auto existing = registrations.find(&processor);
+        if (existing != registrations.end())
+        {
+            removed = std::move(existing->second);
+            registrations.erase(existing);
+        }
+
+        removeProcessorEntries(processor);
+    }
+
+    // Detaching takes the parameters' listener locks, so it must happen outside trackerLock.
+    removed.reset();
 }
 
 void LastTouchedParameterTracker::clear()
 {
-    const juce::ScopedLock lock(trackerLock);
+    const juce::ScopedLock attachmentScope(attachmentLock);
 
-    registrations.clear();
-    parameterStateByIdentity.clear();
-    recentParameters.clear();
-    internalWriteStateByParameter.clear();
-    nextTouchSequence = 0;
-    persistenceLoaded = true;
-    persistHistoryLocked();
+    std::unordered_map<juce::AudioProcessor*, std::unique_ptr<ProcessorRegistration>> removed;
+
+    {
+        const juce::ScopedLock lock(trackerLock);
+
+        removed.swap(registrations);
+        parameterStateByIdentity.clear();
+        recentParameters.clear();
+        internalWriteStateByParameter.clear();
+        nextTouchSequence = 0;
+        persistenceLoaded = true;
+        persistHistoryLocked();
+    }
+
+    removed.clear();
 }
 
 bool LastTouchedParameterTracker::getParameterAtOffset(int offset, LastTouchedParameterEntry& entry) const
@@ -367,8 +432,28 @@ bool LastTouchedParameterTracker::toggleHistoryHoldEnabled()
 
 void LastTouchedParameterTracker::setTrackingEnabled(bool enabled)
 {
-    const juce::ScopedLock lock(trackerLock);
-    trackingEnabled = enabled;
+    const juce::ScopedLock attachmentScope(attachmentLock);
+
+    std::vector<ProcessorRegistration*> affected;
+
+    {
+        const juce::ScopedLock lock(trackerLock);
+
+        if (trackingEnabled == enabled)
+            return;
+
+        trackingEnabled = enabled;
+
+        affected.reserve(registrations.size());
+        for (auto& registration : registrations)
+            affected.push_back(registration.second.get());
+    }
+
+    for (auto* registration : affected)
+        if (enabled)
+            registration->attach();
+        else
+            registration->detach();
 }
 
 bool LastTouchedParameterTracker::isTrackingEnabled() const

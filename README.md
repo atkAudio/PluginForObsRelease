@@ -87,6 +87,12 @@ cmake --build --preset ubuntu-x86_64
 Find `atkaudio-pluginforobs.so` and copy it to OBS plugins directory.
 See `CMakePresets.json` for Windows, macOS and other build presets.
 
+## Tests
+
+`tests` contains the non-Qt unit tests. `obs_qt_tests` links OBS/Qt and runs feature tests with Qt's offscreen platform; it does not start OBS.
+
+Add suites as `tests/*UiTest.cpp` or `tests/*ObsQtTest.cpp`, without a `main()`. They share [tests/ObsQtTestMain.cpp](tests/ObsQtTestMain.cpp) and are registered with CTest labels `obs` and `qt`. Add the feature's production sources to `obs_qt_test_support` in [tests/CMakeLists.txt](tests/CMakeLists.txt); fixtures own their feature resources and cleanup.
+
 ## Donation
 
 [![PayPal](https://www.paypalobjects.com/en_US/i/btn/btn_donateCC_LG.gif)](https://www.paypal.com/donate/?hosted_button_id=ERBKC76F55HZW)
@@ -95,5 +101,4 @@ If you find this project useful, please consider making [a donation](https://www
 
 ## Installation
 
-- Download and install [latest release](https://github.com/atkAudio/PluginForObsRelease/releases/latest) using the appropriate installer for your OS.
-- Manual/portable installations e.g. on major Linux distros: extract portable `.zip` file and copy the directory `atkaudio-pluginforobs` into `~/.config/obs-studio/plugins/`.
+Download the [latest release](https://github.com/atkAudio/PluginForObsRelease/releases/latest) and use the installer matching your OS and OBS architecture.

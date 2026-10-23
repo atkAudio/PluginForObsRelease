@@ -5,6 +5,7 @@ using namespace juce;
 
 #include "Editor/PluginWindow.h"
 #include "../AudioProcessorGraphMT/AudioProcessorGraphMT.h"
+#include "PendingConnections.h"
 
 #include <unordered_map>
 
@@ -128,9 +129,13 @@ private:
     );
     void changeListenerCallback(ChangeBroadcaster*) override;
 
-    std::unordered_map<uint32_t, AudioProcessor*> trackedNodeProcessors;
+    // Holding the node keeps its processor alive until it has been unregistered from the tracker,
+    // since nodes may be removed from the graph before the change notification arrives.
+    std::unordered_map<uint32_t, AudioProcessorGraphMT::Node::Ptr> trackedNodeProcessors;
     juce::String trackedOwnerSourceUuid;
     juce::String trackedOwnerFilterName;
+
+    PendingConnections pendingConnections;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginGraph)
 };

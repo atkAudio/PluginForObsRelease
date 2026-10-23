@@ -60,7 +60,8 @@ PluginGraph::~PluginGraph()
 {
     for (const auto& entry : trackedNodeProcessors)
         if (entry.second != nullptr)
-            atk::LastTouchedParameterTracker::getInstance().unregisterProcessor(*entry.second);
+            if (auto* processor = entry.second->getProcessor())
+                atk::LastTouchedParameterTracker::getInstance().unregisterProcessor(*processor);
     trackedNodeProcessors.clear();
 
     activeInstanceCount.fetch_sub(1, std::memory_order_relaxed);
@@ -79,6 +80,7 @@ PluginGraph::NodeID PluginGraph::getNextUID() noexcept
 
 void PluginGraph::changeListenerCallback(ChangeBroadcaster*)
 {
+    pendingConnections.retry(graph);
     syncLastTouchedTracker();
     changed();
 
@@ -92,7 +94,7 @@ void PluginGraph::refreshLastTouchedTrackerOwnership()
 
 void PluginGraph::syncLastTouchedTracker()
 {
-    std::unordered_map<uint32_t, AudioProcessor*> currentProcessors;
+    std::unordered_map<uint32_t, AudioProcessorGraphMT::Node::Ptr> currentProcessors;
     const auto ownerSourceUuid = juce::String(mainHostWindow.getParentSourceUuid());
     const auto ownerFilterName = juce::String(mainHostWindow.getOwnerFilterName());
     const auto ownerChanged = trackedOwnerSourceUuid != ownerSourceUuid || trackedOwnerFilterName != ownerFilterName;
@@ -109,14 +111,18 @@ void PluginGraph::syncLastTouchedTracker()
         if (processor->getParameters().isEmpty())
             continue;
 
-        currentProcessors.emplace(node->nodeID.uid, processor);
+        currentProcessors.emplace(node->nodeID.uid, node);
     }
 
     for (const auto& trackedEntry : trackedNodeProcessors)
     {
+        auto* trackedProcessor = trackedEntry.second != nullptr ? trackedEntry.second->getProcessor() : nullptr;
+        if (trackedProcessor == nullptr)
+            continue;
+
         auto current = currentProcessors.find(trackedEntry.first);
         if (ownerChanged || current == currentProcessors.end() || current->second != trackedEntry.second)
-            atk::LastTouchedParameterTracker::getInstance().unregisterProcessor(*trackedEntry.second);
+            atk::LastTouchedParameterTracker::getInstance().unregisterProcessor(*trackedProcessor);
     }
 
     for (const auto& currentEntry : currentProcessors)
@@ -124,7 +130,7 @@ void PluginGraph::syncLastTouchedTracker()
         auto tracked = trackedNodeProcessors.find(currentEntry.first);
         if (ownerChanged || tracked == trackedNodeProcessors.end() || tracked->second != currentEntry.second)
             atk::LastTouchedParameterTracker::getInstance()
-                .registerProcessor(*currentEntry.second, ownerSourceUuid, ownerFilterName);
+                .registerProcessor(*currentEntry.second->getProcessor(), ownerSourceUuid, ownerFilterName);
     }
 
     trackedNodeProcessors = std::move(currentProcessors);
@@ -217,6 +223,7 @@ Point<double> PluginGraph::getNodePosition(NodeID nodeID) const
 void PluginGraph::clear()
 {
     closeAnyOpenPluginWindows();
+    pendingConnections.clear();
     graph.clear();
     syncLastTouchedTracker();
     // graph.updateTopology(); // Not available on base AudioProcessorGraphMT
@@ -603,7 +610,11 @@ std::unique_ptr<XmlElement> PluginGraph::createXml() const
     for (auto* node : graph.getNodes())
         xml->addChildElement(createNodeXml(node));
 
-    for (auto& connection : graph.getConnections())
+    auto connections = graph.getConnections();
+    const auto& pending = pendingConnections.get();
+    connections.insert(connections.end(), pending.begin(), pending.end());
+
+    for (auto& connection : connections)
     {
         auto e = xml->createNewChildElement("CONNECTION");
 
@@ -628,10 +639,13 @@ void PluginGraph::restoreFromXml(const XmlElement& xml)
 
     for (auto* e : xml.getChildWithTagNameIterator("CONNECTION"))
     {
-        graph.addConnection({
-            {NodeID((uint32)e->getIntAttribute("srcFilter")), e->getIntAttribute("srcChannel")},
-            {NodeID((uint32)e->getIntAttribute("dstFilter")), e->getIntAttribute("dstChannel")}
-        });
+        pendingConnections.addOrDefer(
+            graph,
+            {
+                {NodeID((uint32)e->getIntAttribute("srcFilter")), e->getIntAttribute("srcChannel")},
+                {NodeID((uint32)e->getIntAttribute("dstFilter")), e->getIntAttribute("dstChannel")}
+        }
+        );
     }
 
     // graph.updateTopology(); // Not available on base AudioProcessorGraphMT

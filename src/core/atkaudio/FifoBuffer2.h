@@ -131,12 +131,12 @@ public:
     }
 
     // Returns true when a stall restarted the count.
-    bool addBlock(int numSamples, double timeSeconds) noexcept
+    bool addBlock(int numSamples, double timeSeconds, bool detectStall = true) noexcept
     {
         const double gap = timeSeconds - lastTime;
         lastTime = timeSeconds;
 
-        const bool isStall = numBlocks > 0 && gap > stallSeconds;
+        const bool isStall = detectStall && numBlocks > 0 && gap > stallSeconds;
         if (isStall)
             restart();
         // A catch-up burst lands all at once; start counting from its last block.
@@ -318,6 +318,7 @@ public:
         std::scoped_lock lock(writeLock, readLock);
         reader.blockSize = 0;
         writer.blockSize = 0;
+        hasReadTime = false;
         isPrepared.store(false, std::memory_order_release);
     }
 
@@ -327,6 +328,7 @@ public:
         fifo.reset();
         writerClock.restart();
         readerClock.restart();
+        hasReadTime = false;
         resetDriftState();
     }
 
@@ -353,8 +355,7 @@ public:
 
         if (restartWriterClock.exchange(false, std::memory_order_relaxed))
             writerClock.restart();
-        if (writerClock.addBlock(numSamples, timeSeconds))
-            logEvent("writer stalled, drift measurement restarted");
+        writerClock.addBlock(numSamples, timeSeconds, false);
         if (writerClock.isPrimed())
             writerRateFactor.store(writerClock.getRateFactor(), std::memory_order_relaxed);
         isWriterClockPrimed.store(writerClock.isPrimed(), std::memory_order_release);
@@ -418,10 +419,26 @@ public:
         if (!isPrepared.load(std::memory_order_acquire))
             return false;
 
+        const bool readerWasInactive =
+            hasReadTime && timeSeconds - lastReadTime > READER_INACTIVE_BLOCKS * reader.blockSize / reader.sampleRate;
+        lastReadTime = timeSeconds;
+        hasReadTime = true;
+
         if (restartReaderClock.exchange(false, std::memory_order_relaxed))
             readerClock.restart();
         if (readerClock.addBlock(numSamples, timeSeconds))
             logEvent("reader stalled, drift measurement restarted");
+
+        if (readerWasInactive)
+        {
+            const int discarded = fifo.getNumReady();
+            if (discarded > 0)
+                fifo.advanceRead(discarded);
+            isDriftMeasured = false;
+            resetDriftState();
+            logDrop("reader resumed, backlog discarded", discarded);
+            return false;
+        }
 
         // Loaded before the level, so a racing write can only overstate it for one read.
         const double lastWrite = lastWriteTime.load(std::memory_order_acquire);
@@ -436,11 +453,6 @@ public:
         {
             if (continuousLevel < targetLevel)
                 return false;
-            // Output is still silent, so a startup burst can be dropped here without a glitch.
-            const int excess = static_cast<int>(continuousLevel - targetLevel);
-            fifo.advanceRead(excess);
-            level -= excess;
-            continuousLevel -= excess;
             isPriming = false;
             logState("PRIMED", level, targetLevel);
         }
@@ -499,7 +511,7 @@ public:
     {
         return readBlockInWriterSamples()
              + INTERPOLATOR_MARGIN
-             + static_cast<int>(std::ceil(getTrimAuthority() * getTrimHorizon()));
+             + static_cast<int>(std::ceil(MAX_DRIFT * getTrimHorizon()));
     }
 
 private:
@@ -546,12 +558,6 @@ private:
         return TRIM_HORIZON_BLOCKS * getLargerBlock();
     }
 
-    // Unmeasured, the trim alone must hold the worst drift; measured, only the estimate's error.
-    double getTrimAuthority() const
-    {
-        return isDriftMeasured ? MAX_RESIDUAL_DRIFT : MAX_DRIFT;
-    }
-
     static double getHostTimeSeconds() noexcept
     {
         return juce::Time::getMillisecondCounterHiRes() * 0.001;
@@ -575,11 +581,17 @@ private:
         lastWriteTime.store(0.0, std::memory_order_relaxed);
         driftEstimate = 0.0;
         isDriftMeasured = false;
+        hasReadTime = false;
 
         const int capacity =
             atk::nextPowerOfTwo(std::max(2 * (getTargetLevel() + writer.blockSize), MIN_FIFO_CAPACITY));
         fifo.setSize(writer.numChannels, capacity);
-        scratch.setSize(writer.numChannels, capacity);
+        const int scratchSamples =
+            static_cast<int>(
+                std::ceil(reader.blockSize * (writer.sampleRate / reader.sampleRate) * (1.0 + CORRECTION_AUTHORITY))
+            )
+            + 1;
+        scratch.setSize(writer.numChannels, scratchSamples);
 
         resetDriftState();
 
@@ -630,8 +642,7 @@ private:
             logState("DRIFT UNMEASURED", loggedLevel, targetLevel);
         }
 
-        const double authority = getTrimAuthority();
-        const double trim = std::clamp((windowMinLevel - targetLevel) / getTrimHorizon(), -authority, authority);
+        const double trim = std::clamp((windowMinLevel - targetLevel) / getTrimHorizon(), -MAX_DRIFT, MAX_DRIFT);
         bufferCompensation = driftEstimate + trim;
 
         windowReaderSamples = 0;
@@ -679,14 +690,13 @@ private:
     }
 #endif
 
-    static constexpr int MIN_FIFO_CAPACITY = 4096;
+    static constexpr int MIN_FIFO_CAPACITY = 1024 * 1024;
+    static constexpr double READER_INACTIVE_BLOCKS = 4.0;
     static constexpr int INTERPOLATOR_MARGIN = 4;
     // Periods count the larger of the two blocks, since that sets both the ripple and the scheduling beat.
     // A longer window gives a steadier minimum; 8 windows per trim horizon keeps the loop well damped.
     static constexpr int WINDOW_BLOCKS = 32;
     static constexpr int TRIM_HORIZON_BLOCKS = 256;
-    // Worst expected error of a primed drift estimate.
-    static constexpr double MAX_RESIDUAL_DRIFT = 30.0e-6;
     static constexpr double DRIFT_LOG_STEP = 10.0e-6;
 
     juce::String tag;
@@ -709,6 +719,8 @@ private:
     std::atomic<int> lastWriteSamples{0};
     std::atomic<double> lastWriteTime{0.0};
 
+    bool hasReadTime{false};
+    double lastReadTime{0.0};
     bool isPriming{true};
     bool isDriftMeasured{false};
     int64_t overflowDroppedSamples{0};

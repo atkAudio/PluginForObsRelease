@@ -19,25 +19,29 @@ namespace atk
 struct MidiControlLearnState;
 class MidiControlMappingsTableModel;
 
+QStyledItemDelegate* createMidiControlMappingsItemDelegate(QObject* parent);
+
 class MidiControlDialog : public QDialog
 {
 public:
     explicit MidiControlDialog(QWidget* parent = nullptr);
     ~MidiControlDialog() override;
     static void refreshIfOpen();
+    void done(int result) override;
 
 protected:
     void showEvent(QShowEvent* event) override;
+    void hideEvent(QHideEvent* event) override;
     void changeEvent(QEvent* event) override;
-    void resizeEvent(QResizeEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
 
 private:
     void buildLayout();
+    void updateMonitorCapture();
+    void refreshMonitor();
     void reloadFromController();
     void rebuildSubscriptionWidgets();
     void rebuildMappingsTable();
-    bool applyMappingsToController();
     void syncSubscriptionsToController();
     void removeSelectedMappings();
     void cloneSelectedMapping();
@@ -68,7 +72,13 @@ private:
     QWidget* outputDeviceContainer = nullptr;
     QVBoxLayout* outputDeviceLayout = nullptr;
     QTableView* mappingsTable = nullptr;
-    MidiControlMappingsTableModel* mappingsModel = nullptr;
+    QToolButton* monitorToggle = nullptr;
+    QWidget* monitorPane = nullptr;
+    QToolButton* monitorPauseButton = nullptr;
+    QCheckBox* monitorAutoScroll = nullptr;
+    QTableWidget* monitorTable = nullptr;
+    QTimer* monitorTimer = nullptr;
+    QPointer<MidiControlMappingsTableModel> mappingsModel;
     QPushButton* addButton = nullptr;
     QPushButton* cloneButton = nullptr;
     QPushButton* removeButton = nullptr;
@@ -78,13 +88,12 @@ private:
     QPushButton* closeButton = nullptr;
     std::unique_ptr<juce::FileChooser> mappingsFileChooser;
     juce::File lastMappingsFile;
-    std::vector<MidiControlMapping> dialogMappings;
     int lastLearnSequence = 0;
     int learnStateListenerId = 0;
     int activeContextListenerId = 0;
-    int persistentEditorsRow = -1;
     bool rebuildingUi = false;
     bool shuttingDown = false;
+    bool reloadPending = false;
 };
 
 } // namespace atk

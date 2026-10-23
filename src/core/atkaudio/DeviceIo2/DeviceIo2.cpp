@@ -36,9 +36,7 @@ public:
         auto* audioComponent = new atk::AudioServerSettingsComponent(client);
         audioComponent->setDeviceManager(devManager);
 
-        juce::StringArray channelNames;
-        for (int i = 0; i < numChannels; ++i)
-            channelNames.add(juce::String(i + 1));
+        juce::StringArray channelNames = atk::AudioServerSettingsComponent::getObsChannelNames(numChannels);
 
         audioComponent->setInputFixedTopRows(channelNames, true);
         audioComponent->setOutputFixedTopRows(channelNames, true);
@@ -165,10 +163,10 @@ void atk::DeviceIo2::updateChannelInfoOnMessageThread(int numChannels)
         if (auto* audioComponent =
                 dynamic_cast<atk::AudioServerSettingsComponent*>(settingsWindow->getContentComponent()))
         {
-            juce::StringArray channelNames;
-            for (int i = 0; i < numChannels; ++i)
-                channelNames.add(juce::String(i + 1));
+            juce::StringArray channelNames = atk::AudioServerSettingsComponent::getObsChannelNames(numChannels);
 
+            audioComponent->setInputFixedTopRows(channelNames, true);
+            audioComponent->setOutputFixedTopRows(channelNames, true);
             audioComponent->setClientChannelInfo(channelNames, channelNames, "DeviceIo2");
             audioComponent->setObsChannelMappings(getInputChannelMapping(), getOutputChannelMapping());
         }
@@ -565,9 +563,7 @@ juce::Component* atk::DeviceIo2::getWindowComponent()
         if (auto* audioComponent =
                 dynamic_cast<atk::AudioServerSettingsComponent*>(settingsWindow->getContentComponent()))
         {
-            juce::StringArray channelNames;
-            for (int i = 0; i < currentNumChannels; ++i)
-                channelNames.add(juce::String(i + 1));
+            juce::StringArray channelNames = atk::AudioServerSettingsComponent::getObsChannelNames(currentNumChannels);
 
             audioComponent->setInputFixedTopRows(channelNames, true);
             audioComponent->setOutputFixedTopRows(channelNames, true);
@@ -600,9 +596,7 @@ juce::Component* atk::DeviceIo2::createEmbeddableSettingsComponent()
     auto* audioComponent = new atk::AudioServerSettingsComponent(&audioClient);
     audioComponent->setDeviceManager(deviceManager.get());
 
-    juce::StringArray channelNames;
-    for (int i = 0; i < currentNumChannels; ++i)
-        channelNames.add(juce::String(i + 1));
+    juce::StringArray channelNames = atk::AudioServerSettingsComponent::getObsChannelNames(currentNumChannels);
 
     audioComponent->setInputFixedTopRows(channelNames, true);
     audioComponent->setOutputFixedTopRows(channelNames, true);

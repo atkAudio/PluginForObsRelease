@@ -1,0 +1,234 @@
+Unicode true
+RequestExecutionLevel admin
+SetCompressor /SOLID lzma
+Name "@ATK_DISPLAY_NAME@"
+OutFile "@CPACK_TEMPORARY_PACKAGE_FILE_NAME@"
+InstallDir "$COMMONPROGRAMDATA\obs-studio\plugins\@ATK_NAME@"
+BrandingText " "
+
+!include "MUI2.nsh"
+!include "LogicLib.nsh"
+!include "FileFunc.nsh"
+!include "nsDialogs.nsh"
+!include "x64.nsh"
+
+!define MUI_ICON "@CPACK_NSIS_MUI_ICON@"
+!define MUI_UNICON "@CPACK_NSIS_MUI_UNIICON@"
+!define MUI_ABORTWARNING
+!define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\@ATK_NAME@"
+!define PRODUCT_KEY "Software\@ATK_VENDOR@\@ATK_NAME@"
+!define UNINSTALL_EXE "Uninstall @ATK_DISPLAY_NAME@.exe"
+!define PAYLOAD "@CPACK_TEMPORARY_DIRECTORY@"
+
+Var Architecture
+Var Layout
+Var LegacyCheckbox
+Var BinaryDirectory
+Var PreviousUninstaller
+Var PreviousRoot
+Var PreviousPluginRoot
+
+!insertmacro MUI_PAGE_WELCOME
+!insertmacro MUI_PAGE_LICENSE "@CPACK_RESOURCE_FILE_LICENSE@"
+Page custom OptionsPage OptionsLeave
+!define MUI_PAGE_CUSTOMFUNCTION_LEAVE ValidateDirectory
+!insertmacro MUI_PAGE_DIRECTORY
+!insertmacro MUI_PAGE_INSTFILES
+!insertmacro MUI_PAGE_FINISH
+!insertmacro MUI_UNPAGE_CONFIRM
+!insertmacro MUI_UNPAGE_INSTFILES
+!insertmacro MUI_LANGUAGE "English"
+
+!macro CheckBinary path
+  ${If} ${FileExists} "${path}"
+    System::Call 'kernel32::CreateFileW(w "${path}", i 0xC0000000, i 0, p 0, i 3, i 0, p 0) p.r0'
+    ${If} $0 == -1
+      MessageBox MB_OK|MB_ICONSTOP "Close OBS Studio before continuing." /SD IDOK
+      SetErrorLevel 2
+      Quit
+    ${EndIf}
+    System::Call 'kernel32::CloseHandle(p r0)'
+  ${EndIf}
+!macroend
+
+!macro CheckBinaries root
+  !insertmacro CheckBinary "${root}\@ATK_NAME@.dll"
+  !insertmacro CheckBinary "${root}\@ATK_NAME@_scanner.exe"
+  !insertmacro CheckBinary "${root}\bin\64bit\@ATK_NAME@.dll"
+  !insertmacro CheckBinary "${root}\bin\64bit\@ATK_NAME@_scanner.exe"
+!macroend
+
+!macro DeleteBinaries
+  !insertmacro DeleteBinary "$INSTDIR\@ATK_NAME@.dll"
+  !insertmacro DeleteBinary "$INSTDIR\@ATK_NAME@_scanner.exe"
+  !insertmacro DeleteBinary "$INSTDIR\@ATK_NAME@.pdb"
+  !insertmacro DeleteBinary "$INSTDIR\bin\64bit\@ATK_NAME@.dll"
+  !insertmacro DeleteBinary "$INSTDIR\bin\64bit\@ATK_NAME@_scanner.exe"
+  !insertmacro DeleteBinary "$INSTDIR\bin\64bit\@ATK_NAME@.pdb"
+  RMDir "$INSTDIR\bin\64bit"
+  RMDir "$INSTDIR\bin"
+!macroend
+
+!macro DeleteBinary path
+  ${If} ${FileExists} "${path}"
+    ClearErrors
+    Delete "${path}"
+    ${If} ${Errors}
+      MessageBox MB_OK|MB_ICONSTOP "Could not remove the previous plugin binaries. Close OBS and retry." /SD IDOK
+      SetErrorLevel 2
+      Quit
+    ${EndIf}
+  ${EndIf}
+!macroend
+
+Function .onInit
+  SetShellVarContext all
+  SetRegView 32
+  ${If} ${IsNativeARM64}
+    StrCpy $Architecture "arm64"
+  ${ElseIf} ${IsNativeAMD64}
+    StrCpy $Architecture "x64"
+  ${Else}
+    MessageBox MB_OK|MB_ICONSTOP "This installer requires x64 or ARM64 Windows." /SD IDOK
+    SetErrorLevel 2
+    Abort
+  ${EndIf}
+  StrCpy $Layout "modern"
+  ${GetParameters} $0
+  ClearErrors
+  ${GetOptions} $0 "/LAYOUT=" $1
+  ${IfNot} ${Errors}
+    ${If} $1 != "modern"
+    ${AndIf} $1 != "legacy"
+      MessageBox MB_OK|MB_ICONSTOP "Invalid layout. Use /LAYOUT=modern or /LAYOUT=legacy." /SD IDOK
+      SetErrorLevel 2
+      Abort
+    ${EndIf}
+    StrCpy $Layout $1
+  ${EndIf}
+  ReadRegStr $PreviousUninstaller HKLM "${UNINSTALL_KEY}" "UninstallString"
+  ${If} $PreviousUninstaller != ""
+    StrCpy $0 $PreviousUninstaller 1
+    ${If} $0 == '$\"'
+      StrCpy $PreviousUninstaller $PreviousUninstaller -1 1
+    ${EndIf}
+    ${GetParent} $PreviousUninstaller $PreviousRoot
+    StrCpy $PreviousPluginRoot $PreviousRoot
+    ${If} ${FileExists} "$PreviousRoot\@ATK_NAME@\bin\64bit\@ATK_NAME@.dll"
+      StrCpy $PreviousPluginRoot "$PreviousRoot\@ATK_NAME@"
+    ${EndIf}
+  ${EndIf}
+FunctionEnd
+
+Function OptionsPage
+  nsDialogs::Create 1018
+  Pop $0
+  ${If} $0 == error
+    Abort
+  ${EndIf}
+  !insertmacro MUI_HEADER_TEXT "Options" ""
+  ${NSD_CreateCheckbox} 0 12u 100% 16u "Legacy install for OBS Studio pre-33"
+  Pop $LegacyCheckbox
+  ${If} $Layout == "legacy"
+    ${NSD_Check} $LegacyCheckbox
+  ${EndIf}
+  nsDialogs::Show
+FunctionEnd
+
+Function OptionsLeave
+  ${NSD_GetState} $LegacyCheckbox $0
+  StrCpy $Layout "modern"
+  ${If} $0 == ${BST_CHECKED}
+    StrCpy $Layout "legacy"
+  ${EndIf}
+FunctionEnd
+
+Function ValidateDirectory
+  ${If} $INSTDIR == ""
+  ${OrIf} $INSTDIR == "$COMMONPROGRAMDATA\obs-studio\plugins"
+  ${OrIf} $INSTDIR == "$COMMONPROGRAMDATA\obs-studio\plugins\"
+    MessageBox MB_OK|MB_ICONSTOP "Choose a plugin-specific installation directory." /SD IDOK
+    Abort
+  ${EndIf}
+FunctionEnd
+
+Section "@ATK_DISPLAY_NAME@"
+  Call ValidateDirectory
+  !insertmacro CheckBinaries "$INSTDIR"
+  ${If} $PreviousUninstaller != ""
+    !insertmacro CheckBinaries "$PreviousPluginRoot"
+    MessageBox MB_OKCANCEL|MB_ICONQUESTION "Replace the previously installed @ATK_DISPLAY_NAME@?" /SD IDOK IDOK +2
+    Abort
+    ClearErrors
+    ExecWait '"$PreviousUninstaller" /S _?=$PreviousRoot' $0
+    ${If} ${Errors}
+    ${OrIf} $0 != 0
+      MessageBox MB_OK|MB_ICONSTOP "The previous version could not be uninstalled." /SD IDOK
+      SetErrorLevel 2
+      Quit
+    ${EndIf}
+    ReadRegStr $0 HKLM "${UNINSTALL_KEY}" "UninstallString"
+    ${If} $0 != ""
+      MessageBox MB_OK|MB_ICONSTOP "The previous uninstall did not complete." /SD IDOK
+      SetErrorLevel 2
+      Quit
+    ${EndIf}
+    Delete "$PreviousUninstaller"
+  ${EndIf}
+  !insertmacro DeleteBinaries
+  StrCpy $BinaryDirectory $INSTDIR
+  ${If} $Layout == "legacy"
+    StrCpy $BinaryDirectory "$INSTDIR\bin\64bit"
+  ${EndIf}
+  SetOutPath "$BinaryDirectory"
+  ${If} $Architecture == "arm64"
+    File "${PAYLOAD}\arm64\@ATK_NAME@.dll"
+    File "${PAYLOAD}\arm64\@ATK_NAME@_scanner.exe"
+    !if /FileExists "${PAYLOAD}\arm64\@ATK_NAME@.pdb"
+      File "${PAYLOAD}\arm64\@ATK_NAME@.pdb"
+    !endif
+    SetOutPath "$INSTDIR\data"
+    File /r "${PAYLOAD}\arm64\data\*"
+  ${Else}
+    File "${PAYLOAD}\x64\@ATK_NAME@.dll"
+    File "${PAYLOAD}\x64\@ATK_NAME@_scanner.exe"
+    !if /FileExists "${PAYLOAD}\x64\@ATK_NAME@.pdb"
+      File "${PAYLOAD}\x64\@ATK_NAME@.pdb"
+    !endif
+    SetOutPath "$INSTDIR\data"
+    File /r "${PAYLOAD}\x64\data\*"
+  ${EndIf}
+  SetOutPath "$INSTDIR"
+  File "@CPACK_NSIS_MUI_ICON@"
+  WriteUninstaller "$INSTDIR\${UNINSTALL_EXE}"
+  WriteRegStr HKLM "${PRODUCT_KEY}" "" "$INSTDIR"
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "DisplayName" "@ATK_DISPLAY_NAME@"
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "DisplayVersion" "@ATK_VERSION@"
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "Publisher" "@ATK_VENDOR@"
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "URLInfoAbout" "@ATK_WEBSITE@"
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "UninstallString" '$\"$INSTDIR\${UNINSTALL_EXE}$\"'
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "QuietUninstallString" '$\"$INSTDIR\${UNINSTALL_EXE}$\" /S'
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "InstallLocation" "$INSTDIR"
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "DisplayIcon" "$INSTDIR\icon.ico"
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "Layout" "$Layout"
+  WriteRegStr HKLM "${UNINSTALL_KEY}" "Architecture" "$Architecture"
+  WriteRegDWORD HKLM "${UNINSTALL_KEY}" "NoModify" 1
+  WriteRegDWORD HKLM "${UNINSTALL_KEY}" "NoRepair" 1
+SectionEnd
+
+Function un.onInit
+  SetShellVarContext all
+  SetRegView 32
+FunctionEnd
+
+Section "Uninstall"
+  !insertmacro CheckBinaries "$INSTDIR"
+  !insertmacro DeleteBinaries
+@ATK_DATA_DELETE_COMMANDS@
+  RMDir "$INSTDIR\data"
+  Delete "$INSTDIR\icon.ico"
+  Delete "$INSTDIR\${UNINSTALL_EXE}"
+  DeleteRegKey HKLM "${UNINSTALL_KEY}"
+  DeleteRegKey HKLM "${PRODUCT_KEY}"
+  RMDir "$INSTDIR"
+SectionEnd

@@ -14,36 +14,13 @@
 #include <QtGui>
 #include <QtWidgets>
 
-#include <array>
 #include <algorithm>
 #include <string_view>
 #include <unordered_set>
 
 namespace
 {
-enum MidiControlTableColumn
-{
-    midi_control_column_enabled = 0,
-    midi_control_column_learn,
-    midi_control_column_input_device,
-    midi_control_column_output_route,
-    midi_control_column_type,
-    midi_control_column_channel,
-    midi_control_column_data1,
-    midi_control_column_mode,
-    midi_control_column_action,
-    midi_control_column_target,
-    midi_control_column_layer,
-    midi_control_column_parameter,
-    midi_control_column_bank,
-    midi_control_column_preset,
-    midi_control_column_activation,
-    midi_control_column_invert,
-    midi_control_column_min,
-    midi_control_column_max,
-    midi_control_column_scale,
-    midi_control_column_count,
-};
+using enum atk::MidiControlTableColumn;
 
 struct ObsSourceEntry
 {
@@ -491,6 +468,10 @@ std::vector<atk::MidiControlTargetOption> getObsHotkeyTargetOptions()
 
             if (registererType == OBS_HOTKEY_REGISTERER_FRONTEND)
             {
+                auto* registeredName = obs_hotkey_get_name(key);
+                if (registeredName == nullptr || registeredName[0] == '\0')
+                    return true;
+
                 auto* descriptionChars = obs_hotkey_get_description(key);
                 if (descriptionChars != nullptr)
                 {
@@ -511,7 +492,7 @@ std::vector<atk::MidiControlTargetOption> getObsHotkeyTargetOptions()
                 }
 
                 buildContext->options->push_back({
-                    atk::createMidiControlHotkeyIdTargetToken(uint64_t(id)),
+                    atk::createMidiControlHotkeyNameTargetToken(juce::String(registeredName)),
                     displayName,
                 });
                 return true;
@@ -592,6 +573,13 @@ void syncMappingTargetFromCombo(atk::MidiControlMapping& mapping, QComboBox* com
 
     if (isHotkeyAction(mapping.actionType))
     {
+        if (combo->currentIndex() >= 0 && !combo->itemData(combo->currentIndex(), Qt::UserRole + 1).isNull())
+        {
+            mapping.targetName = toJuceString(combo->currentData(Qt::UserRole + 1).toString());
+            mapping.targetUuid = toJuceString(combo->currentData().toString());
+            return;
+        }
+
         auto targetToken = toJuceString(combo->currentData().toString()).trim();
         if (targetToken.isEmpty())
             targetToken = toJuceString(combo->currentText()).trim();
@@ -665,7 +653,7 @@ void populateTargetComboForMapping(
         for (auto& option : targetOptions)
             combo->addItem(toQString(option.displayName), toQString(option.targetToken));
 
-        combo->setEditable(true);
+        combo->setEditable(false);
     }
     else if (isMediaAction(mapping.actionType))
     {
@@ -740,8 +728,13 @@ void populateTargetComboForMapping(
     if (isHotkeyAction(mapping.actionType) && selectedIndex < 0 && mapping.targetUuid.isNotEmpty())
     {
         auto manualLabel = mapping.targetName.isNotEmpty() ? mapping.targetName : mapping.targetUuid;
-        combo->addItem(toQString(manualLabel), toQString(mapping.targetUuid));
+        atk::MidiControlHotkeyTarget target;
+        auto legacyTarget =
+            atk::parseMidiControlHotkeyTargetToken(mapping.targetUuid, target) && target.hotkeyName.isEmpty();
+        auto status = legacyTarget ? " [reselect required]" : " [unavailable]";
+        combo->addItem(toQString(manualLabel + status), toQString(mapping.targetUuid));
         selectedIndex = combo->count() - 1;
+        combo->setItemData(selectedIndex, toQString(mapping.targetName), Qt::UserRole + 1);
     }
 
     if (isMediaAction(mapping.actionType) && selectedIndex < 0)
@@ -754,36 +747,6 @@ void populateTargetComboForMapping(
         combo->setCurrentIndex(selectedIndex);
 
     syncMappingTargetFromCombo(mapping, combo);
-}
-
-bool validateStrictMediaTargets(const std::vector<atk::MidiControlMapping>& mappings, juce::String& errorMessage)
-{
-    for (auto& mapping : mappings)
-    {
-        if (!isMediaAction(mapping.actionType))
-            continue;
-
-        if (mapping.targetUuid.isEmpty())
-            continue;
-
-        auto* source = obs_get_source_by_uuid(mapping.targetUuid.toRawUTF8());
-        if (source == nullptr)
-        {
-            errorMessage = "media mapping target does not exist in mapping " + mapping.mappingId;
-            return false;
-        }
-
-        auto isControllableMedia = isControllableMediaSource(source);
-        obs_source_release(source);
-
-        if (!isControllableMedia)
-        {
-            errorMessage = "media mapping target is not a controllable media source in mapping " + mapping.mappingId;
-            return false;
-        }
-    }
-
-    return true;
 }
 
 void populateLayerComboForMapping(QComboBox* combo, atk::MidiControlMapping& mapping)
@@ -988,58 +951,45 @@ void layoutMappingsTableColumns(QTableView* table)
     if (table == nullptr)
         return;
 
-    constexpr std::array<int, midi_control_column_count> widths = {
-        44, 72, 170, 170, 86, 64, 68, 96, 136, 160, 170, 190, 64, 64, 92, 70, 84, 84, 88,
-    };
+    QStyleOptionViewItem itemOption;
+    itemOption.initFrom(table);
+    itemOption.font = table->font();
+    itemOption.fontMetrics = table->fontMetrics();
 
     for (int i = 0; i < midi_control_column_count; ++i)
-        table->setColumnWidth(i, widths[size_t(i)]);
+    {
+        int headingWidth = table->horizontalHeader()->sectionSizeHint(i);
+        int columnWidth = headingWidth;
+        for (int row = 0; row < table->model()->rowCount(); ++row)
+        {
+            auto index = table->model()->index(row, i);
+            columnWidth =
+                std::max(columnWidth, table->itemDelegateForIndex(index)->sizeHint(itemOption, index).width());
+        }
+
+        int maximumWidth = i == midi_control_column_label ? std::max(headingWidth, 320) : headingWidth * 2;
+        table->setColumnWidth(i, std::clamp(columnWidth, headingWidth, maximumWidth));
+    }
 }
 
-void openPersistentEditorsForSelectedRow(QTableView* table, QAbstractItemModel* model, int selectedRow, int previousRow)
+void sizeComboPopupToContents(QComboBox* combo)
 {
-    if (table == nullptr || model == nullptr)
+    if (combo == nullptr || combo->count() == 0)
         return;
 
-    const std::array<int, 17> editableColumns = {
-        midi_control_column_learn,
-        midi_control_column_input_device,
-        midi_control_column_output_route,
-        midi_control_column_type,
-        midi_control_column_channel,
-        midi_control_column_data1,
-        midi_control_column_mode,
-        midi_control_column_action,
-        midi_control_column_target,
-        midi_control_column_layer,
-        midi_control_column_parameter,
-        midi_control_column_bank,
-        midi_control_column_preset,
-        midi_control_column_activation,
-        midi_control_column_min,
-        midi_control_column_max,
-        midi_control_column_scale,
-    };
+    auto* popupView = combo->view();
+    QFontMetrics fontMetrics(popupView->font());
+    int widestItemWidth = 0;
 
-    if (previousRow >= 0 && previousRow < model->rowCount())
-    {
-        for (int column : editableColumns)
-        {
-            auto index = model->index(previousRow, column);
-            if (index.isValid())
-                table->closePersistentEditor(index);
-        }
-    }
+    for (int i = 0; i < combo->count(); ++i)
+        widestItemWidth = std::max(widestItemWidth, fontMetrics.horizontalAdvance(combo->itemText(i)));
 
-    if (selectedRow < 0 || selectedRow >= model->rowCount())
-        return;
-
-    for (int column : editableColumns)
-    {
-        auto index = model->index(selectedRow, column);
-        if (index.isValid())
-            table->openPersistentEditor(index);
-    }
+    auto* style = popupView->style();
+    int popupWidth = widestItemWidth
+                   + popupView->frameWidth() * 2
+                   + style->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, popupView)
+                   + 16;
+    popupView->setMinimumWidth(popupWidth);
 }
 
 void normalizeDependentFields(atk::MidiControlMapping& mapping)
@@ -1057,6 +1007,350 @@ void normalizeDependentFields(atk::MidiControlMapping& mapping)
     populateParameterComboForMapping(&parameterCombo, mapping);
 }
 
+int getMappingFieldIntValue(const atk::MidiControlMapping& mapping, int column)
+{
+    switch (column)
+    {
+    case midi_control_column_channel:
+        return mapping.channel;
+    case midi_control_column_data1:
+        return mapping.data1;
+    case midi_control_column_bank:
+        return mapping.bank;
+    case midi_control_column_preset:
+        return mapping.preset;
+    default:
+        return 0;
+    }
+}
+
+double getMappingFieldDoubleValue(const atk::MidiControlMapping& mapping, int column)
+{
+    switch (column)
+    {
+    case midi_control_column_min:
+        return mapping.minValue;
+    case midi_control_column_max:
+        return mapping.maxValue;
+    case midi_control_column_scale:
+        return mapping.scale;
+    default:
+        return 0.0;
+    }
+}
+
+QWidget* createMappingFieldEditor(int column, QWidget* parent)
+{
+    switch (column)
+    {
+    case midi_control_column_label:
+        return new QLineEdit(parent);
+    case midi_control_column_input_device:
+    case midi_control_column_output_route:
+    case midi_control_column_type:
+    case midi_control_column_mode:
+    case midi_control_column_action:
+    case midi_control_column_target:
+    case midi_control_column_layer:
+    case midi_control_column_parameter:
+    case midi_control_column_activation:
+        return new QComboBox(parent);
+    case midi_control_column_channel:
+    case midi_control_column_data1:
+    case midi_control_column_bank:
+    case midi_control_column_preset:
+    {
+        auto* spin = new QSpinBox(parent);
+
+        if (column == midi_control_column_channel)
+            spin->setRange(0, 15);
+        else if (column == midi_control_column_data1)
+            spin->setRange(0, 127);
+        else
+            spin->setRange(atk::midi_control_mapping_context_any, atk::midi_control_mapping_context_max);
+
+        return spin;
+    }
+    case midi_control_column_min:
+    case midi_control_column_max:
+    case midi_control_column_scale:
+    {
+        auto* spin = new QDoubleSpinBox(parent);
+        spin->setDecimals(6);
+        spin->setRange(-1000000.0, 1000000.0);
+        spin->setSingleStep(0.01);
+        return spin;
+    }
+    default:
+        return nullptr;
+    }
+}
+
+void loadMappingFieldIntoEditor(QWidget* editor, int column, atk::MidiControlMapping mapping)
+{
+    if (auto* combo = qobject_cast<QComboBox*>(editor))
+    {
+        combo->clear();
+        combo->setEditable(false);
+
+        switch (column)
+        {
+        case midi_control_column_input_device:
+        {
+            combo->addItem("Any", "");
+            if (auto* controller = atk::MidiControlController::getInstanceWithoutCreating())
+            {
+                auto inputDevices = controller->getAvailableInputDevices();
+                for (auto& device : inputDevices)
+                    combo->addItem(toQString(device), toQString(device));
+            }
+
+            auto selected = combo->findData(toQString(mapping.inputDeviceName));
+            if (selected < 0)
+                selected = 0;
+            combo->setCurrentIndex(selected);
+            break;
+        }
+        case midi_control_column_output_route:
+        {
+            combo->addItem("None", outputRouteNoneValue);
+            combo->addItem("Any", outputRouteAnyValue);
+
+            if (auto* controller = atk::MidiControlController::getInstanceWithoutCreating())
+            {
+                auto outputDevices = controller->getAvailableOutputDevices();
+                for (auto& device : outputDevices)
+                    combo->addItem(toQString(device), toQString(device));
+            }
+
+            QString selectedToken = outputRouteNoneValue;
+            if (mapping.outputMode == atk::midi_control_output_mode_any)
+                selectedToken = outputRouteAnyValue;
+            else if (mapping.outputMode == atk::midi_control_output_mode_specific)
+                selectedToken = toQString(mapping.outputDeviceName);
+
+            auto selected = combo->findData(selectedToken);
+            if (selected < 0)
+                selected = 0;
+            combo->setCurrentIndex(selected);
+            break;
+        }
+        case midi_control_column_type:
+        {
+            addMessageTypeOptions(combo);
+            auto selected = combo->findData(mapping.messageType);
+            if (selected < 0)
+                selected = 0;
+            combo->setCurrentIndex(selected);
+            break;
+        }
+        case midi_control_column_mode:
+        {
+            addModeOptions(combo);
+            auto selected = combo->findData(mapping.interactionMode);
+            if (selected < 0)
+                selected = 0;
+            combo->setCurrentIndex(selected);
+            break;
+        }
+        case midi_control_column_action:
+        {
+            addActionOptions(combo);
+            auto selected = combo->findData(mapping.actionType);
+            if (selected < 0)
+                selected = 0;
+            combo->setCurrentIndex(selected);
+            break;
+        }
+        case midi_control_column_target:
+        {
+            auto sources = getObsSources();
+            auto mediaSources = getObsSources(true);
+            populateTargetComboForMapping(combo, mapping, sources, mediaSources);
+            break;
+        }
+        case midi_control_column_layer:
+        {
+            populateLayerComboForMapping(combo, mapping);
+            break;
+        }
+        case midi_control_column_parameter:
+        {
+            populateParameterComboForMapping(combo, mapping);
+            break;
+        }
+        case midi_control_column_activation:
+        {
+            addActivationOptions(combo);
+            auto selected = combo->findData(mapping.activationMode);
+            if (selected < 0)
+                selected = 0;
+            combo->setCurrentIndex(selected);
+            break;
+        }
+        default:
+            break;
+        }
+
+        sizeComboPopupToContents(combo);
+        return;
+    }
+
+    if (auto* spin = qobject_cast<QSpinBox*>(editor))
+    {
+        spin->setValue(getMappingFieldIntValue(mapping, column));
+        return;
+    }
+
+    if (auto* spin = qobject_cast<QDoubleSpinBox*>(editor))
+    {
+        spin->setValue(getMappingFieldDoubleValue(mapping, column));
+        return;
+    }
+
+    if (auto* lineEdit = qobject_cast<QLineEdit*>(editor))
+        lineEdit->setText(toQString(mapping.label));
+}
+
+void storeEditorIntoMapping(QWidget* editor, int column, atk::MidiControlMapping& mapping)
+{
+    if (auto* combo = qobject_cast<QComboBox*>(editor))
+    {
+        switch (column)
+        {
+        case midi_control_column_input_device:
+        {
+            auto value = toJuceString(combo->currentData().toString()).trim();
+            mapping.inputDeviceName = value;
+            break;
+        }
+        case midi_control_column_output_route:
+        {
+            auto route = toJuceString(combo->currentData().toString()).trim();
+            if (route.equalsIgnoreCase(outputRouteNoneValue))
+            {
+                mapping.outputMode = atk::midi_control_output_mode_none;
+                mapping.outputDeviceName.clear();
+            }
+            else if (route.equalsIgnoreCase(outputRouteAnyValue))
+            {
+                mapping.outputMode = atk::midi_control_output_mode_any;
+                mapping.outputDeviceName.clear();
+            }
+            else
+            {
+                mapping.outputMode = atk::midi_control_output_mode_specific;
+                mapping.outputDeviceName = route;
+            }
+            break;
+        }
+        case midi_control_column_type:
+            mapping.messageType = combo->currentData().toInt();
+            break;
+        case midi_control_column_mode:
+            mapping.interactionMode = combo->currentData().toInt();
+            break;
+        case midi_control_column_action:
+        {
+            auto& rowMapping = mapping;
+            auto previousActionType = rowMapping.actionType;
+            rowMapping.actionType = combo->currentData().toInt();
+
+            if (rowMapping.actionType != previousActionType)
+            {
+                rowMapping.targetUuid.clear();
+                rowMapping.targetName.clear();
+                rowMapping.targetLayerToken.clear();
+                rowMapping.targetLayerName.clear();
+                rowMapping.targetParameterToken.clear();
+                rowMapping.targetParameterName.clear();
+            }
+
+            if (isHotkeyAction(rowMapping.actionType))
+            {
+                rowMapping.outputMode = atk::midi_control_output_mode_none;
+                rowMapping.outputDeviceName.clear();
+            }
+
+            normalizeDependentFields(rowMapping);
+            break;
+        }
+        case midi_control_column_target:
+        {
+            syncMappingTargetFromCombo(mapping, combo);
+            normalizeDependentFields(mapping);
+            break;
+        }
+        case midi_control_column_layer:
+        {
+            mapping.targetLayerToken = toJuceString(combo->currentData().toString());
+            mapping.targetLayerName = toJuceString(combo->currentText());
+            mapping.targetParameterToken.clear();
+            mapping.targetParameterName.clear();
+            normalizeDependentFields(mapping);
+            break;
+        }
+        case midi_control_column_parameter:
+        {
+            mapping.targetParameterToken = toJuceString(combo->currentData().toString());
+            mapping.targetParameterName = toJuceString(combo->currentText());
+            break;
+        }
+        case midi_control_column_activation:
+            mapping.activationMode = combo->currentData().toInt();
+            break;
+        default:
+            break;
+        }
+
+        return;
+    }
+
+    if (auto* spin = qobject_cast<QSpinBox*>(editor))
+    {
+        switch (column)
+        {
+        case midi_control_column_channel:
+            mapping.channel = spin->value();
+            break;
+        case midi_control_column_data1:
+            mapping.data1 = spin->value();
+            break;
+        case midi_control_column_bank:
+            mapping.bank = spin->value();
+            break;
+        case midi_control_column_preset:
+            mapping.preset = spin->value();
+            break;
+        default:
+            break;
+        }
+        return;
+    }
+
+    if (auto* spin = qobject_cast<QDoubleSpinBox*>(editor))
+    {
+        switch (column)
+        {
+        case midi_control_column_min:
+            mapping.minValue = spin->value();
+            break;
+        case midi_control_column_max:
+            mapping.maxValue = spin->value();
+            break;
+        case midi_control_column_scale:
+            mapping.scale = spin->value();
+            break;
+        default:
+            break;
+        }
+        return;
+    }
+
+    if (auto* lineEdit = qobject_cast<QLineEdit*>(editor))
+        mapping.label = toJuceString(lineEdit->text());
+}
+
 class MidiControlMappingsItemDelegate : public QStyledItemDelegate
 {
 public:
@@ -1065,322 +1359,122 @@ public:
     {
     }
 
+    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override
+    {
+        if (index.column() != midi_control_column_learn)
+        {
+            QStyledItemDelegate::paint(painter, option, index);
+            return;
+        }
+
+        auto* tableModel = static_cast<const atk::MidiControlMappingsTableModel*>(index.model());
+        auto learning = tableModel != nullptr && tableModel->isLearningRow(index.row());
+
+        QStyleOptionButton button;
+        button.rect = option.rect.adjusted(1, 1, -1, -1);
+        button.text = index.data(Qt::DisplayRole).toString();
+        button.palette = option.palette;
+        button.fontMetrics = option.fontMetrics;
+        button.direction = option.direction;
+        button.state =
+            QStyle::State_Enabled | (learning ? QStyle::State_On | QStyle::State_Sunken : QStyle::State_Raised);
+
+        auto* style = option.widget != nullptr ? option.widget->style() : QApplication::style();
+        style->drawControl(QStyle::CE_PushButton, &button, painter, option.widget);
+    }
+
+    QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const override
+    {
+        if (index.column() != midi_control_column_learn)
+            return QStyledItemDelegate::sizeHint(option, index);
+
+        QStyleOptionButton button;
+        button.fontMetrics = option.fontMetrics;
+        auto contentSize = QSize(option.fontMetrics.horizontalAdvance("Learning"), option.fontMetrics.height());
+        auto* style = option.widget != nullptr ? option.widget->style() : QApplication::style();
+        return style->sizeFromContents(QStyle::CT_PushButton, &button, contentSize, option.widget);
+    }
+
     QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem&, const QModelIndex& index) const override
     {
-        if (!index.isValid())
+        auto* editor = createMappingFieldEditor(index.column(), parent);
+        if (editor == nullptr)
             return nullptr;
 
-        switch (index.column())
-        {
-        case midi_control_column_learn:
-        {
-            auto* button = new QToolButton(parent);
-            button->setCheckable(true);
-            button->setToolButtonStyle(Qt::ToolButtonTextOnly);
-            button->setFocusPolicy(Qt::NoFocus);
-            button->setAttribute(Qt::WA_TransparentForMouseEvents, true);
-            return button;
-        }
-        case midi_control_column_input_device:
-        case midi_control_column_output_route:
-        case midi_control_column_type:
-        case midi_control_column_mode:
-        case midi_control_column_action:
-        case midi_control_column_target:
-        case midi_control_column_layer:
-        case midi_control_column_parameter:
-        case midi_control_column_activation:
-            return new QComboBox(parent);
-        case midi_control_column_channel:
-        case midi_control_column_data1:
-        case midi_control_column_bank:
-        case midi_control_column_preset:
-        {
-            auto* spin = new QSpinBox(parent);
+        auto* tableModel = static_cast<const atk::MidiControlMappingsTableModel*>(index.model());
+        atk::MidiControlMapping mapping;
+        if (tableModel->getMapping(index.row(), mapping))
+            editor->setProperty("mappingId", toQString(mapping.mappingId));
 
-            if (index.column() == midi_control_column_channel)
-                spin->setRange(0, 15);
-            else if (index.column() == midi_control_column_data1)
-                spin->setRange(0, 127);
-            else
-                spin->setRange(atk::midi_control_mapping_context_any, atk::midi_control_mapping_context_max);
-
-            return spin;
-        }
-        case midi_control_column_min:
-        case midi_control_column_max:
-        case midi_control_column_scale:
+        if (auto* combo = qobject_cast<QComboBox*>(editor))
         {
-            auto* spin = new QDoubleSpinBox(parent);
-            spin->setDecimals(6);
-            spin->setRange(-1000000.0, 1000000.0);
-            spin->setSingleStep(0.01);
-            return spin;
+            auto* self = const_cast<MidiControlMappingsItemDelegate*>(this);
+            connect(
+                combo,
+                &QComboBox::activated,
+                self,
+                [self, combo](int)
+                {
+                    emit self->commitData(combo);
+                    emit self->closeEditor(combo);
+                }
+            );
+            auto* popupTimer = new QTimer(combo);
+            popupTimer->setSingleShot(true);
+            connect(popupTimer, &QTimer::timeout, combo, [combo]() { combo->showPopup(); });
+            popupTimer->start(0);
         }
-        default:
-            return QStyledItemDelegate::createEditor(parent, QStyleOptionViewItem(), index);
-        }
+
+        return editor;
+    }
+
+    void destroyEditor(QWidget* editor, const QModelIndex& index) const override
+    {
+        editor->setProperty("retired", true);
+        for (auto* timer : editor->findChildren<QTimer*>(QString(), Qt::FindDirectChildrenOnly))
+            timer->stop();
+
+        QObject::disconnect(editor, nullptr, this, nullptr);
+        if (auto* combo = qobject_cast<QComboBox*>(editor))
+            combo->hidePopup();
+
+        QStyledItemDelegate::destroyEditor(editor, index);
     }
 
     void setEditorData(QWidget* editor, const QModelIndex& index) const override
     {
-        auto* tableModel =
-            static_cast<atk::MidiControlMappingsTableModel*>(const_cast<QAbstractItemModel*>(index.model()));
-        if (tableModel == nullptr || !index.isValid())
+        if (editor->property("retired").toBool())
             return;
 
+        auto* focusWidget = QApplication::focusWidget();
+        if (editor->property("initialized").toBool()
+            && ((focusWidget != nullptr && (focusWidget == editor || editor->isAncestorOf(focusWidget)))
+                || (QApplication::activePopupWidget() != nullptr
+                    && editor->isAncestorOf(QApplication::activePopupWidget()))))
+            return;
+
+        auto* tableModel = static_cast<const atk::MidiControlMappingsTableModel*>(index.model());
         atk::MidiControlMapping mapping;
-        if (!tableModel->getMapping(index.row(), mapping))
-            return;
-
-        if (auto* combo = qobject_cast<QComboBox*>(editor))
+        if (tableModel->getMapping(index.row(), mapping))
         {
-            combo->clear();
-            combo->setEditable(false);
-
-            switch (index.column())
-            {
-            case midi_control_column_input_device:
-            {
-                combo->addItem("Any", "");
-                if (auto* controller = atk::MidiControlController::getInstanceWithoutCreating())
-                {
-                    auto inputDevices = controller->getAvailableInputDevices();
-                    for (auto& device : inputDevices)
-                        combo->addItem(toQString(device), toQString(device));
-                }
-
-                auto selected = combo->findData(toQString(mapping.inputDeviceName));
-                if (selected < 0)
-                    selected = 0;
-                combo->setCurrentIndex(selected);
-                break;
-            }
-            case midi_control_column_output_route:
-            {
-                combo->addItem("None", outputRouteNoneValue);
-                combo->addItem("Any", outputRouteAnyValue);
-
-                if (auto* controller = atk::MidiControlController::getInstanceWithoutCreating())
-                {
-                    auto outputDevices = controller->getAvailableOutputDevices();
-                    for (auto& device : outputDevices)
-                        combo->addItem(toQString(device), toQString(device));
-                }
-
-                QString selectedToken = outputRouteNoneValue;
-                if (mapping.outputMode == atk::midi_control_output_mode_any)
-                    selectedToken = outputRouteAnyValue;
-                else if (mapping.outputMode == atk::midi_control_output_mode_specific)
-                    selectedToken = toQString(mapping.outputDeviceName);
-
-                auto selected = combo->findData(selectedToken);
-                if (selected < 0)
-                    selected = 0;
-                combo->setCurrentIndex(selected);
-                break;
-            }
-            case midi_control_column_type:
-            {
-                addMessageTypeOptions(combo);
-                auto selected = combo->findData(mapping.messageType);
-                if (selected < 0)
-                    selected = 0;
-                combo->setCurrentIndex(selected);
-                break;
-            }
-            case midi_control_column_mode:
-            {
-                addModeOptions(combo);
-                auto selected = combo->findData(mapping.interactionMode);
-                if (selected < 0)
-                    selected = 0;
-                combo->setCurrentIndex(selected);
-                break;
-            }
-            case midi_control_column_action:
-            {
-                addActionOptions(combo);
-                auto selected = combo->findData(mapping.actionType);
-                if (selected < 0)
-                    selected = 0;
-                combo->setCurrentIndex(selected);
-                break;
-            }
-            case midi_control_column_target:
-            {
-                auto sources = getObsSources();
-                auto mediaSources = getObsSources(true);
-                populateTargetComboForMapping(combo, mapping, sources, mediaSources);
-                break;
-            }
-            case midi_control_column_layer:
-            {
-                populateLayerComboForMapping(combo, mapping);
-                break;
-            }
-            case midi_control_column_parameter:
-            {
-                populateParameterComboForMapping(combo, mapping);
-                break;
-            }
-            case midi_control_column_activation:
-            {
-                addActivationOptions(combo);
-                auto selected = combo->findData(mapping.activationMode);
-                if (selected < 0)
-                    selected = 0;
-                combo->setCurrentIndex(selected);
-                break;
-            }
-            default:
-                break;
-            }
-
-            return;
+            QSignalBlocker blocker(editor);
+            loadMappingFieldIntoEditor(editor, index.column(), mapping);
+            editor->setProperty("initialized", true);
         }
-
-        if (auto* learnButton = qobject_cast<QToolButton*>(editor))
-        {
-            auto* controller = atk::MidiControlController::getInstanceWithoutCreating();
-            auto learnState = controller != nullptr ? controller->getLearnState() : atk::MidiControlLearnState{};
-            auto learningThisRow = learnState.active && mapping.mappingId == learnState.mappingId;
-            learnButton->setChecked(learningThisRow);
-            learnButton->setText(learningThisRow ? "Learning" : "Learn");
-            return;
-        }
-
-        if (auto* spin = qobject_cast<QSpinBox*>(editor))
-        {
-            spin->setValue(index.data(Qt::EditRole).toInt());
-            return;
-        }
-
-        if (auto* spin = qobject_cast<QDoubleSpinBox*>(editor))
-        {
-            spin->setValue(index.data(Qt::EditRole).toDouble());
-            return;
-        }
-
-        QStyledItemDelegate::setEditorData(editor, index);
     }
 
     void setModelData(QWidget* editor, QAbstractItemModel* model, const QModelIndex& index) const override
     {
         auto* tableModel = static_cast<atk::MidiControlMappingsTableModel*>(model);
-        if (tableModel == nullptr || !index.isValid())
-            return;
-
         atk::MidiControlMapping mapping;
-        if (!tableModel->getMapping(index.row(), mapping))
+        if (editor->property("retired").toBool()
+            || !editor->property("initialized").toBool()
+            || !tableModel->getMapping(index.row(), mapping)
+            || editor->property("mappingId").toString() != toQString(mapping.mappingId))
             return;
 
-        if (auto* combo = qobject_cast<QComboBox*>(editor))
-        {
-            switch (index.column())
-            {
-            case midi_control_column_input_device:
-            {
-                auto value = toJuceString(combo->currentData().toString()).trim();
-                mapping.inputDeviceName = value;
-                break;
-            }
-            case midi_control_column_output_route:
-            {
-                auto route = toJuceString(combo->currentData().toString()).trim();
-                if (route.equalsIgnoreCase(outputRouteNoneValue))
-                {
-                    mapping.outputMode = atk::midi_control_output_mode_none;
-                    mapping.outputDeviceName.clear();
-                }
-                else if (route.equalsIgnoreCase(outputRouteAnyValue))
-                {
-                    mapping.outputMode = atk::midi_control_output_mode_any;
-                    mapping.outputDeviceName.clear();
-                }
-                else
-                {
-                    mapping.outputMode = atk::midi_control_output_mode_specific;
-                    mapping.outputDeviceName = route;
-                }
-                break;
-            }
-            case midi_control_column_type:
-                mapping.messageType = combo->currentData().toInt();
-                break;
-            case midi_control_column_mode:
-                mapping.interactionMode = combo->currentData().toInt();
-                break;
-            case midi_control_column_action:
-            {
-                auto& rowMapping = mapping;
-                auto previousActionType = rowMapping.actionType;
-                rowMapping.actionType = combo->currentData().toInt();
-
-                if (rowMapping.actionType != previousActionType)
-                {
-                    rowMapping.targetUuid.clear();
-                    rowMapping.targetName.clear();
-                    rowMapping.targetLayerToken.clear();
-                    rowMapping.targetLayerName.clear();
-                    rowMapping.targetParameterToken.clear();
-                    rowMapping.targetParameterName.clear();
-                }
-
-                if (isHotkeyAction(rowMapping.actionType))
-                {
-                    rowMapping.outputMode = atk::midi_control_output_mode_none;
-                    rowMapping.outputDeviceName.clear();
-                }
-
-                normalizeDependentFields(rowMapping);
-                break;
-            }
-            case midi_control_column_target:
-            {
-                syncMappingTargetFromCombo(mapping, combo);
-                normalizeDependentFields(mapping);
-                break;
-            }
-            case midi_control_column_layer:
-            {
-                mapping.targetLayerToken = toJuceString(combo->currentData().toString());
-                mapping.targetLayerName = toJuceString(combo->currentText());
-                mapping.targetParameterToken.clear();
-                mapping.targetParameterName.clear();
-                normalizeDependentFields(mapping);
-                break;
-            }
-            case midi_control_column_parameter:
-            {
-                mapping.targetParameterToken = toJuceString(combo->currentData().toString());
-                mapping.targetParameterName = toJuceString(combo->currentText());
-                break;
-            }
-            case midi_control_column_activation:
-                mapping.activationMode = combo->currentData().toInt();
-                break;
-            default:
-                break;
-            }
-
-            tableModel->replaceMapping(index.row(), mapping);
-            return;
-        }
-
-        if (auto* spin = qobject_cast<QSpinBox*>(editor))
-        {
-            model->setData(index, spin->value(), Qt::EditRole);
-            return;
-        }
-
-        if (auto* spin = qobject_cast<QDoubleSpinBox*>(editor))
-        {
-            model->setData(index, spin->value(), Qt::EditRole);
-            return;
-        }
-
-        QStyledItemDelegate::setModelData(editor, model, index);
+        storeEditorIntoMapping(editor, index.column(), mapping);
+        tableModel->requestMappingEdit(mapping.mappingId, mapping);
     }
 };
 
@@ -1393,6 +1487,11 @@ atk::MidiControlDialog*& getMidiControlDialogInstance()
 
 namespace atk
 {
+
+QStyledItemDelegate* createMidiControlMappingsItemDelegate(QObject* parent)
+{
+    return new MidiControlMappingsItemDelegate(parent);
+}
 
 MidiControlDialog::MidiControlDialog(QWidget* parent)
     : QDialog(parent)
@@ -1435,7 +1534,10 @@ MidiControlDialog::MidiControlDialog(QWidget* parent)
 MidiControlDialog::~MidiControlDialog()
 {
     shuttingDown = true;
+    updateMonitorCapture();
     rebuildingUi = true;
+    cancelLearningIfActive();
+    mappingsFileChooser.reset();
 
     if (getMidiControlDialogInstance() == this)
         getMidiControlDialogInstance() = nullptr;
@@ -1467,14 +1569,51 @@ MidiControlDialog::~MidiControlDialog()
 void MidiControlDialog::refreshIfOpen()
 {
     auto* instance = getMidiControlDialogInstance();
-    if (instance != nullptr && !instance->shuttingDown)
-        instance->reloadFromController();
+    if (instance == nullptr || instance->shuttingDown || instance->reloadPending)
+        return;
+
+    instance->reloadPending = true;
+
+    // Callers include OBS frontend events that may fire while Qt is mid model/view update.
+    QTimer::singleShot(
+        0,
+        instance,
+        [instance]()
+        {
+            instance->reloadPending = false;
+            instance->reloadFromController();
+        }
+    );
 }
 
 void MidiControlDialog::showEvent(QShowEvent* event)
 {
+    shuttingDown = false;
+    if (mappingsTable != nullptr && mappingsModel != nullptr && mappingsTable->model() == nullptr)
+        mappingsTable->setModel(mappingsModel);
     QDialog::showEvent(event);
     reloadFromController();
+    updateMonitorCapture();
+}
+
+void MidiControlDialog::hideEvent(QHideEvent* event)
+{
+    if (monitorTimer != nullptr)
+        monitorTimer->stop();
+    if (auto* controller = MidiControlController::getInstanceWithoutCreating())
+        controller->setMonitorEnabled(false);
+    QDialog::hideEvent(event);
+}
+
+void MidiControlDialog::done(int result)
+{
+    cancelLearningIfActive();
+    shuttingDown = true;
+    updateMonitorCapture();
+    mappingsFileChooser.reset();
+    if (mappingsTable != nullptr)
+        mappingsTable->setModel(nullptr);
+    QDialog::done(result);
 }
 
 void MidiControlDialog::changeEvent(QEvent* event)
@@ -1490,13 +1629,18 @@ void MidiControlDialog::changeEvent(QEvent* event)
     if (!isActiveWindow())
         return;
 
-    refreshSourceOptions();
-}
+    // Activation can arrive from inside an editor combo's popup teardown; rebuilding editors there corrupts Qt state.
+    QTimer::singleShot(
+        0,
+        this,
+        [this]()
+        {
+            if (shuttingDown || !isActiveWindow() || QApplication::activePopupWidget() != nullptr)
+                return;
 
-void MidiControlDialog::resizeEvent(QResizeEvent* event)
-{
-    QDialog::resizeEvent(event);
-    layoutMappingsTableColumns(mappingsTable);
+            refreshSourceOptions();
+        }
+    );
 }
 
 void MidiControlDialog::keyPressEvent(QKeyEvent* event)
@@ -1721,39 +1865,30 @@ void MidiControlDialog::buildLayout()
     mappingsSectionLayout->addWidget(mappingHeading);
 
     mappingsTable = new QTableView(this);
-    mappingsModel = new MidiControlMappingsTableModel(&dialogMappings, this);
+    mappingsModel = MidiControlController::getInstance()->getMappingsModel();
     mappingsTable->setModel(mappingsModel);
-    mappingsTable->setItemDelegate(new MidiControlMappingsItemDelegate(mappingsTable));
+    mappingsTable->setItemDelegate(createMidiControlMappingsItemDelegate(mappingsTable));
     mappingsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     mappingsTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    mappingsTable->setEditTriggers(
-        QAbstractItemView::SelectedClicked | QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed
-    );
+    mappingsTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
     mappingsTable->setMouseTracking(false);
     mappingsTable->viewport()->setMouseTracking(false);
     mappingsTable->verticalHeader()->setVisible(false);
     mappingsTable->setCornerButtonEnabled(false);
     mappingsTable->horizontalHeader()->setHighlightSections(false);
-    mappingsTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    mappingsTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     mappingsTable->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     mappingsTable->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
 
     connect(
         mappingsModel,
-        &QAbstractItemModel::dataChanged,
+        &MidiControlMappingsTableModel::editRejected,
         this,
-        [this](const QModelIndex&, const QModelIndex&, const QVector<int>&)
-        {
-            if (rebuildingUi)
-                return;
-
-            applyMappingsToController();
-        }
+        [this](QString message) { statusLabel->setText(QString::fromUtf8("Invalid mapping: ") + message); }
     );
 
     mappingsSectionLayout->addWidget(mappingsTable, 1);
     layoutMappingsTableColumns(mappingsTable);
-    openPersistentEditorsForSelectedRow(mappingsTable, mappingsModel, -1, -1);
 
     auto* subscriptionsAndMappingsSplitter = new QSplitter(Qt::Vertical, this);
     subscriptionsAndMappingsSplitter->addWidget(topSection);
@@ -1774,7 +1909,12 @@ void MidiControlDialog::buildLayout()
                 return;
 
             if (index.column() != midi_control_column_learn)
+            {
+                // Ctrl/Shift clicks extend the selection; plain clicks edit the cell.
+                if ((QApplication::keyboardModifiers() & (Qt::ControlModifier | Qt::ShiftModifier)) == 0)
+                    mappingsTable->edit(index);
                 return;
+            }
 
             if (!isValidRow(index.row()))
                 return;
@@ -1784,7 +1924,10 @@ void MidiControlDialog::buildLayout()
                 return;
 
             auto learnState = controller->getLearnState();
-            auto mappingId = dialogMappings[size_t(index.row())].mappingId;
+            MidiControlMapping mapping;
+            if (!mappingsModel->getMapping(index.row(), mapping))
+                return;
+            auto mappingId = mapping.mappingId;
             auto isLearningThisRow = learnState.active && learnState.mappingId == mappingId;
 
             if (isLearningThisRow)
@@ -1797,21 +1940,100 @@ void MidiControlDialog::buildLayout()
         }
     );
 
-    connect(
-        mappingsTable->selectionModel(),
-        &QItemSelectionModel::currentRowChanged,
-        this,
-        [this](const QModelIndex& current, const QModelIndex&)
-        {
-            auto row = current.isValid() ? current.row() : -1;
-            openPersistentEditorsForSelectedRow(mappingsTable, mappingsModel, row, persistentEditorsRow);
-            persistentEditorsRow = row;
-        }
-    );
-
     auto* deleteShortcut = new QShortcut(QKeySequence(Qt::Key_Delete), mappingsTable);
     deleteShortcut->setContext(Qt::WidgetWithChildrenShortcut);
     connect(deleteShortcut, &QShortcut::activated, this, [this]() { removeSelectedMappings(); });
+
+    monitorToggle = new QToolButton(this);
+    monitorToggle->setObjectName("midiMonitorToggle");
+    monitorToggle->setText("Monitor");
+    monitorToggle->setCheckable(true);
+    monitorToggle->setArrowType(Qt::RightArrow);
+    monitorToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    monitorToggle->setToolTip("Expand or collapse monitor");
+    mainLayout->addWidget(monitorToggle, 0, Qt::AlignLeft);
+
+    monitorPane = new QWidget(this);
+    monitorPane->setObjectName("midiMonitorPane");
+    auto* monitorLayout = new QVBoxLayout(monitorPane);
+    monitorLayout->setContentsMargins(0, 0, 0, 0);
+    auto* monitorControls = new QHBoxLayout();
+    monitorPauseButton = new QToolButton(monitorPane);
+    monitorPauseButton->setObjectName("midiMonitorPause");
+    monitorPauseButton->setCheckable(true);
+    monitorPauseButton->setIcon(style()->standardIcon(QStyle::SP_MediaPause));
+    monitorPauseButton->setToolTip("Pause capture");
+    monitorPauseButton->setAccessibleName("Pause capture");
+    auto* clearMonitorButton = new QToolButton(monitorPane);
+    clearMonitorButton->setObjectName("midiMonitorClear");
+    clearMonitorButton->setIcon(style()->standardIcon(QStyle::SP_DialogResetButton));
+    clearMonitorButton->setToolTip("Clear monitor");
+    clearMonitorButton->setAccessibleName("Clear monitor");
+    monitorAutoScroll = new QCheckBox("Auto-scroll", monitorPane);
+    monitorAutoScroll->setObjectName("midiMonitorAutoScroll");
+    monitorAutoScroll->setChecked(true);
+    monitorControls->addWidget(monitorPauseButton);
+    monitorControls->addWidget(clearMonitorButton);
+    monitorControls->addWidget(monitorAutoScroll);
+    monitorControls->addStretch(1);
+    monitorLayout->addLayout(monitorControls);
+
+    monitorTable = new QTableWidget(0, 5, monitorPane);
+    monitorTable->setObjectName("midiMonitorTable");
+    monitorTable->setHorizontalHeaderLabels({"Time", "Label", "Device", "MIDI", "Dispatch"});
+    monitorTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    monitorTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    monitorTable->setAlternatingRowColors(true);
+    monitorTable->setWordWrap(false);
+    monitorTable->verticalHeader()->hide();
+    monitorTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+    monitorTable->horizontalHeader()->setDefaultSectionSize(160);
+    monitorTable->setMinimumHeight(120);
+    monitorTable->setMaximumHeight(260);
+    monitorLayout->addWidget(monitorTable);
+    mainLayout->addWidget(monitorPane);
+    monitorPane->hide();
+
+    monitorTimer = new QTimer(this);
+    monitorTimer->setObjectName("midiMonitorTimer");
+    monitorTimer->setInterval(100);
+    connect(monitorTimer, &QTimer::timeout, this, [this]() { refreshMonitor(); });
+    connect(
+        monitorToggle,
+        &QToolButton::toggled,
+        this,
+        [this](bool expanded)
+        {
+            monitorToggle->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
+            monitorPane->setVisible(expanded);
+            updateMonitorCapture();
+        }
+    );
+    connect(
+        monitorPauseButton,
+        &QToolButton::toggled,
+        this,
+        [this](bool paused)
+        {
+            if (paused)
+                refreshMonitor();
+            monitorPauseButton->setIcon(style()->standardIcon(paused ? QStyle::SP_MediaPlay : QStyle::SP_MediaPause));
+            monitorPauseButton->setToolTip(paused ? "Resume capture" : "Pause capture");
+            monitorPauseButton->setAccessibleName(monitorPauseButton->toolTip());
+            updateMonitorCapture();
+        }
+    );
+    connect(
+        clearMonitorButton,
+        &QToolButton::clicked,
+        this,
+        [this]()
+        {
+            monitorTable->setRowCount(0);
+            if (auto* controller = MidiControlController::getInstanceWithoutCreating())
+                controller->clearMonitorEntries();
+        }
+    );
 
     auto* buttonRow = new QHBoxLayout();
     addButton = new QPushButton("Add Mapping", this);
@@ -1848,6 +2070,96 @@ void MidiControlDialog::buildLayout()
     }
 }
 
+void MidiControlDialog::updateMonitorCapture()
+{
+    if (monitorTimer == nullptr)
+        return;
+
+    bool enabled = !shuttingDown
+                && isVisible()
+                && monitorPane->isVisible()
+                && monitorToggle->isChecked()
+                && !monitorPauseButton->isChecked();
+    if (auto* controller = MidiControlController::getInstanceWithoutCreating())
+        controller->setMonitorEnabled(enabled);
+    if (enabled)
+        monitorTimer->start();
+    else
+        monitorTimer->stop();
+}
+
+void MidiControlDialog::refreshMonitor()
+{
+    auto* controller = MidiControlController::getInstanceWithoutCreating();
+    if (controller == nullptr)
+    {
+        monitorTimer->stop();
+        return;
+    }
+
+    auto entries = controller->takeMonitorEntries();
+    if (entries.empty())
+        return;
+
+    monitorTable->setUpdatesEnabled(false);
+    for (auto& entry : entries)
+    {
+        if (monitorTable->rowCount() == MidiControlController::MONITOR_CAPACITY)
+            monitorTable->removeRow(0);
+        int row = monitorTable->rowCount();
+        monitorTable->insertRow(row);
+        auto& message = entry.event.message;
+        auto channel = " ch " + juce::String(message.getChannel());
+        juce::String midiData;
+        if (message.isNoteOnOrOff())
+            midiData = juce::String(message.isNoteOn() ? "Note On" : "Note Off")
+                     + channel
+                     + " note "
+                     + juce::String(message.getNoteNumber())
+                     + " val "
+                     + juce::String(int(message.getVelocity()));
+        else if (message.isController())
+            midiData = "CC"
+                     + channel
+                     + " cc "
+                     + juce::String(message.getControllerNumber())
+                     + " val "
+                     + juce::String(message.getControllerValue());
+        else if (message.isProgramChange())
+            midiData = "Prg" + channel + " val " + juce::String(message.getProgramChangeNumber());
+        else if (message.isPitchWheel())
+            midiData = "Pitch" + channel + " val " + juce::String(message.getPitchWheelValue());
+        else
+        {
+            midiData = message.isSysEx() ? "SysEx" : "MIDI";
+            if (message.getChannel() > 0)
+                midiData += channel;
+            midiData += " data";
+            int byteCount = message.getRawDataSize();
+            for (int index = 0; index < std::min(byteCount, 16); ++index)
+                midiData += " " + juce::String(int(message.getRawData()[index]));
+            if (byteCount > 16)
+                midiData += " ... (" + juce::String(byteCount) + " bytes)";
+        }
+        QStringList values = {
+            QDateTime::fromMSecsSinceEpoch(entry.timestampMs).toString("HH:mm:ss.zzz"),
+            toQString(entry.mappingLabel),
+            toQString(entry.event.inputDeviceName),
+            toQString(midiData),
+            toQString(entry.result)
+        };
+        for (int column = 0; column < values.size(); ++column)
+        {
+            auto* item = new QTableWidgetItem(values[column]);
+            item->setToolTip(values[column]);
+            monitorTable->setItem(row, column, item);
+        }
+    }
+    if (monitorAutoScroll->isChecked())
+        monitorTable->scrollToBottom();
+    monitorTable->setUpdatesEnabled(true);
+}
+
 void MidiControlDialog::reloadFromController()
 {
     if (shuttingDown)
@@ -1856,13 +2168,6 @@ void MidiControlDialog::reloadFromController()
     auto* controller = MidiControlController::getInstance();
     if (controller != nullptr)
     {
-        dialogMappings = controller->getMappings();
-        if (mappingsModel != nullptr)
-        {
-            auto learnState = controller->getLearnState();
-            mappingsModel->setLearnState(learnState.active, learnState.mappingId);
-        }
-
         if (parameterAutoSyncCheckBox != nullptr
             && matchByNameCheckBox != nullptr
             && delayedFeedbackOutputCheckBox != nullptr
@@ -1882,13 +2187,6 @@ void MidiControlDialog::reloadFromController()
             delayedFeedbackOutputIdleMsSpinBox->setValue(controller->getDelayedFeedbackOutputIdleMs());
         }
     }
-    else
-    {
-        dialogMappings.clear();
-        if (mappingsModel != nullptr)
-            mappingsModel->setLearnState(false, {});
-    }
-
     rebuildSubscriptionWidgets();
     rebuildMappingsTable();
     refreshActiveContextDisplay();
@@ -1967,7 +2265,7 @@ void MidiControlDialog::rebuildSubscriptionWidgets()
 
 bool MidiControlDialog::isValidRow(int row) const
 {
-    return row >= 0 && row < int(dialogMappings.size());
+    return mappingsModel != nullptr && row >= 0 && row < mappingsModel->rowCount();
 }
 
 void MidiControlDialog::rebuildMappingsTable()
@@ -1991,15 +2289,10 @@ void MidiControlDialog::rebuildMappingsTable()
     if (selectedRow < 0 && mappingsModel != nullptr && mappingsModel->rowCount() > 0)
         selectedRow = 0;
 
-    openPersistentEditorsForSelectedRow(mappingsTable, mappingsModel, selectedRow, persistentEditorsRow);
-    persistentEditorsRow = selectedRow;
-
     rebuildingUi = false;
 
     if (selectedRow >= 0 && mappingsModel != nullptr && selectedRow < mappingsModel->rowCount())
         mappingsTable->selectRow(selectedRow);
-
-    layoutMappingsTableColumns(mappingsTable);
 }
 
 void MidiControlDialog::syncSubscriptionsToController()
@@ -2033,37 +2326,6 @@ void MidiControlDialog::syncSubscriptionsToController()
     rebuildMappingsTable();
 }
 
-bool MidiControlDialog::applyMappingsToController()
-{
-    if (rebuildingUi || shuttingDown)
-        return true;
-
-    juce::String validationError;
-    if (!validateMidiControlMappings(dialogMappings, validationError))
-    {
-        statusLabel->setText(QString::fromUtf8("Invalid mapping: ") + toQString(validationError));
-        return false;
-    }
-
-    if (!validateStrictMediaTargets(dialogMappings, validationError))
-    {
-        statusLabel->setText(QString::fromUtf8("Invalid mapping: ") + toQString(validationError));
-        return false;
-    }
-
-    auto* controller = MidiControlController::getInstance();
-    if (controller == nullptr)
-    {
-        statusLabel->setText("Controller unavailable.");
-        return false;
-    }
-
-    controller->setMappings(dialogMappings);
-    MidiControlLastTouchedHelperDialog::refreshIfOpen();
-
-    return true;
-}
-
 void MidiControlDialog::removeSelectedMappings()
 {
     if (shuttingDown || mappingsTable == nullptr)
@@ -2092,37 +2354,27 @@ void MidiControlDialog::removeSelectedMappings()
     std::sort(rows.begin(), rows.end());
     rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
 
-    auto* controller = MidiControlController::getInstanceWithoutCreating();
-    if (controller != nullptr)
+    std::vector<juce::String> mappingIds;
+    for (int row : rows)
     {
-        auto learnState = controller->getLearnState();
-        if (learnState.active)
-        {
-            for (int row : rows)
-            {
-                if (!isValidRow(row))
-                    continue;
-
-                if (dialogMappings[size_t(row)].mappingId == learnState.mappingId)
-                {
-                    controller->cancelLearning();
-                    break;
-                }
-            }
-        }
+        MidiControlMapping mapping;
+        if (mappingsModel->getMapping(row, mapping))
+            mappingIds.push_back(mapping.mappingId);
     }
 
-    if (mappingsModel != nullptr)
-        mappingsModel->removeRowsSortedUnique(rows);
-
-    applyMappingsToController();
+    juce::String error;
+    if (!MidiControlController::getInstance()->removeMappings(mappingIds, error))
+    {
+        statusLabel->setText(QString::fromUtf8("Invalid mapping: ") + toQString(error));
+        return;
+    }
     rebuildMappingsTable();
 
-    if (!dialogMappings.empty())
+    if (mappingsModel->rowCount() > 0)
     {
         int nextRow = rows.front();
-        if (nextRow >= int(dialogMappings.size()))
-            nextRow = int(dialogMappings.size()) - 1;
+        if (nextRow >= mappingsModel->rowCount())
+            nextRow = mappingsModel->rowCount() - 1;
 
         if (nextRow >= 0 && mappingsModel != nullptr && nextRow < mappingsModel->rowCount())
             mappingsTable->selectRow(nextRow);
@@ -2146,15 +2398,16 @@ void MidiControlDialog::cloneSelectedMapping()
     if (!isValidRow(selectedRow))
         return;
 
-    auto clonedMapping = dialogMappings[size_t(selectedRow)];
-    clonedMapping.mappingId = createMidiControlMappingId();
-    clonedMapping.enabled = false;
-
+    MidiControlMapping mapping;
+    if (!mappingsModel->getMapping(selectedRow, mapping))
+        return;
     int cloneRow = selectedRow + 1;
-    if (mappingsModel != nullptr)
-        mappingsModel->insertMapping(cloneRow, clonedMapping);
-
-    applyMappingsToController();
+    juce::String error;
+    if (!MidiControlController::getInstance()->cloneMapping(mapping.mappingId, error))
+    {
+        statusLabel->setText(QString::fromUtf8("Invalid mapping: ") + toQString(error));
+        return;
+    }
     rebuildMappingsTable();
 
     if (cloneRow >= 0 && mappingsModel != nullptr && cloneRow < mappingsModel->rowCount())
@@ -2178,13 +2431,15 @@ void MidiControlDialog::addMapping()
         mapping.targetName = sources.front().name;
     }
 
-    if (mappingsModel != nullptr)
-        mappingsModel->appendMapping(mapping);
-
-    applyMappingsToController();
+    juce::String error;
+    if (!MidiControlController::getInstance()->addMapping(mapping, error))
+    {
+        statusLabel->setText(QString::fromUtf8("Invalid mapping: ") + toQString(error));
+        return;
+    }
     rebuildMappingsTable();
 
-    int newRow = int(dialogMappings.size()) - 1;
+    int newRow = mappingsModel->rowCount() - 1;
     if (newRow >= 0 && mappingsModel != nullptr && newRow < mappingsModel->rowCount())
         mappingsTable->selectRow(newRow);
 }
@@ -2204,7 +2459,7 @@ void MidiControlDialog::saveMappingsToFile()
         return;
 
     juce::String validationError;
-    if (!validateMidiControlMappings(dialogMappings, validationError))
+    if (!validateMidiControlMappings(mappingsModel->getMappings(), validationError))
     {
         statusLabel->setText(QString::fromUtf8("Invalid mapping: ") + toQString(validationError));
         return;
@@ -2227,7 +2482,7 @@ void MidiControlDialog::saveMappingsToFile()
             if (result == juce::File())
                 return;
 
-            auto fileText = serializeMidiControlMappingsFilePayload(dialogMappings);
+            auto fileText = serializeMidiControlMappingsFilePayload(mappingsModel->getMappings());
             if (!result.replaceWithText(fileText, false, false, "\n"))
             {
                 statusLabel->setText("Failed to save mappings file.");
@@ -2237,7 +2492,7 @@ void MidiControlDialog::saveMappingsToFile()
             lastMappingsFile = result;
             statusLabel->setText(
                 QString::fromUtf8("Saved ")
-                + QString::number(int(dialogMappings.size()))
+                + QString::number(mappingsModel->rowCount())
                 + " mapping(s) to "
                 + toQString(result.getFileName())
             );
@@ -2275,19 +2530,18 @@ void MidiControlDialog::loadMappingsFromFile()
                 return;
             }
 
-            cancelLearningIfActive();
-
-            dialogMappings = std::move(loadedMappings);
-
-            if (!applyMappingsToController())
+            if (!MidiControlController::getInstance()->trySetMappings(loadedMappings, loadError))
+            {
+                statusLabel->setText(QString::fromUtf8("Invalid mapping: ") + toQString(loadError));
                 return;
+            }
 
             rebuildMappingsTable();
             lastMappingsFile = result;
 
             statusLabel->setText(
                 QString::fromUtf8("Loaded ")
-                + QString::number(int(dialogMappings.size()))
+                + QString::number(mappingsModel->rowCount())
                 + " mapping(s) from "
                 + toQString(result.getFileName())
             );
@@ -2308,9 +2562,6 @@ void MidiControlDialog::handleLearnStateChanged(const MidiControlLearnState& lea
     if (shuttingDown)
         return;
 
-    if (mappingsModel != nullptr)
-        mappingsModel->setLearnState(learnState.active, learnState.mappingId);
-
     if (learnState.active)
     {
         statusLabel->setText("Learning MIDI input for selected mapping...");
@@ -2327,35 +2578,10 @@ void MidiControlDialog::handleLearnStateChanged(const MidiControlLearnState& lea
 
     lastLearnSequence = learnState.sequence;
 
-    for (auto& mapping : dialogMappings)
-    {
-        if (mapping.mappingId != learnState.mappingId)
-            continue;
-
-        mapping.inputDeviceName = learnState.event.inputDeviceName;
-
-        if (learnState.event.message.isController())
-        {
-            mapping.messageType = midi_control_message_type_cc;
-            mapping.data1 = learnState.event.message.getControllerNumber();
-        }
-        else if (learnState.event.message.isNoteOn())
-        {
-            mapping.messageType = midi_control_message_type_note;
-            mapping.data1 = learnState.event.message.getNoteNumber();
-        }
-        else if (learnState.event.message.isProgramChange())
-        {
-            mapping.messageType = midi_control_message_type_program_change;
-            mapping.data1 = learnState.event.message.getProgramChangeNumber();
-        }
-
-        mapping.channel = learnState.event.message.getChannel();
-        break;
-    }
-
-    applyMappingsToController();
-    statusLabel->setText(QString::fromUtf8("Learned from ") + toQString(learnState.event.inputDeviceName));
+    if (learnState.errorMessage.isNotEmpty())
+        statusLabel->setText(QString::fromUtf8("Invalid mapping: ") + toQString(learnState.errorMessage));
+    else
+        statusLabel->setText(QString::fromUtf8("Learned from ") + toQString(learnState.event.inputDeviceName));
     rebuildMappingsTable();
 }
 

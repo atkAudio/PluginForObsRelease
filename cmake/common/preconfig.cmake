@@ -1,3 +1,7 @@
+if(CMAKE_HOST_APPLE)
+    include("${CMAKE_CURRENT_LIST_DIR}/../macos/detect_macos_build_settings.cmake")
+endif()
+
 # Prefer system pkg-config over Linuxbrew on Linux (native builds only)
 # Only applies when Linuxbrew is installed and not cross-compiling
 # Runs before project(), so CMAKE_CROSSCOMPILING is not set yet; a toolchain file marks cross builds.

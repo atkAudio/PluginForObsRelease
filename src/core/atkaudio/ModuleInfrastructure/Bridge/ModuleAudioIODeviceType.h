@@ -8,16 +8,24 @@
 namespace atk
 {
 
-class ModuleAudioIODeviceType : public juce::AudioIODeviceType
+class ModuleAudioIODeviceType
+    : public juce::AudioIODeviceType
+    , private AudioServer::Listener
 {
 public:
     ModuleAudioIODeviceType(const juce::String& typeName = "Module Audio")
         : juce::AudioIODeviceType(typeName)
         , coordinator(std::make_shared<ModuleDeviceCoordinator>())
     {
+        if (auto* server = AudioServer::getInstanceWithoutCreating())
+            server->addListener(this);
     }
 
-    ~ModuleAudioIODeviceType() override = default;
+    ~ModuleAudioIODeviceType() override
+    {
+        if (auto* server = AudioServer::getInstanceWithoutCreating())
+            server->removeListener(this);
+    }
 
     void scanForDevices() override
     {
@@ -125,6 +133,12 @@ protected:
     }
 
 private:
+    void audioServerDeviceListChanged() override
+    {
+        scanForDevices();
+        callDeviceChangeListeners();
+    }
+
     std::shared_ptr<ModuleDeviceCoordinator> coordinator;
     juce::StringArray deviceNames;
     juce::Array<AudioServerDeviceInfo> audioServerDevices;

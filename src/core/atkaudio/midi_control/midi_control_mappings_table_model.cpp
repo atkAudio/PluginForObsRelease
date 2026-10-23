@@ -1,34 +1,5 @@
 #include "midi_control_mappings_table_model.h"
 
-#include <algorithm>
-
-namespace
-{
-enum MidiControlTableColumn
-{
-    midi_control_column_enabled = 0,
-    midi_control_column_learn,
-    midi_control_column_input_device,
-    midi_control_column_output_route,
-    midi_control_column_type,
-    midi_control_column_channel,
-    midi_control_column_data1,
-    midi_control_column_mode,
-    midi_control_column_action,
-    midi_control_column_target,
-    midi_control_column_layer,
-    midi_control_column_parameter,
-    midi_control_column_bank,
-    midi_control_column_preset,
-    midi_control_column_activation,
-    midi_control_column_invert,
-    midi_control_column_min,
-    midi_control_column_max,
-    midi_control_column_scale,
-    midi_control_column_count,
-};
-} // namespace
-
 namespace atk
 {
 
@@ -37,11 +8,6 @@ namespace
 QString toQString(juce::String text)
 {
     return QString::fromUtf8(text.toRawUTF8());
-}
-
-juce::String toJuceString(QString text)
-{
-    return juce::String::fromUTF8(text.toUtf8().constData());
 }
 
 QString describeOutputRoute(const MidiControlMapping& mapping)
@@ -118,26 +84,17 @@ QString describeActivationMode(int activationMode)
 }
 } // namespace
 
-int MidiControlMappingsTableModel::getColumnCount()
-{
-    return midi_control_column_count;
-}
-
-MidiControlMappingsTableModel::MidiControlMappingsTableModel(
-    std::vector<MidiControlMapping>* mappingsIn,
-    QObject* parent
-)
+MidiControlMappingsTableModel::MidiControlMappingsTableModel(QObject* parent)
     : QAbstractTableModel(parent)
-    , mappings(mappingsIn)
 {
 }
 
 int MidiControlMappingsTableModel::rowCount(const QModelIndex& parent) const
 {
-    if (parent.isValid() || mappings == nullptr)
+    if (parent.isValid())
         return 0;
 
-    return int(mappings->size());
+    return int(mappings.size());
 }
 
 int MidiControlMappingsTableModel::columnCount(const QModelIndex& parent) const
@@ -150,15 +107,27 @@ int MidiControlMappingsTableModel::columnCount(const QModelIndex& parent) const
 
 QVariant MidiControlMappingsTableModel::data(const QModelIndex& index, int role) const
 {
-    if (mappings == nullptr || !index.isValid())
+    if (!index.isValid())
         return {};
 
     auto row = index.row();
-    if (row < 0 || row >= int(mappings->size()))
+    if (row < 0 || row >= int(mappings.size()))
         return {};
 
-    auto& mapping = (*mappings)[size_t(row)];
+    auto& mapping = mappings[size_t(row)];
     auto column = index.column();
+
+    if (role == Qt::ToolTipRole && column == midi_control_column_target)
+    {
+        auto label = mapping.targetName.isEmpty() ? mapping.targetUuid : mapping.targetName;
+        if (mapping.actionType == midi_control_action_type_hotkey)
+        {
+            MidiControlHotkeyTarget target;
+            if (parseMidiControlHotkeyTargetToken(mapping.targetUuid, target) && target.hotkeyName.isEmpty())
+                label += " [reselect required]";
+        }
+        return toQString(label);
+    }
 
     if (role == Qt::CheckStateRole)
     {
@@ -198,6 +167,8 @@ QVariant MidiControlMappingsTableModel::data(const QModelIndex& index, int role)
         return {};
     case midi_control_column_learn:
         return isLearningRow(row) ? "Learning" : "Learn";
+    case midi_control_column_label:
+        return toQString(mapping.label);
     case midi_control_column_input_device:
         return mapping.inputDeviceName.isEmpty() ? "Any" : toQString(mapping.inputDeviceName);
     case midi_control_column_output_route:
@@ -215,6 +186,13 @@ QVariant MidiControlMappingsTableModel::data(const QModelIndex& index, int role)
     case midi_control_column_target:
         if (mapping.actionType == midi_control_action_type_none)
             return {};
+        if (mapping.actionType == midi_control_action_type_hotkey)
+        {
+            MidiControlHotkeyTarget target;
+            if (parseMidiControlHotkeyTargetToken(mapping.targetUuid, target) && target.hotkeyName.isEmpty())
+                return toQString(mapping.targetName.isEmpty() ? mapping.targetUuid : mapping.targetName)
+                     + " [reselect required]";
+        }
         return mapping.targetName.isEmpty() ? toQString(mapping.targetUuid) : toQString(mapping.targetName);
     case midi_control_column_layer:
         if (mapping.actionType == midi_control_action_type_none)
@@ -245,126 +223,6 @@ QVariant MidiControlMappingsTableModel::data(const QModelIndex& index, int role)
     }
 }
 
-bool MidiControlMappingsTableModel::setData(const QModelIndex& index, const QVariant& value, int role)
-{
-    if (mappings == nullptr || !index.isValid())
-        return false;
-
-    auto row = index.row();
-    if (row < 0 || row >= int(mappings->size()))
-        return false;
-
-    auto& mapping = (*mappings)[size_t(row)];
-    auto column = index.column();
-
-    if (role == Qt::CheckStateRole)
-    {
-        auto isChecked = value.toInt() == Qt::Checked;
-
-        if (column == midi_control_column_enabled)
-            mapping.enabled = isChecked;
-        else if (column == midi_control_column_invert)
-            mapping.valueInverted = isChecked;
-        else
-            return false;
-
-        emit dataChanged(index, index, {Qt::CheckStateRole, Qt::DisplayRole, Qt::EditRole});
-        return true;
-    }
-
-    if (role != Qt::EditRole)
-        return false;
-
-    switch (column)
-    {
-    case midi_control_column_input_device:
-    {
-        auto text = toJuceString(value.toString()).trim();
-        mapping.inputDeviceName = text.equalsIgnoreCase("Any") ? juce::String() : text;
-        break;
-    }
-    case midi_control_column_output_route:
-    {
-        auto text = toJuceString(value.toString()).trim();
-        if (text.equalsIgnoreCase("None") || text.isEmpty())
-        {
-            mapping.outputMode = midi_control_output_mode_none;
-            mapping.outputDeviceName.clear();
-        }
-        else if (text.equalsIgnoreCase("Any"))
-        {
-            mapping.outputMode = midi_control_output_mode_any;
-            mapping.outputDeviceName.clear();
-        }
-        else
-        {
-            mapping.outputMode = midi_control_output_mode_specific;
-            mapping.outputDeviceName = text;
-        }
-        break;
-    }
-    case midi_control_column_type:
-        mapping.messageType = value.toInt();
-        break;
-    case midi_control_column_channel:
-        mapping.channel = value.toInt();
-        break;
-    case midi_control_column_data1:
-        mapping.data1 = value.toInt();
-        break;
-    case midi_control_column_mode:
-        mapping.interactionMode = value.toInt();
-        break;
-    case midi_control_column_action:
-        mapping.actionType = value.toInt();
-        break;
-    case midi_control_column_target:
-    {
-        auto text = toJuceString(value.toString()).trim();
-        mapping.targetName = text;
-        mapping.targetUuid = text;
-        break;
-    }
-    case midi_control_column_layer:
-    {
-        auto text = toJuceString(value.toString()).trim();
-        mapping.targetLayerName = text;
-        mapping.targetLayerToken = text;
-        break;
-    }
-    case midi_control_column_parameter:
-    {
-        auto text = toJuceString(value.toString()).trim();
-        mapping.targetParameterName = text;
-        mapping.targetParameterToken = text;
-        break;
-    }
-    case midi_control_column_bank:
-        mapping.bank = value.toInt();
-        break;
-    case midi_control_column_preset:
-        mapping.preset = value.toInt();
-        break;
-    case midi_control_column_activation:
-        mapping.activationMode = value.toInt();
-        break;
-    case midi_control_column_min:
-        mapping.minValue = value.toDouble();
-        break;
-    case midi_control_column_max:
-        mapping.maxValue = value.toDouble();
-        break;
-    case midi_control_column_scale:
-        mapping.scale = value.toDouble();
-        break;
-    default:
-        return false;
-    }
-
-    emit dataChanged(index, index, {Qt::DisplayRole, Qt::EditRole});
-    return true;
-}
-
 QVariant MidiControlMappingsTableModel::headerData(int section, Qt::Orientation orientation, int role) const
 {
     if (role != Qt::DisplayRole)
@@ -379,6 +237,8 @@ QVariant MidiControlMappingsTableModel::headerData(int section, Qt::Orientation 
         return "On";
     case midi_control_column_learn:
         return "Learn";
+    case midi_control_column_label:
+        return "Label";
     case midi_control_column_input_device:
         return "In Device";
     case midi_control_column_output_route:
@@ -425,84 +285,97 @@ Qt::ItemFlags MidiControlMappingsTableModel::flags(const QModelIndex& index) con
 
     auto flags = Qt::ItemIsEnabled | Qt::ItemIsSelectable;
 
-    if (index.column() == midi_control_column_learn)
+    switch (index.column())
+    {
+    case midi_control_column_learn:
         return flags;
-
-    flags |= Qt::ItemIsEditable;
-
-    if (index.column() == midi_control_column_enabled || index.column() == midi_control_column_invert)
-        flags |= Qt::ItemIsUserCheckable;
-
-    return flags;
+    case midi_control_column_enabled:
+    case midi_control_column_invert:
+        return flags | Qt::ItemIsUserCheckable;
+    default:
+        return flags | Qt::ItemIsEditable;
+    }
 }
 
-void MidiControlMappingsTableModel::bindMappings(std::vector<MidiControlMapping>* newMappings)
+bool MidiControlMappingsTableModel::setData(const QModelIndex& index, const QVariant& value, int role)
+{
+    if (role != Qt::CheckStateRole || !index.isValid())
+        return false;
+
+    auto row = index.row();
+    if (row < 0 || row >= int(mappings.size()))
+        return false;
+
+    auto mapping = mappings[size_t(row)];
+    auto isChecked = value.toInt() == Qt::Checked;
+
+    if (index.column() == midi_control_column_enabled)
+        mapping.enabled = isChecked;
+    else if (index.column() == midi_control_column_invert)
+        mapping.valueInverted = isChecked;
+    else
+        return false;
+
+    return requestMappingEdit(mapping.mappingId, mapping);
+}
+
+const std::vector<MidiControlMapping>& MidiControlMappingsTableModel::getMappings() const
+{
+    return mappings;
+}
+
+void MidiControlMappingsTableModel::setMappings(const std::vector<MidiControlMapping>& newMappings)
 {
     beginResetModel();
     mappings = newMappings;
     endResetModel();
 }
 
+void MidiControlMappingsTableModel::setEditHandler(EditHandler handler, void* context)
+{
+    editHandler = handler;
+    editContext = context;
+}
+
+bool MidiControlMappingsTableModel::requestMappingEdit(const juce::String& mappingId, const MidiControlMapping& mapping)
+{
+    if (editHandler == nullptr)
+    {
+        emit editRejected("Controller unavailable.");
+        return false;
+    }
+
+    juce::String error;
+    if (!editHandler(editContext, mappingId, mapping, error))
+    {
+        emit editRejected(QString::fromUtf8(error.toRawUTF8()));
+        return false;
+    }
+
+    return true;
+}
+
 void MidiControlMappingsTableModel::refreshAll()
 {
-    beginResetModel();
-    endResetModel();
-}
-
-void MidiControlMappingsTableModel::appendMapping(const MidiControlMapping& mapping)
-{
-    if (mappings == nullptr)
-        return;
-
-    auto row = int(mappings->size());
-    beginInsertRows(QModelIndex(), row, row);
-    mappings->push_back(mapping);
-    endInsertRows();
-}
-
-void MidiControlMappingsTableModel::insertMapping(int row, const MidiControlMapping& mapping)
-{
-    if (mappings == nullptr)
-        return;
-
-    auto clampedRow = juce::jlimit(0, int(mappings->size()), row);
-    beginInsertRows(QModelIndex(), clampedRow, clampedRow);
-    mappings->insert(mappings->begin() + clampedRow, mapping);
-    endInsertRows();
-}
-
-void MidiControlMappingsTableModel::removeRowsSortedUnique(const std::vector<int>& sortedUniqueRows)
-{
-    if (mappings == nullptr || sortedUniqueRows.empty())
-        return;
-
-    for (int i = int(sortedUniqueRows.size()) - 1; i >= 0; --i)
-    {
-        auto row = sortedUniqueRows[size_t(i)];
-        if (row < 0 || row >= int(mappings->size()))
-            continue;
-
-        beginRemoveRows(QModelIndex(), row, row);
-        mappings->erase(mappings->begin() + row);
-        endRemoveRows();
-    }
+    if (!mappings.empty())
+        emit dataChanged(index(0, 0), index(rowCount() - 1, midi_control_column_count - 1));
 }
 
 bool MidiControlMappingsTableModel::getMapping(int row, MidiControlMapping& mapping) const
 {
-    if (mappings == nullptr || row < 0 || row >= int(mappings->size()))
+    if (row < 0 || row >= int(mappings.size()))
         return false;
 
-    mapping = (*mappings)[size_t(row)];
+    mapping = mappings[size_t(row)];
     return true;
 }
 
 bool MidiControlMappingsTableModel::replaceMapping(int row, const MidiControlMapping& mapping)
 {
-    if (mappings == nullptr || row < 0 || row >= int(mappings->size()))
+    if (row < 0 || row >= int(mappings.size()) || mappings[size_t(row)].mappingId != mapping.mappingId)
         return false;
 
-    (*mappings)[size_t(row)] = mapping;
+    mappings[size_t(row)] = mapping;
     auto firstColumn = index(row, 0);
     auto lastColumn = index(row, midi_control_column_count - 1);
     emit dataChanged(firstColumn, lastColumn, {Qt::DisplayRole, Qt::EditRole, Qt::CheckStateRole});
@@ -527,10 +400,10 @@ void MidiControlMappingsTableModel::setLearnState(bool active, juce::String mapp
 
 bool MidiControlMappingsTableModel::isLearningRow(int row) const
 {
-    if (!learnActive || mappings == nullptr || row < 0 || row >= int(mappings->size()))
+    if (!learnActive || row < 0 || row >= int(mappings.size()))
         return false;
 
-    return (*mappings)[size_t(row)].mappingId == learnMappingId;
+    return mappings[size_t(row)].mappingId == learnMappingId;
 }
 
 } // namespace atk

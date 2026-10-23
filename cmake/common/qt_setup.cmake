@@ -2,6 +2,25 @@
 
 include_guard(GLOBAL)
 
+function(atk_remove_qt_agl_dependency)
+    if(NOT APPLE OR NOT TARGET WrapOpenGL::WrapOpenGL)
+        return()
+    endif()
+
+    # Older Qt packages link the unused AGL framework, absent from newer macOS SDKs.
+    get_target_property(_atk_opengl_libraries WrapOpenGL::WrapOpenGL INTERFACE_LINK_LIBRARIES)
+    if(_atk_opengl_libraries)
+        list(FILTER _atk_opengl_libraries EXCLUDE REGEX "^-framework AGL$|(^|/)AGL\\.framework(/AGL)?$")
+        set_property(
+            TARGET
+                WrapOpenGL::WrapOpenGL
+            PROPERTY
+                INTERFACE_LINK_LIBRARIES
+                    "${_atk_opengl_libraries}"
+        )
+    endif()
+endfunction()
+
 function(atk_configure_qt_paths qt6_version deps_dir)
     if(NOT WIN32)
         return()
@@ -35,7 +54,12 @@ function(atk_configure_qt_paths qt6_version deps_dir)
     endif()
 
     # ARM64 cross-compilation requires host Qt tools from the x64 Qt package.
-    set(QT_HOST_PATH "${CMAKE_SOURCE_DIR}/_deps/${_atk_qt_host_arch}/obs-deps-qt6-${qt6_version}-${_atk_qt_host_arch}")
+    set(QT_HOST_PATH
+        "${CMAKE_SOURCE_DIR}/_deps/${_atk_qt_host_arch}/obs-deps-qt6-${qt6_version}-${_atk_qt_host_arch}"
+        CACHE PATH
+        "Qt host installation for ARM64 cross-compilation"
+        FORCE
+    )
 
     message(STATUS "ARM64 cross-compilation detected")
     message(STATUS "QT_HOST_PATH: ${QT_HOST_PATH}")

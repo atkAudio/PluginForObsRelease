@@ -19,27 +19,30 @@ function(atk_configure_local_post_build_deploy target_name plugin_name)
     endif()
 
     if(NOT DEFINED ENV{CI} AND NOT DEFINED ENV{GITHUB_ACTIONS} AND UNIX AND NOT APPLE)
-        message(STATUS "Configuring post-build copy to ~/.config/obs-studio/plugins/")
-        atk_get_obs_arch_dir(_user_arch)
+        if(DEFINED ENV{XDG_DATA_HOME} AND NOT "$ENV{XDG_DATA_HOME}" STREQUAL "")
+            set(_user_data_home "$ENV{XDG_DATA_HOME}")
+        else()
+            set(_user_data_home "$ENV{HOME}/.local/share")
+        endif()
+        if(NOT IS_ABSOLUTE "${_user_data_home}")
+            message(FATAL_ERROR "OBS plugin deployment requires an absolute XDG data directory")
+        endif()
+        set(_user_plugin "${_user_data_home}/obs-studio/plugins/${plugin_name}")
+        message(STATUS "Configuring post-build copy to ${_user_plugin}")
 
         add_custom_command(
             TARGET ${target_name}
             POST_BUILD
             COMMAND
-                ${CMAKE_COMMAND} -E make_directory
-                "$ENV{HOME}/.config/obs-studio/plugins/${plugin_name}/bin/${_user_arch}"
+                ${CMAKE_COMMAND} -E make_directory "${_user_plugin}"
             COMMAND
                 ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:${target_name}>"
-                "$ENV{HOME}/.config/obs-studio/plugins/${plugin_name}/bin/${_user_arch}/"
+                "$<TARGET_FILE:${target_name}_scanner>" "${_user_plugin}"
             COMMAND
-                ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:${target_name}_scanner>"
-                "$ENV{HOME}/.config/obs-studio/plugins/${plugin_name}/bin/${_user_arch}/"
+                ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/data" "${_user_plugin}/data"
             COMMAND
-                ${CMAKE_COMMAND} -E make_directory "$ENV{HOME}/.config/obs-studio/plugins/${plugin_name}/data"
-            COMMAND
-                ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/data"
-                "$ENV{HOME}/.config/obs-studio/plugins/${plugin_name}/data"
-            COMMENT "Copying ${plugin_name} and scanner to user home OBS plugins directory..."
+                ${CMAKE_COMMAND} -E copy_if_different "${ATK_PLUGIN_MANIFEST}" "${_user_plugin}/data/manifest.json"
+            COMMENT "Installing ${plugin_name} to the OBS 33 user plugin directory..."
             VERBATIM
         )
     endif()

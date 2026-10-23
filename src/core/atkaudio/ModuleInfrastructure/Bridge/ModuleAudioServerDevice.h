@@ -27,6 +27,7 @@ struct AudioServerDeviceInfo
 class ModuleAudioServerDevice
     : public juce::AudioIODevice
     , public juce::AudioIODeviceCallback
+    , private juce::AsyncUpdater
 {
 private:
     std::shared_ptr<ModuleDeviceCoordinator> coordinator;
@@ -43,15 +44,19 @@ public:
         , coordinator(deviceCoordinator)
         , actualDeviceName(actualDeviceName)
         , deviceType(deviceType)
+        , actualDeviceKey(deviceType + "|" + actualDeviceName)
     {
+        if (auto* server = AudioServer::getInstanceWithoutCreating())
+            server->requestDeviceActivation(actualDeviceKey);
     }
 
     ~ModuleAudioServerDevice() override
     {
         isDestroying.store(true, std::memory_order_release);
+        cancelPendingUpdate();
 
         if (auto* server = AudioServer::getInstanceWithoutCreating())
-            server->unregisterDirectCallback(actualDeviceName, this);
+            server->unregisterDirectCallback(actualDeviceKey, this);
 
         // Wait for any active callbacks to exit
         while (activeCallbackCount.load(std::memory_order_acquire) > 0)
@@ -63,35 +68,35 @@ public:
     juce::StringArray getOutputChannelNames() override
     {
         if (auto* server = AudioServer::getInstanceWithoutCreating())
-            return server->getDeviceChannelNames(actualDeviceName, false);
+            return server->getDeviceChannelNames(actualDeviceKey, false);
         return {};
     }
 
     juce::StringArray getInputChannelNames() override
     {
         if (auto* server = AudioServer::getInstanceWithoutCreating())
-            return server->getDeviceChannelNames(actualDeviceName, true);
+            return server->getDeviceChannelNames(actualDeviceKey, true);
         return {};
     }
 
     juce::Array<double> getAvailableSampleRates() override
     {
         if (auto* server = AudioServer::getInstanceWithoutCreating())
-            return server->getAvailableSampleRates(actualDeviceName);
+            return server->getAvailableSampleRates(actualDeviceKey);
         return {};
     }
 
     juce::Array<int> getAvailableBufferSizes() override
     {
         if (auto* server = AudioServer::getInstanceWithoutCreating())
-            return server->getAvailableBufferSizes(actualDeviceName);
+            return server->getAvailableBufferSizes(actualDeviceKey);
         return {512};
     }
 
     int getDefaultBufferSize() override
     {
         if (auto* server = AudioServer::getInstanceWithoutCreating())
-            return server->getDefaultBufferSize(actualDeviceName);
+            return server->getDefaultBufferSize(actualDeviceKey);
         return 0;
     }
 
@@ -121,8 +126,8 @@ public:
             int actualOutputChannelCount = 0;
             if (auto* server = AudioServer::getInstanceWithoutCreating())
             {
-                actualInputChannelCount = server->getDeviceNumChannels(actualDeviceName, true);
-                actualOutputChannelCount = server->getDeviceNumChannels(actualDeviceName, false);
+                actualInputChannelCount = server->getDeviceNumChannels(actualDeviceKey, true);
+                actualOutputChannelCount = server->getDeviceNumChannels(actualDeviceKey, false);
             }
 
             requestedInputChannels = inputChannels;
@@ -150,7 +155,7 @@ public:
             juce::AudioDeviceManager::AudioDeviceSetup currentSetup;
             bool hasCurrentSetup = false;
             if (auto* server = AudioServer::getInstanceWithoutCreating())
-                hasCurrentSetup = server->getCurrentDeviceSetup(actualDeviceName, currentSetup);
+                hasCurrentSetup = server->getCurrentDeviceSetup(actualDeviceKey, currentSetup);
 
             if (needsReopen)
                 close();
@@ -173,14 +178,11 @@ public:
                         setup.bufferSize = 0;
                     }
 
-                    if (!server->registerDirectCallback(actualDeviceName, this, setup))
+                    if (!server->registerDirectCallback(actualDeviceKey, this, setup))
                         return "Failed to register with AudioServer";
-
-                    const juce::ScopedLock sl(lock);
-                    currentSampleRate = server->getCurrentSampleRate(actualDeviceName);
-                    currentBufferSize = server->getCurrentBufferSize(actualDeviceName);
                 }
 
+                const juce::ScopedLock sl(lock);
                 isOpen_ = true;
             }
         }
@@ -196,7 +198,7 @@ public:
         stop();
 
         if (auto* server = AudioServer::getInstanceWithoutCreating())
-            server->unregisterDirectCallback(actualDeviceName, this);
+            server->unregisterDirectCallback(actualDeviceKey, this);
 
         {
             const juce::ScopedLock sl(lock);
@@ -206,6 +208,7 @@ public:
 
     bool isOpen() override
     {
+        const juce::ScopedLock sl(lock);
         return isOpen_;
     }
 
@@ -229,10 +232,13 @@ public:
             tempOutputBuffer.setSize(outputCapacity, currentBufferSize, false, false, true);
             activeOutputPtrs.resize(outputCapacity);
             activeInputPtrs.reserve(inputCapacity);
-        }
 
-        if (userCallback != nullptr)
-            userCallback->audioDeviceAboutToStart(this);
+            if (userCallback != nullptr && nativeRunning && currentSampleRate > 0.0 && currentBufferSize > 0)
+            {
+                userCallback->audioDeviceAboutToStart(this);
+                formatReady = true;
+            }
+        }
     }
 
     void stop() override
@@ -249,6 +255,7 @@ public:
             callbackToStop = userCallback;
             userCallback = nullptr;
             isPlaying_ = false;
+            formatReady = false;
         }
 
         if (callbackToStop != nullptr)
@@ -257,6 +264,7 @@ public:
 
     bool isPlaying() override
     {
+        const juce::ScopedLock sl(lock);
         return isPlaying_;
     }
 
@@ -267,19 +275,21 @@ public:
 
     int getCurrentBufferSizeSamples() override
     {
+        const juce::ScopedLock sl(lock);
         if (currentBufferSize > 0)
             return currentBufferSize;
         if (auto* server = AudioServer::getInstanceWithoutCreating())
-            return server->getCurrentBufferSize(actualDeviceName);
+            return server->getCurrentBufferSize(actualDeviceKey);
         return 0;
     }
 
     double getCurrentSampleRate() override
     {
+        const juce::ScopedLock sl(lock);
         if (currentSampleRate > 0.0)
             return currentSampleRate;
         if (auto* server = AudioServer::getInstanceWithoutCreating())
-            return server->getCurrentSampleRate(actualDeviceName);
+            return server->getCurrentSampleRate(actualDeviceKey);
         return 0.0;
     }
 
@@ -354,7 +364,7 @@ private:
 
         const juce::ScopedLock sl(lock);
 
-        if (!isOpen_ || !isPlaying_ || userCallback == nullptr || numSamples <= 0)
+        if (!isOpen_ || !isPlaying_ || !formatReady || userCallback == nullptr || numSamples <= 0)
             return clearOutputs();
 
         // Count active channels within available range
@@ -416,10 +426,10 @@ private:
 
     void audioDeviceAboutToStart(juce::AudioIODevice* device) override
     {
-        juce::AudioIODeviceCallback* callbackToNotify = nullptr;
-
         {
             const juce::ScopedLock sl(lock);
+            formatReady = false;
+            nativeRunning = true;
 
             if (device != nullptr)
             {
@@ -440,28 +450,37 @@ private:
                 activeOutputPtrs.resize(outputCapacity);
                 activeInputPtrs.reserve(inputCapacity);
             }
-
-            callbackToNotify = userCallback;
         }
-
-        if (callbackToNotify != nullptr)
-            callbackToNotify->audioDeviceAboutToStart(this);
+        triggerAsyncUpdate();
     }
 
     void audioDeviceStopped() override
     {
-        juce::AudioIODeviceCallback* callbackToNotify = nullptr;
         {
             const juce::ScopedLock sl(lock);
-            callbackToNotify = userCallback;
+            nativeRunning = false;
+            formatReady = false;
         }
+        triggerAsyncUpdate();
+    }
 
-        if (callbackToNotify != nullptr)
-            callbackToNotify->audioDeviceStopped();
+    void handleAsyncUpdate() override
+    {
+        const juce::ScopedLock sl(lock);
+        if (isDestroying.load(std::memory_order_acquire) || userCallback == nullptr)
+            return;
+        if (nativeRunning)
+        {
+            userCallback->audioDeviceAboutToStart(this);
+            formatReady = true;
+        }
+        else
+            userCallback->audioDeviceStopped();
     }
 
     juce::String actualDeviceName;
     juce::String deviceType;
+    juce::String actualDeviceKey;
     juce::AudioIODeviceCallback* userCallback = nullptr;
     juce::BigInteger requestedInputChannels;
     juce::BigInteger requestedOutputChannels;
@@ -471,6 +490,8 @@ private:
     int currentBufferSize = 0;
     bool isOpen_ = false;
     bool isPlaying_ = false;
+    bool nativeRunning = false;
+    bool formatReady = false;
     std::atomic<bool> isDestroying{false};
     std::atomic<int> activeCallbackCount{0};
     juce::CriticalSection lock;

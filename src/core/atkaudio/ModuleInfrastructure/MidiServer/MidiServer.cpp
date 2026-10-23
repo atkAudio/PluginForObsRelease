@@ -342,17 +342,6 @@ void MidiServer::initialize()
         return;
 
     atk::logging::info("MidiServer::initialize", "begin");
-    juce::String error = deviceManager.initialise(0, 0, nullptr, true, {}, nullptr);
-
-    if (error.isNotEmpty())
-    {
-        atk::logging::warning(
-            "MidiServer::initialize",
-            juce::String::formatted("AudioDeviceManager initialise failed: %s", error.toRawUTF8())
-        );
-        return;
-    }
-
     initialized = true;
 
     outboundSenderThread = std::make_unique<MidiOutboundSenderThread>(*this);
@@ -398,15 +387,16 @@ void MidiServer::shutdown()
 
         for (const auto& identifier : inputDeviceIdentifiersToRemove)
         {
-            deviceManager.setMidiInputDeviceEnabled(identifier, false);
-            deviceManager.removeMidiInputDeviceCallback(identifier, this);
+            auto found = inputDevices.find(identifier);
+            if (found != inputDevices.end())
+                found->second->stop();
         }
+        inputDevices.clear();
         activeInputDevices.clear();
 
         clients.clear();
     }
 
-    deviceManager.closeAudioDevice();
     initialized = false;
     atk::logging::info("MidiServer::shutdown", "completed");
 }
@@ -756,8 +746,14 @@ void MidiServer::syncMidiInputDevices()
         if (activeInputDevices.contains(it.getKey()))
             continue;
 
-        deviceManager.setMidiInputDeviceEnabled(it.getKey(), true);
-        deviceManager.addMidiInputDeviceCallback(it.getKey(), this);
+        auto input = juce::MidiInput::openDevice(it.getKey(), this);
+        if (!input)
+        {
+            atk::logging::warning("MidiServer::syncMidiInputDevices", "failed to open MIDI input: " + it.getValue());
+            continue;
+        }
+        input->start();
+        inputDevices[it.getKey()] = std::move(input);
         activeInputDevices.set(it.getKey(), it.getValue());
         atk::logging::debug(
             "MidiServer::syncMidiInputDevices",
@@ -774,8 +770,12 @@ void MidiServer::syncMidiInputDevices()
     {
         juce::String identifier = inputDeviceIdentifiersToRemove[i];
         juce::String name = activeInputDevices[identifier];
-        deviceManager.setMidiInputDeviceEnabled(identifier, false);
-        deviceManager.removeMidiInputDeviceCallback(identifier, this);
+        auto found = inputDevices.find(identifier);
+        if (found != inputDevices.end())
+        {
+            found->second->stop();
+            inputDevices.erase(found);
+        }
         atk::logging::debug(
             "MidiServer::syncMidiInputDevices",
             juce::String::formatted("disabled MIDI input \"%s\"", name.toRawUTF8())

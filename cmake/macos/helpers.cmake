@@ -9,7 +9,13 @@ function(set_target_properties_plugin target)
     set(options "")
     set(oneValueArgs "")
     set(multiValueArgs PROPERTIES)
-    cmake_parse_arguments(PARSE_ARGV 0 _STPO "${options}" "${oneValueArgs}" "${multiValueArgs}")
+    cmake_parse_arguments(
+        PARSE_ARGV 0
+        _STPO
+        "${options}"
+        "${oneValueArgs}"
+        "${multiValueArgs}"
+    )
 
     message(DEBUG "Setting additional properties for target ${target}...")
 
@@ -85,18 +91,6 @@ function(set_target_properties_plugin target)
     set(target_ui_files ${target_sources})
     list(FILTER target_ui_files INCLUDE REGEX ".+\\.(ui|qrc)")
     source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" PREFIX "UI Files" FILES ${target_ui_files})
-
-    install(TARGETS ${target} LIBRARY DESTINATION .)
-    install(FILES "$<TARGET_BUNDLE_DIR:${target}>.dsym" CONFIGURATIONS Release DESTINATION .)
-
-    # Additional install for portable component with custom directory structure
-    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-        set(_portable_arch "64bit")
-    else()
-        set(_portable_arch "32bit")
-    endif()
-
-    install(TARGETS ${target} LIBRARY DESTINATION obs-plugins/${_portable_arch})
 endfunction()
 
 # target_install_resources: Helper function to add resources into bundle

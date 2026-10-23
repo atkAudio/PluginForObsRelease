@@ -12,6 +12,7 @@ class AudioServerSettingsComponent
     : public juce::Component
     , private juce::Timer
     , private juce::Button::Listener
+    , private AudioServer::Listener
 {
 public:
     explicit AudioServerSettingsComponent(AudioClient* client, int clientChannels = -1);
@@ -23,6 +24,8 @@ public:
     AudioClientState getSubscriptionState() const;
     void setSubscriptionState(const AudioClientState& state, bool expandToSubscriptions = true);
     void applySubscriptions();
+
+    static juce::StringArray getObsChannelNames(int numChannels);
 
     void setClientChannelInfo(const juce::StringArray& channelNames, const juce::String& firstColumnName = "Routing");
     void setClientChannelInfo(
@@ -186,10 +189,8 @@ private:
 
         std::vector<ChannelMapping> getInputMappings() const;
         std::vector<ChannelMapping> getOutputMappings() const;
-        void setMappings(
-            const std::vector<ChannelMapping>& inputMappings,
-            const std::vector<ChannelMapping>& outputMappings
-        );
+        void
+        setMappings(const std::vector<ChannelMapping>& inputMappings, const std::vector<ChannelMapping>& outputMappings);
 
         const std::vector<MappingRow>& getSubscribedChannels() const
         {
@@ -210,6 +211,7 @@ private:
     };
 
     void updateDeviceTrees();
+    void audioServerDeviceListChanged() override;
     void updateMappingMatrix();
     void onTreeSelectionChanged();
     void timerCallback() override;
@@ -217,6 +219,8 @@ private:
 
     AudioClient* client;
     AudioServer* server;
+    std::map<juce::String, juce::StringArray> lastInputDevices;
+    std::map<juce::String, juce::StringArray> lastOutputDevices;
 
     // UI Layout
     juce::Label inputTreeLabel;

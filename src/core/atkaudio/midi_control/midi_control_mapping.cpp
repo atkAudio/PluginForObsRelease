@@ -26,13 +26,15 @@ constexpr std::string_view kSourceActionMuteToken = "mute";
 constexpr std::string_view kSourceActionMonitoringToken = "monitoring";
 constexpr std::string_view kHotkeyTargetPrefix = "obs_hotkey:";
 constexpr std::string_view kHotkeyIdTargetPrefix = "obs_hotkey:id:";
+constexpr std::string_view kHotkeyNameTargetPrefix = "obs_hotkey:frontend:";
 constexpr std::string_view kMappingsFilePayloadFormat = "atk_midi_control_mappings";
-constexpr int kMappingsFilePayloadVersion = 3;
+constexpr int kMappingsFilePayloadVersion = 4;
 
 juce::var serializeMapping(const atk::MidiControlMapping& mapping)
 {
     auto* object = new juce::DynamicObject();
     object->setProperty("mappingId", mapping.mappingId);
+    object->setProperty("label", mapping.label);
     object->setProperty("inputDeviceName", mapping.inputDeviceName);
     object->setProperty("outputMode", mapping.outputMode);
     object->setProperty("outputDeviceName", mapping.outputDeviceName);
@@ -49,7 +51,7 @@ juce::var serializeMapping(const atk::MidiControlMapping& mapping)
     object->setProperty("targetParameterName", mapping.targetParameterName);
     object->setProperty("bank", mapping.bank);
     object->setProperty("preset", mapping.preset);
-    object->setProperty("activationMode", mapping.activationMode);
+    object->setProperty("scope", mapping.activationMode);
     object->setProperty("enabled", mapping.enabled);
     object->setProperty("valueInverted", mapping.valueInverted);
     object->setProperty("minValue", mapping.minValue);
@@ -65,6 +67,9 @@ atk::MidiControlMapping deserializeMapping(const juce::var& value)
     if (auto* object = value.getDynamicObject())
     {
         mapping.mappingId = object->getProperty("mappingId").toString();
+        if (object->hasProperty("label"))
+            mapping.label = object->getProperty("label").toString();
+
         mapping.inputDeviceName = object->getProperty("inputDeviceName").toString();
         mapping.outputMode = int(object->getProperty("outputMode"));
         mapping.outputDeviceName = object->getProperty("outputDeviceName").toString();
@@ -86,7 +91,7 @@ atk::MidiControlMapping deserializeMapping(const juce::var& value)
         if (object->hasProperty("preset"))
             mapping.preset = int(object->getProperty("preset"));
 
-        mapping.activationMode = int(object->getProperty("activationMode"));
+        mapping.activationMode = int(object->getProperty(object->hasProperty("scope") ? "scope" : "activationMode"));
         mapping.enabled = bool(object->getProperty("enabled"));
         mapping.valueInverted = bool(object->getProperty("valueInverted"));
         mapping.minValue = double(object->getProperty("minValue"));
@@ -432,6 +437,11 @@ juce::String createMidiControlHotkeyIdTargetToken(uint64_t hotkeyId)
     return juce::String(kHotkeyIdTargetPrefix.data()) + juce::String((long long)hotkeyId);
 }
 
+juce::String createMidiControlHotkeyNameTargetToken(juce::String hotkeyName)
+{
+    return juce::String(kHotkeyNameTargetPrefix.data()) + hotkeyName;
+}
+
 bool parseMidiControlHotkeyTargetToken(const juce::String& token, MidiControlHotkeyTarget& target)
 {
     target = MidiControlHotkeyTarget{};
@@ -439,6 +449,12 @@ bool parseMidiControlHotkeyTargetToken(const juce::String& token, MidiControlHot
     auto normalizedToken = token.trim();
     if (!normalizedToken.startsWithIgnoreCase(kHotkeyTargetPrefix.data()))
         return false;
+
+    if (normalizedToken.startsWithIgnoreCase(kHotkeyNameTargetPrefix.data()))
+    {
+        target.hotkeyName = normalizedToken.substring(int(kHotkeyNameTargetPrefix.size()));
+        return target.hotkeyName.isNotEmpty();
+    }
 
     if (!normalizedToken.startsWithIgnoreCase(kHotkeyIdTargetPrefix.data()))
         return false;
@@ -1000,7 +1016,7 @@ bool deserializeMidiControlMappingsFilePayload(
     }
 
     const auto version = int(object->getProperty("version"));
-    if (version != kMappingsFilePayloadVersion)
+    if (version != 3 && version != kMappingsFilePayloadVersion)
     {
         errorMessage = "unsupported mapping file version";
         return false;

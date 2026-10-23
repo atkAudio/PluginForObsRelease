@@ -95,6 +95,28 @@ string(
 set(UPDATE_REPOSITORY_NAME "${UPDATE_REPOSITORY_NAME}Release")
 set(UPDATE_REPOSITORY_OWNER "${_author}")
 set(UPDATE_FILENAME "${_name}.zip")
+set(UPDATE_MANIFEST_URL
+    "https://github.com/${UPDATE_REPOSITORY_OWNER}/${UPDATE_REPOSITORY_NAME}/releases/latest/download/manifest.json"
+)
+
+if(DEFINED ENV{ATK_BUILD_TIMESTAMP} AND NOT "$ENV{ATK_BUILD_TIMESTAMP}" STREQUAL "")
+    set(PLUGIN_BUILD_TIMESTAMP "$ENV{ATK_BUILD_TIMESTAMP}")
+elseif(DEFINED ATK_BUILD_TIMESTAMP AND NOT "${ATK_BUILD_TIMESTAMP}" STREQUAL "")
+    set(PLUGIN_BUILD_TIMESTAMP "${ATK_BUILD_TIMESTAMP}")
+else()
+    string(TIMESTAMP PLUGIN_BUILD_TIMESTAMP "%Y%m%d-%H%M%S" UTC)
+endif()
+string(LENGTH "${PLUGIN_BUILD_TIMESTAMP}" _build_timestamp_length)
+if(
+    NOT _build_timestamp_length
+        EQUAL
+        15
+    OR NOT PLUGIN_BUILD_TIMESTAMP
+        MATCHES
+        "^[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]$"
+)
+    message(FATAL_ERROR "ATK_BUILD_TIMESTAMP must use UTC yyyymmdd-hhmmss format")
+endif()
 
 string(
     REPLACE "."

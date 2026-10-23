@@ -1,7 +1,7 @@
 #pragma once
 #include "LookAndFeel.h"
 #include "atkaudio.h"
-#include "../../CompareVersionStrings.h"
+#include "update_manifest.h"
 
 #include <atkaudio/Logging.h>
 #include <config.h>
@@ -11,7 +11,6 @@ constexpr auto OWNER = UPDATE_REPOSITORY_OWNER;
 constexpr auto DISPLAY_NAME = PLUGIN_DISPLAY_NAME;
 constexpr auto REPO = UPDATE_REPOSITORY_NAME;
 constexpr auto VERSION = PLUGIN_VERSION;
-constexpr auto JSON_VALUE = "tag_name";
 constexpr auto FILENAME = UPDATE_FILENAME;
 constexpr long long VERSION_FILE_EXPIRY_MS = 3LL * 30 * 24 * 60 * 60 * 1000;
 constexpr long long UPDATE_CHECK_INTERVAL_MS = 7LL * 24 * 60 * 60 * 1000;
@@ -50,44 +49,24 @@ public:
         {
             auto jsonObject = json.getDynamicObject();
             if (jsonObject->hasProperty(key))
-                return jsonObject->getProperty(key).toString();
+            {
+                auto value = jsonObject->getProperty(key);
+                if (value.isString())
+                    return value.toString();
+            }
         }
         return {};
-    }
-
-    bool isNewerVersionThanCurrent(
-        const juce::String& remoteVersion, //
-        const juce::String& localVersion = VERSION
-    )
-    {
-        jassert(remoteVersion.isNotEmpty());
-
-        auto normalizedRemoteVersion = juce::String(NormalizeVersionString(remoteVersion.toStdString()));
-        auto normalizedLocalVersion = juce::String(NormalizeVersionString(localVersion.toStdString()));
-
-        if (normalizedRemoteVersion.isEmpty() || normalizedLocalVersion.isEmpty())
-        {
-            atk::logging::warning(
-                "UpdateCheck::isNewerVersionThanCurrent",
-                "unable to compare versions; remote=\"" + remoteVersion + "\" local=\"" + localVersion + "\""
-            );
-            return false;
-        }
-
-        auto comparison =
-            CompareVersionStrings(normalizedRemoteVersion.toStdString(), normalizedLocalVersion.toStdString());
-
-        atk::logging::debug(
-            "UpdateCheck::isNewerVersionThanCurrent",
-            "remote=\"" + remoteVersion + "\" local=\"" + localVersion + "\" comparison=" + juce::String(comparison)
-        );
-
-        return comparison > 0;
     }
 
 private:
     void checkForUpdate()
     {
+        if (!atk::updates::IsValidBuildTimestamp(PLUGIN_BUILD_TIMESTAMP))
+        {
+            atk::logging::warning("UpdateCheck::checkForUpdate", "invalid compiled build timestamp");
+            return;
+        }
+
         juce::File lastVersionFile = atk::getSettingsFile("version");
         if (lastVersionFile.existsAsFile())
         {
@@ -106,122 +85,93 @@ private:
         }
 #endif
 
-        // Past 7 days - do the check
-        juce::URL versionURL("https://api.github.com/repos/" + owner + "/" + repo + "/releases/latest");
-
+        atk::updates::Manifest remoteManifest;
+#ifndef SIMULATE_UPDATE_CHECK
+        juce::URL manifestUrl(UPDATE_MANIFEST_URL);
         int statusCode = 0;
-
-        std::unique_ptr<juce::InputStream> inStream(versionURL.createInputStream(
+        std::unique_ptr<juce::InputStream> inStream(manifestUrl.createInputStream(
             juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
                 .withConnectionTimeoutMs(5000)
+                .withNumRedirectsToFollow(5)
                 .withStatusCode(&statusCode)
         ));
 
-        if (inStream == nullptr)
+        if (inStream == nullptr || statusCode != 200)
         {
             atk::logging::warning(
                 "UpdateCheck::checkForUpdate",
-                "request failed; statusCode=" + juce::String(statusCode)
+                "manifest request failed; statusCode=" + juce::String(statusCode)
             );
             return;
         }
 
-        auto jsonResponse = inStream->readEntireStreamAsString().trim();
-
-        if (jsonResponse.isEmpty())
+        auto result = atk::updates::ParseManifest(inStream->readEntireStreamAsString(), PLUGIN_NAME, &remoteManifest);
+        if (result.failed())
         {
-            atk::logging::warning("UpdateCheck::checkForUpdate", "empty response body from GitHub releases API");
+            atk::logging::warning("UpdateCheck::checkForUpdate", result.getErrorMessage());
             return;
         }
-
-        auto remoteVersionString = getValueFromJson(jsonResponse, JSON_VALUE);
-        releaseNotes = getValueFromJson(jsonResponse, "body");
-
-        latestRemoteVersion = remoteVersionString;
-
-        if (latestRemoteVersion.isEmpty())
-        {
-            atk::logging::warning(
-                "UpdateCheck::checkForUpdate",
-                "missing tag_name in response; payloadPrefix=\"" + jsonResponse.substring(0, 200) + "\""
-            );
-            return;
-        }
+#else
+        remoteManifest = {PLUGIN_NAME, "99.99.99", "99991231-235959", UPDATE_MANIFEST_URL};
+#endif
+        latestRemoteVersion = remoteManifest.version;
+        latestRemoteBuildTimestamp = remoteManifest.buildTimestamp;
 
         atk::logging::info(
             "UpdateCheck::checkForUpdate",
-            "parsed versions; local=\""
-                + juce::String(VERSION)
+            "parsed builds; local=\""
+                + juce::String(PLUGIN_BUILD_TIMESTAMP)
                 + "\" remote=\""
-                + latestRemoteVersion
-                + "\" statusCode="
-                + juce::String(statusCode)
-        );
-
-#ifdef SIMULATE_UPDATE_CHECK
-        latestRemoteVersion = "99.99.99";
-#endif
-        if (ensureVersionFileExists(lastVersionFile))
-        {
-            // Update mod time now that we've checked
-            lastVersionFile.setLastModificationTime(juce::Time::getCurrentTime());
-
-#ifndef SIMULATE_UPDATE_CHECK
-            // If this version was previously skipped, don't show the alert again
-            auto skippedVersion = lastVersionFile.loadFileAsString().trim();
-            if (skippedVersion.isNotEmpty() && skippedVersion == latestRemoteVersion)
-            {
-                atk::logging::info(
-                    "UpdateCheck::checkForUpdate",
-                    "suppressed alert because skippedVersion matches latestRemoteVersion; skippedVersion=\""
-                        + skippedVersion
-                        + "\""
-                );
-                return;
-            }
-#endif
-        }
-
-        auto isRemoteVersionNewer = isNewerVersionThanCurrent(latestRemoteVersion);
-
-        atk::logging::info(
-            "UpdateCheck::checkForUpdate",
-            "comparison result; localVersion=\""
+                + latestRemoteBuildTimestamp
+                + "\" localVersion=\""
                 + juce::String(VERSION)
                 + "\" remoteVersion=\""
                 + latestRemoteVersion
-                + "\" isRemoteVersionNewer="
-                + juce::String(isRemoteVersionNewer ? "true" : "false")
+                + "\""
         );
 
-        if (isRemoteVersionNewer)
+        juce::String skippedTimestamp;
+        if (ensureVersionFileExists(lastVersionFile))
         {
-            auto message = "A new version is available: " + latestRemoteVersion;
+            lastVersionFile.setLastModificationTime(juce::Time::getCurrentTime());
+#ifndef SIMULATE_UPDATE_CHECK
+            skippedTimestamp = lastVersionFile.loadFileAsString().trim();
+#endif
+        }
+
+        if (atk::updates::ShouldOfferUpdate(&remoteManifest, PLUGIN_BUILD_TIMESTAMP, skippedTimestamp))
+        {
+            fetchReleaseNotes();
+            auto message =
+                "A new build is available: " + latestRemoteVersion + "\nBuild: " + latestRemoteBuildTimestamp + " UTC";
 
             auto* updateAlert = new juce::AlertWindow(PLUGIN_DISPLAY_NAME, message, juce::AlertWindow::InfoIcon);
             updateAlert->addButton("Download", 1, juce::KeyPress(juce::KeyPress::returnKey));
-            updateAlert->addButton("Skip this version", 2);
+            updateAlert->addButton("Skip this build", 2);
             updateAlert->addButton("Later", 0, juce::KeyPress(juce::KeyPress::escapeKey));
 
-            auto* releaseNotesEditor = new juce::TextEditor();
-            releaseNotesEditor->setMultiLine(true, true);
-            releaseNotesEditor->setReadOnly(true);
-            releaseNotesEditor->setScrollbarsShown(true);
-            releaseNotesEditor->setCaretVisible(false);
-            releaseNotesEditor->setPopupMenuEnabled(true);
-            releaseNotesEditor->setOpaque(false);
-            releaseNotesEditor->setColour(juce::TextEditor::backgroundColourId, juce::Colours::transparentBlack);
-            releaseNotesEditor->setColour(juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
-            releaseNotesEditor->setColour(juce::TextEditor::shadowColourId, juce::Colours::transparentBlack);
-            releaseNotesEditor->setColour(
-                juce::TextEditor::textColourId,
-                updateAlert->findColour(juce::AlertWindow::backgroundColourId).contrasting()
-            );
-            releaseNotesEditor->setText(releaseNotes, false);
+            if (releaseNotes.isNotEmpty())
+            {
+                auto* releaseNotesEditor = new juce::TextEditor();
+                releaseNotesEditor->setMultiLine(true, true);
+                releaseNotesEditor->setReadOnly(true);
+                releaseNotesEditor->setScrollbarsShown(true);
+                releaseNotesEditor->setCaretVisible(false);
+                releaseNotesEditor->setPopupMenuEnabled(true);
+                releaseNotesEditor->setOpaque(false);
+                releaseNotesEditor->setColour(juce::TextEditor::backgroundColourId, juce::Colours::transparentBlack);
+                releaseNotesEditor->setColour(juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
+                releaseNotesEditor->setColour(juce::TextEditor::shadowColourId, juce::Colours::transparentBlack);
+                releaseNotesEditor->setColour(
+                    juce::TextEditor::textColourId,
+                    updateAlert->findColour(juce::AlertWindow::backgroundColourId).contrasting()
+                );
+                releaseNotesEditor->setText(releaseNotes, false);
 
-            releaseNotesEditor->setSize(RELEASE_NOTES_WIDTH_PX, RELEASE_NOTES_HEIGHT_PX);
+                releaseNotesEditor->setSize(RELEASE_NOTES_WIDTH_PX, RELEASE_NOTES_HEIGHT_PX);
 
-            updateAlert->addCustomComponent(releaseNotesEditor);
+                updateAlert->addCustomComponent(releaseNotesEditor);
+            }
             updateAlert->setAlwaysOnTop(true);
             updateAlert->enterModalState(true, this, true);
             updateAlert->toFront(true);
@@ -256,6 +206,31 @@ private:
     }
 
 private:
+    void fetchReleaseNotes()
+    {
+        releaseNotes.clear();
+        juce::URL notesUrl("https://api.github.com/repos/" + owner + "/" + repo + "/releases/latest");
+        int statusCode = 0;
+        std::unique_ptr<juce::InputStream> stream(notesUrl.createInputStream(
+            juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
+                .withConnectionTimeoutMs(5000)
+                .withNumRedirectsToFollow(5)
+                .withStatusCode(&statusCode)
+        ));
+        if (stream == nullptr || statusCode != 200)
+        {
+            atk::logging::warning(
+                "UpdateCheck::fetchReleaseNotes",
+                "release notes unavailable; showing update without notes"
+            );
+            return;
+        }
+        auto json = stream->readEntireStreamAsString();
+        auto tag = getValueFromJson(json, "tag_name");
+        if (tag == latestRemoteVersion || tag == "v" + latestRemoteVersion)
+            releaseNotes = getValueFromJson(json, "body");
+    }
+
     bool ensureVersionFileExists(juce::File& versionFile)
     {
         if (versionFile.getFullPathName().isEmpty())
@@ -302,16 +277,18 @@ private:
         }
         else if (returnValue == 2)
         {
-            // User clicked "Skip this version"
             auto lastVersionFile = atk::getSettingsFile("version");
-            lastVersionFile.getParentDirectory().createDirectory();
-            if (!latestRemoteVersion.isEmpty())
+            if (ensureVersionFileExists(lastVersionFile) && !latestRemoteBuildTimestamp.isEmpty())
             {
-                lastVersionFile.replaceWithText(latestRemoteVersion);
+                if (!lastVersionFile.replaceWithText(latestRemoteBuildTimestamp))
+                {
+                    atk::logging::warning("UpdateCheck::modalStateFinished", "unable to save skipped build timestamp");
+                    return;
+                }
                 atk::logging::info(
                     "UpdateCheck::modalStateFinished",
-                    "user skipped remoteVersion=\""
-                        + latestRemoteVersion
+                    "user skipped remoteBuildTimestamp=\""
+                        + latestRemoteBuildTimestamp
                         + "\" savedTo=\""
                         + lastVersionFile.getFullPathName()
                         + "\""
@@ -330,6 +307,7 @@ private:
     juce::String owner;
     juce::String repo;
     juce::String latestRemoteVersion;
+    juce::String latestRemoteBuildTimestamp;
     juce::String releaseNotes;
     bool hasCheckedForUpdate = false;
 

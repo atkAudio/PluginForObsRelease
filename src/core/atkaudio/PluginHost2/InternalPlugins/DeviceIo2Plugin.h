@@ -92,19 +92,15 @@ public:
         if (!deviceIo2)
             return;
 
-        // Convert JUCE buffer to raw pointer format expected by DeviceIo2
-        const int numChannels = buffer.getNumChannels();
-        const int numSamples = buffer.getNumSamples();
-
-        // Create array of channel pointers
-        std::vector<float*> channelPointers(numChannels);
-        for (int ch = 0; ch < numChannels; ++ch)
-            channelPointers[ch] = buffer.getWritePointer(ch);
-
         // Process through DeviceIo2
         // INPUT routing: Hardware inputs (selected in INPUT matrix) → mixed into plugin output
         // OUTPUT routing: Plugin input → sent to hardware (selected in OUTPUT matrix)
-        deviceIo2->process(channelPointers.data(), numChannels, numSamples, getSampleRate());
+        deviceIo2->process(
+            const_cast<float**>(buffer.getArrayOfWritePointers()),
+            buffer.getNumChannels(),
+            buffer.getNumSamples(),
+            getSampleRate()
+        );
     }
 
     juce::AudioProcessorEditor* createEditor() override

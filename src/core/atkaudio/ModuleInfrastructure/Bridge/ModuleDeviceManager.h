@@ -9,7 +9,9 @@
 namespace atk
 {
 
-class ModuleDeviceManager : public juce::ChangeListener
+class ModuleDeviceManager
+    : public juce::ChangeListener
+    , private AudioServer::Listener
 {
 public:
     ModuleDeviceManager(
@@ -39,7 +41,24 @@ public:
             return false;
 
         audioDeviceManager.addChangeListener(this);
+        if (auto* server = AudioServer::getInstanceWithoutCreating())
+            server->addListener(this);
         return true;
+    }
+
+    void restoreDeviceState(const juce::XmlElement& state)
+    {
+        audioDeviceManager.closeAudioDevice();
+        obsDevice.store(nullptr, std::memory_order_release);
+        pendingDeviceState = std::make_unique<juce::XmlElement>(state);
+        audioServerDeviceListChanged();
+    }
+
+    std::unique_ptr<juce::XmlElement> createDeviceStateXml()
+    {
+        if (pendingDeviceState)
+            return std::make_unique<juce::XmlElement>(*pendingDeviceState);
+        return audioDeviceManager.createStateXml();
     }
 
     bool openOBSDevice()
@@ -84,11 +103,7 @@ public:
                 );
 
                 for (int ch = 0; ch < numChannels; ++ch)
-                    std::copy(
-                        outputBuffer.getReadPointer(ch),
-                        outputBuffer.getReadPointer(ch) + numSamples,
-                        buffer[ch]
-                    );
+                    std::copy(outputBuffer.getReadPointer(ch), outputBuffer.getReadPointer(ch) + numSamples, buffer[ch]);
 
                 return;
             }
@@ -121,6 +136,8 @@ public:
         if (cleanedUp)
             return;
         cleanedUp = true;
+        if (auto* server = AudioServer::getInstanceWithoutCreating())
+            server->removeListener(this);
 
         obsDevice.store(nullptr, std::memory_order_release);
 
@@ -133,6 +150,25 @@ public:
     }
 
 private:
+    void audioServerDeviceListChanged() override
+    {
+        if (!pendingDeviceState)
+            return;
+        auto output = pendingDeviceState->getStringAttribute("audioOutputDeviceName");
+        auto input = pendingDeviceState->getStringAttribute("audioInputDeviceName");
+        for (auto* type : audioDeviceManager.getAvailableDeviceTypes())
+        {
+            type->scanForDevices();
+            if ((!output.isEmpty() && !type->getDeviceNames(false).contains(output))
+                || (!input.isEmpty() && !type->getDeviceNames(true).contains(input)))
+                continue;
+            auto error = audioDeviceManager.initialise(256, 256, pendingDeviceState.get(), false);
+            if (error.isEmpty())
+                pendingDeviceState.reset();
+            return;
+        }
+    }
+
     void changeListenerCallback(juce::ChangeBroadcaster* source) override
     {
         juce::ignoreUnused(source);
@@ -152,6 +188,7 @@ private:
     }
 
     std::unique_ptr<ModuleAudioIODeviceType> customDeviceType;
+    std::unique_ptr<juce::XmlElement> pendingDeviceState;
     juce::AudioDeviceManager& audioDeviceManager;
 
     // MIDI client can be external (referenced) or internal (owned)

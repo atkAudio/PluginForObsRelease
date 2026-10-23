@@ -52,16 +52,20 @@ public:
         inputNodes.clear();
         outputNodes.clear();
         dagNodes.clear();
+        std::vector<NodeID> obsOutputNodes;
 
         for (const auto& node : nodes)
         {
-            // Skip OBS Output nodes - they will be processed sequentially on main thread
-            // to avoid deadlock with nested PluginHost2 MT
-            if (node->getProcessor() && node->getProcessor()->getName() == "OBS Output")
-                continue;
-
             // Create DAG node
             dagNodes.emplace(node->nodeID, DagPartitioner<NodeID>::Node(node->nodeID));
+
+            // OBS Output nodes are excluded sinks: processed sequentially on the audio thread
+            // to avoid deadlock with nested PluginHost2 MT
+            if (node->getProcessor() && node->getProcessor()->getName() == "OBS Output")
+            {
+                obsOutputNodes.push_back(node->nodeID);
+                continue;
+            }
 
             // Track boundary I/O nodes
             if (auto* ioProc = dynamic_cast<atk::AudioProcessorGraphMT::AudioGraphIOProcessor*>(node->getProcessor()))
@@ -83,9 +87,6 @@ public:
 
         // Build DAG node connectivity from JUCE connections.
         // Only add unique node connections (not per-channel duplicates).
-        // Only connect nodes that are both present in dagNodes: skipped nodes (OBS Output, etc.)
-        // must not appear in outputsTo, otherwise they count as non-excluded outputs and
-        // break endpoint detection in the DAG partitioner.
         for (const auto& conn : connections)
         {
             auto srcIt = dagNodes.find(conn.source.nodeID);
@@ -107,6 +108,7 @@ public:
         std::vector<NodeID> excludeNodes;
         excludeNodes.insert(excludeNodes.end(), inputNodes.begin(), inputNodes.end());
         excludeNodes.insert(excludeNodes.end(), outputNodes.begin(), outputNodes.end());
+        excludeNodes.insert(excludeNodes.end(), obsOutputNodes.begin(), obsOutputNodes.end());
 
         auto dagSubgraphs = partitioner.extractSubgraphs(dagNodes, excludeNodes);
 

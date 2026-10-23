@@ -347,6 +347,12 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
             processor->setBusesLayout(layout);
             processor->setRateAndBufferSizeDetails(rate, samples);
             processor->prepareToPlay(rate, samples);
+            if (auto* pool = atk::RealtimeThreadPool::getInstance())
+            {
+                if (!pool->isReady())
+                    pool->initialize();
+                pool->configureAudioProcessing(rate, samples);
+            }
 
             loadMeasurer.reset(rate, samples);
 
@@ -360,6 +366,22 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
         }
     }
 
+    void prepare(int newNumChannels, int maxNumSamples, double newSampleRate)
+    {
+        numChannels = newNumChannels;
+        numSamples = juce::jmax(numSamples, maxNumSamples);
+        sampleRate = newSampleRate;
+
+        syncBuffer.setSize(newNumChannels * 2, numSamples, false, false, true);
+        syncMidiBuffer.ensureSize(numSamples);
+
+        pendingChannels.store(newNumChannels);
+        pendingSamples.store(numSamples);
+        pendingSampleRate.store(newSampleRate);
+        pendingUpdateFlags.fetch_or(UpdateFlags::PrepareProcessor);
+        triggerAsyncUpdate();
+    }
+
     void process(float** buffer, int newNumChannels, int newNumSamples, double newSampleRate)
     {
         if (!buffer)
@@ -370,19 +392,7 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
 
         if (needsReconfiguration)
         {
-            numChannels = newNumChannels;
-            numSamples = juce::jmax(numSamples, newNumSamples);
-            sampleRate = newSampleRate;
-
-            syncBuffer.setSize(newNumChannels * 2, numSamples, false, false, true);
-            syncMidiBuffer.ensureSize(numSamples);
-
-            pendingChannels.store(newNumChannels);
-            pendingSamples.store(numSamples);
-            pendingSampleRate.store(newSampleRate);
-            pendingUpdateFlags.fetch_or(UpdateFlags::PrepareProcessor);
-            triggerAsyncUpdate();
-
+            prepare(newNumChannels, newNumSamples, newSampleRate);
             return;
         }
 
@@ -1035,6 +1045,11 @@ private:
     mutable int peakLatencyMs = 0;
     mutable std::chrono::steady_clock::time_point peakLatencyTime;
 };
+
+void atk::PluginHost::prepare(int numChannels, int maxNumSamples, double sampleRate)
+{
+    pImpl->prepare(numChannels, maxNumSamples, sampleRate);
+}
 
 void atk::PluginHost::process(float** buffer, int numChannels, int numSamples, double sampleRate)
 {

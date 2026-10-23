@@ -1,0 +1,20 @@
+diff --git a/configure.cmake b/configure.cmake
+--- a/configure.cmake
++++ b/configure.cmake
+@@ -592,10 +592,15 @@ qt_feature("sanitize_undefined"
+     LABEL "Undefined"
+     AUTODETECT OFF
+ )
+ qt_feature_config("sanitize_undefined" QMAKE_PUBLIC_CONFIG)
++qt_feature("sanitize_realtime"
++    LABEL "Realtime"
++    AUTODETECT OFF
++)
++qt_feature_config("sanitize_realtime" QMAKE_PUBLIC_CONFIG)
+ qt_feature("sanitizer"
+     LABEL "Sanitizers"
+-    CONDITION QT_FEATURE_sanitize_address OR QT_FEATURE_sanitize_thread OR QT_FEATURE_sanitize_memory OR QT_FEATURE_sanitize_fuzzer_no_link OR QT_FEATURE_sanitize_undefined
++    CONDITION QT_FEATURE_sanitize_address OR QT_FEATURE_sanitize_thread OR QT_FEATURE_sanitize_memory OR QT_FEATURE_sanitize_fuzzer_no_link OR QT_FEATURE_sanitize_undefined OR QT_FEATURE_sanitize_realtime
+ )
+ qt_feature_config("sanitizer" QMAKE_PUBLIC_CONFIG)
+ qt_feature("plugin-manifests"

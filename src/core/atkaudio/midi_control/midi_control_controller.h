@@ -7,7 +7,9 @@
 
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <functional>
+#include <memory>
 #include <string>
 #include <utility>
 #include <unordered_map>
@@ -26,12 +28,32 @@ typedef struct calldata calldata_t;
 namespace atk
 {
 
+class MidiControlMappingsTableModel;
+
+struct MidiControlMonitorEntry
+{
+    juce::int64 timestampMs = 0;
+    MidiInputEvent event;
+    juce::String mappingLabel;
+    juce::String action;
+    juce::String target;
+    juce::String result;
+};
+
+enum MidiControlDispatchResult
+{
+    midi_control_dispatch_skipped,
+    midi_control_dispatch_target_unavailable,
+    midi_control_dispatch_dispatched,
+};
+
 struct MidiControlLearnState
 {
     bool active = false;
     juce::String mappingId;
     MidiInputEvent event;
     int sequence = 0;
+    juce::String errorMessage;
 };
 
 struct MidiControlPickupState
@@ -85,6 +107,12 @@ public:
 
     std::vector<MidiControlMapping> getMappings() const;
     void setMappings(const std::vector<MidiControlMapping>& mappings);
+    MidiControlMappingsTableModel* getMappingsModel();
+    bool trySetMappings(const std::vector<MidiControlMapping>& mappings, juce::String& errorMessage);
+    bool updateMapping(const juce::String& mappingId, const MidiControlMapping& mapping, juce::String& errorMessage);
+    bool addMapping(const MidiControlMapping& mapping, juce::String& errorMessage);
+    bool cloneMapping(const juce::String& mappingId, juce::String& errorMessage);
+    bool removeMappings(const std::vector<juce::String>& mappingIds, juce::String& errorMessage);
 
     MidiClientState getSubscriptions() const;
     void setSubscriptions(const MidiClientState& state);
@@ -94,11 +122,17 @@ public:
 
     void beginLearning(const juce::String& mappingId);
     void cancelLearning();
+    void handleLearningEvent(const MidiInputEvent& event);
     MidiControlLearnState getLearnState() const;
     int addLearnStateListener(std::function<void(const MidiControlLearnState&)> listener);
     void removeLearnStateListener(int listenerId);
     int addActiveContextListener(std::function<void(int, int)> listener);
     void removeActiveContextListener(int listenerId);
+    void processEvent(const MidiInputEvent& event);
+    void setMonitorEnabled(bool enabled);
+    void clearMonitorEntries();
+    std::vector<MidiControlMonitorEntry> takeMonitorEntries();
+    static constexpr int MONITOR_CAPACITY = 512;
     void handleTbarValueChanged();
     void requestFeedbackRefresh();
     void restoreStateIfReady();
@@ -122,19 +156,20 @@ public:
 private:
     MidiControlController();
 
+    bool validateMappings(const std::vector<MidiControlMapping>& mappings, juce::String& errorMessage);
+    void mappingConfigurationChanged();
     bool isRuntimeActive() const;
     void resetRuntimeState();
     void destroyFaders();
 
     void timerCallback();
-    void processEvent(const MidiInputEvent& event);
+    void recordMonitorEvent(const MidiInputEvent& event, const MidiControlMapping* mapping, juce::String result);
     void requestFeedbackSyncFromInput(const MidiInputEvent& event);
     void processFeedbackSyncIfDue();
     void processPendingFeedbackEvents(bool forceSend = false);
     void processDelayedFeedbackFlushIfDue();
     void flushDelayedFeedbackOutputNow();
     void processFeedbackForMapping(const MidiControlMapping& mapping, bool forceSend = false);
-    void handleLearningEvent(const MidiInputEvent& event);
     void dispatchMapping(const MidiControlMapping& mapping, const MidiInputEvent& event);
     void dispatchTransitionMapping(const MidiControlMapping& mapping, const MidiInputEvent& event);
     void dispatchTransitionAbsoluteMapping(
@@ -193,9 +228,13 @@ private:
     static void onObservedSourceSignal(void* privateData, calldata_t*);
 
     MidiClient midiClient;
+    bool monitorEnabled = false;
+    int monitorDispatchResult = midi_control_dispatch_skipped;
+    std::deque<MidiControlMonitorEntry> monitorEntries;
     obs_fader_t* volumeFader = nullptr;
     obs_fader_t* feedbackVolumeFader = nullptr;
-    std::vector<MidiControlMapping> mappings;
+    std::unique_ptr<MidiControlMappingsTableModel> mappingsModel;
+    const std::vector<MidiControlMapping>& mappings;
     MidiClientState subscriptions;
     std::unordered_map<std::string, bool> toggleStates;
     std::unordered_map<std::string, MidiControlPickupState> pickupStates;

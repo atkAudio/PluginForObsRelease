@@ -1,11 +1,19 @@
 #include <iostream>
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#if JUCE_WINDOWS
+int wmain(int argc, const wchar_t* argv[])
+#else
 int main(int argc, const char* argv[])
+#endif
 {
     if (argc < 2)
     {
+#if JUCE_WINDOWS
+        std::wcerr << L"Usage: " << argv[0] << L" <plugin-identifier>" << std::endl;
+#else
         std::cerr << "Usage: " << argv[0] << " <plugin-identifier>" << std::endl;
+#endif
         return 1;
     }
 

@@ -328,7 +328,7 @@ private:
         std::unordered_map<juce::String, std::vector<ClientSnapshot>> outputSubscriptions;
     };
 
-    juce::AudioDeviceManager deviceManager;
+    std::unordered_map<juce::String, std::unique_ptr<juce::MidiInput>> inputDevices;
     mutable juce::CriticalSection clientsMutex;
     std::unordered_map<void*, ClientInfo> clients;
     AtomicSharedPtr<DeviceSnapshot> activeSnapshot{std::make_shared<DeviceSnapshot>()};
