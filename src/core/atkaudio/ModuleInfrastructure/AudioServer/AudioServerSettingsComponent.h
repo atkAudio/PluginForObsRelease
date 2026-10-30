@@ -13,6 +13,7 @@ class AudioServerSettingsComponent
     , private juce::Timer
     , private juce::Button::Listener
     , private AudioServer::Listener
+    , private juce::ComponentMovementWatcher
 {
 public:
     explicit AudioServerSettingsComponent(AudioClient* client, int clientChannels = -1);
@@ -22,7 +23,7 @@ public:
     void resized() override;
 
     AudioClientState getSubscriptionState() const;
-    void setSubscriptionState(const AudioClientState& state, bool expandToSubscriptions = true);
+    void setSubscriptionState(const AudioClientState& state);
     void applySubscriptions();
 
     static juce::StringArray getObsChannelNames(int numChannels);
@@ -129,11 +130,6 @@ private:
             return isInput;
         }
 
-        void resetChildrenLoadedFlag()
-        {
-            childrenLoaded = false;
-        }
-
     private:
         juce::String itemName;
         ItemType itemType;
@@ -143,7 +139,6 @@ private:
         bool subscribed = false;
         AudioServer* server = nullptr;
         AudioServerSettingsComponent* settingsComponent = nullptr;
-        bool childrenLoaded = false;
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DeviceChannelTreeItem)
     };
@@ -211,6 +206,10 @@ private:
     };
 
     void updateDeviceTrees();
+    void resetDeviceTreeOpenness(const AudioClientState& state);
+    void componentMovedOrResized(bool, bool) override;
+    void componentPeerChanged() override;
+    void componentVisibilityChanged() override;
     void audioServerDeviceListChanged() override;
     void updateMappingMatrix();
     void onTreeSelectionChanged();

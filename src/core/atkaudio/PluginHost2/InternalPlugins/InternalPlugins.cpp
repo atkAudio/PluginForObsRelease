@@ -4,6 +4,9 @@
 #include "InternalPlugins.h"
 
 #include "GainPlugin.h"
+#include "ParentSource.h"
+#include "Transport.h"
+#include "ChordAnalyzerPlugin.h"
 #include "../PluginGraph.h"
 
 #include <config.h>
@@ -696,7 +699,11 @@ InternalPluginFormat::InternalPluginFormat()
           [] { return std::make_unique<InternalPlugin>(std::make_unique<SineWaveSynth>()); },
           [] { return std::make_unique<InternalPlugin>(std::make_unique<ReverbPlugin>()); },
           [] { return std::make_unique<InternalPlugin>(std::make_unique<GainPlugin>()); },
-          [] { return std::make_unique<InternalPlugin>(std::make_unique<DelayLinePlugin>()); }
+          [] { return std::make_unique<InternalPlugin>(std::make_unique<DelayLinePlugin>()); },
+          [] { return std::make_unique<TransportProcessor>(); },
+          [] { return std::make_unique<ChordAnalyzerPlugin>(); },
+          [] { return std::make_unique<atk::ParentSourceProcessor>(atk::ParentSourceProcessor::input); },
+          [] { return std::make_unique<atk::ParentSourceProcessor>(atk::ParentSourceProcessor::output); }
       }
 {
 }

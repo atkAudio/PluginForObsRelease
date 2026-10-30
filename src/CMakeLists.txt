@@ -28,10 +28,15 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
     GIT_TAG 9.0.4
     GIT_SHALLOW TRUE
-    PATCH_COMMAND
-        ${CMAKE_COMMAND} -P "${CMAKE_SOURCE_DIR}/cmake/patches/apply-juce-patches.cmake"
 )
 FetchContent_MakeAvailable(juce)
+
+execute_process(
+    COMMAND
+        ${CMAKE_COMMAND} -P "${CMAKE_SOURCE_DIR}/cmake/patches/apply-juce-patches.cmake"
+    WORKING_DIRECTORY "${juce_SOURCE_DIR}"
+    COMMAND_ERROR_IS_FATAL ANY
+)
 
 # JUCE module targets are INTERFACE targets, so suppress their known upstream
 # diagnostics on each concrete target that compiles the module implementation

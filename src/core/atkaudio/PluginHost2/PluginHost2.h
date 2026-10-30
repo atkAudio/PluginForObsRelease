@@ -12,6 +12,7 @@ namespace atk
 {
 class ModuleDeviceManager;
 class PluginHost2RuntimeAudioCallback;
+class ParentSourceBridge;
 
 class PluginHost2
     : public atkAudioModule
@@ -40,6 +41,7 @@ private:
 
     std::unique_ptr<juce::AudioDeviceManager> audioDeviceManager;
     std::unique_ptr<MainHostWindow> mainHostWindow;
+    std::unique_ptr<ParentSourceBridge> parentSourceBridge;
     std::unique_ptr<PluginGraph> graphModel;
     std::unique_ptr<ModuleDeviceManager> moduleDeviceManager;
     std::unique_ptr<PluginHost2RuntimeAudioCallback> runtimeAudioCallback;

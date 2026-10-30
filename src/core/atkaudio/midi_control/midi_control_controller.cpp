@@ -3,6 +3,7 @@
 
 #include <atkaudio/GlobalSettings.h>
 #include <atkaudio/Logging.h>
+#include <atkaudio/obs_monitoring.h>
 #include <atkaudio/midi_control/last_touched_parameter_tracker.h>
 #include <atkaudio/midi_control/midi_control_active_context_dock.h>
 #include <atkaudio/midi_control/midi_control_dialog.h>
@@ -1055,7 +1056,7 @@ bool isSupportedFeedbackTriggerMessage(const juce::MidiMessage& message)
 
 void setSourceMonitoringEnabled(obs_source_t* source, bool enabled)
 {
-    obs_source_set_monitoring_type(source, enabled ? OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT : OBS_MONITORING_TYPE_NONE);
+    obsMonitoring::setEnabled(source, enabled);
 }
 
 QObject* findObsTbarObject(QObject* root)
@@ -3772,7 +3773,7 @@ double MidiControlController::getObservedActionValue(const MidiControlMapping& m
             return obs_source_muted(source) ? 1.0 : 0.0;
 
         if (sourceActionType == midi_control_source_action_type_monitoring)
-            return obs_source_get_monitoring_type(source) != OBS_MONITORING_TYPE_NONE ? 1.0 : 0.0;
+            return obsMonitoring::isEnabled(source) ? 1.0 : 0.0;
     }
 
     auto volume = obs_source_get_volume(source);

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atkaudio/obs_monitoring.h>
+
 #include "../../FifoBuffer2.h"
 
 #include <juce_audio_utils/juce_audio_utils.h>
@@ -550,8 +552,8 @@ public:
         if (followMute && currentObsSource)
         {
             bool obsMuted = obs_source_muted(currentObsSource);
-            int monitoringType = (int)obs_source_get_monitoring_type(currentObsSource);
-            bool effectiveMuted = obsMuted || (monitoringType == OBS_MONITORING_TYPE_MONITOR_ONLY);
+            bool monitorOnly = atk::obsMonitoring::isMonitorOnly(currentObsSource);
+            bool effectiveMuted = obsMuted || monitorOnly;
             if (effectiveMuted)
                 buffer.clear();
         }

@@ -1,0 +1,60 @@
+diff --git a/modules/juce_audio_processors_headless/utilities/juce_AudioPluginExtensions.h b/modules/juce_audio_processors_headless/utilities/juce_AudioPluginExtensions.h
+--- a/modules/juce_audio_processors_headless/utilities/juce_AudioPluginExtensions.h
++++ b/modules/juce_audio_processors_headless/utilities/juce_AudioPluginExtensions.h
+@@ -36,6 +36,7 @@
+ namespace Steinberg::Vst
+ {
+     class IComponent;
++    struct ProcessContext;
+ } // namespace Steinberg::Vst
+ 
+ /** @endcond */
+@@ -90,6 +91,14 @@
+         virtual Steinberg::Vst::IComponent* getIComponentPtr() const noexcept = 0;
+         virtual MemoryBlock getPreset() const = 0;
+         virtual bool setPreset (const MemoryBlock&) = 0;
++
++        struct ProcessContextProvider
++        {
++            virtual ~ProcessContextProvider() = default;
++            virtual void updateProcessContext (Steinberg::Vst::ProcessContext&) = 0;
++        };
++
++        virtual void setProcessContextProvider (std::shared_ptr<ProcessContextProvider>) = 0;
+     };
+ 
+     /** Can be used to retrieve information about an AudioUnit that is wrapped by an AudioProcessor. */
+diff --git a/modules/juce_audio_processors_headless/format_types/juce_VST3PluginFormatImpl.h b/modules/juce_audio_processors_headless/format_types/juce_VST3PluginFormatImpl.h
+--- a/modules/juce_audio_processors_headless/format_types/juce_VST3PluginFormatImpl.h
++++ b/modules/juce_audio_processors_headless/format_types/juce_VST3PluginFormatImpl.h
+@@ -2253,6 +2253,12 @@
+         return holder->component.get();
+     }
+ 
++    void setProcessContextProvider (std::shared_ptr<AudioPluginExtensions::VST3Client::ProcessContextProvider> provider) override
++    {
++        processContextProvider = std::move (provider);
++    }
++
++
+    #ifdef JUCE_INTERNAL_HAS_ARA
+           AudioPluginExtensions::ARAClient* getARAClient()       override { return this; }
+     const AudioPluginExtensions::ARAClient* getARAClient() const override { return this; }
+@@ -3074,6 +3080,7 @@
+     VSTComSmartPtr<MidiEventList> midiInputs { new MidiEventList, IncrementRef::yes };
+     VSTComSmartPtr<MidiEventList> midiOutputs { new MidiEventList, IncrementRef::yes };
+     Vst::ProcessContext timingInfo; //< Only use this in processBlock()!
++    std::shared_ptr<AudioPluginExtensions::VST3Client::ProcessContextProvider> processContextProvider;
+     bool isControllerInitialised = false, isActive = false, lastProcessBlockCallWasBypass = false;
+     const bool hasMidiInput  = getNumSingleDirectionBusesFor (holder->component.get(), MediaKind::event, Direction::input) > 0,
+                hasMidiOutput = getNumSingleDirectionBusesFor (holder->component.get(), MediaKind::event, Direction::output) > 0;
+@@ -3356,5 +3363,7 @@
+     void updateTimingInformation (Vst::ProcessData& destination, double processSampleRate)
+     {
+         toProcessContext (timingInfo, getPlayHead(), processSampleRate);
++        if (processContextProvider != nullptr)
++            processContextProvider->updateProcessContext (timingInfo);
+         destination.processContext = &timingInfo;
+     }
+
+ 

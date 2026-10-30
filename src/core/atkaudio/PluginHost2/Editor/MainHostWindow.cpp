@@ -4,8 +4,21 @@
 #include "../../SandboxedPluginScanner.h"
 #include "../../SharedPluginList.h"
 #include "../InternalPlugins/InternalPlugins.h"
+#include "../InternalPlugins/ParentSource.h"
+#include "../missing_plugin.h"
 
 #include <atkaudio/ModuleInfrastructure/MidiServer/MidiServerSettingsComponent.h>
+
+PluginGraph::PluginGraph(MainHostWindow& window, AudioPluginFormatManager& formats, KnownPluginList& plugins)
+    : PluginGraph(formats, plugins, &window.getAppProperties(), &window)
+{
+    newDocument();
+}
+
+void MainHostWindow::bindPluginToOwner(AudioPluginInstance* plugin)
+{
+    setParentSourceUuidOnInternalPlugin(plugin, getParentSourceUuid());
+}
 
 class MainHostWindow::PluginListWindow final : public juce::DocumentWindow
 {
@@ -92,7 +105,8 @@ MainHostWindow::MainHostWindow(juce::AudioDeviceManager& deviceManagerIn)
     // Don't create MIDI client here - it will be provided externally by ModuleDeviceManager
     // via setExternalMidiClient(), or created on-demand in getMidiClient() if needed
 
-    initialise("");
+    commandManager.registerAllCommandsForTarget(this);
+    menuItemsChanged();
 
     // AudioDeviceManager setup is handled by PluginHost2 via ModuleDeviceManager.
 
@@ -174,6 +188,7 @@ MainHostWindow::MainHostWindow(juce::AudioDeviceManager& deviceManagerIn)
 
     getCommandManager().setFirstCommandTarget(this);
 
+    initialisingWindow = false;
     atk::logging::info("MainHostWindow::ctor", "completed");
 }
 
@@ -186,6 +201,22 @@ void MainHostWindow::attachGraph(PluginGraph& graphModel)
     graphHolder.reset(new GraphDocumentComponent(*this, graphModel, deviceManager, knownPluginList));
 
     setContentNonOwned(graphHolder.get(), false);
+    if (getAppProperties().getValue("mainWindowPos").isEmpty())
+    {
+        juce::BorderSize<int> border = getContentComponentBorder();
+        centreWithSize(
+            graphHolder->graphPanel->getWidth()
+                + graphHolder->getWidth()
+                - graphHolder->graphViewport->getWidth()
+                + border.getLeftAndRight(),
+            graphHolder->graphPanel->getHeight()
+                + graphHolder->getHeight()
+                - graphHolder->graphViewport->getHeight()
+                + border.getTopAndBottom()
+        );
+    }
+    commandManager.registerAllCommandsForTarget(graphHolder->graphPanel.get());
+    commandManager.commandStatusChanged();
 
     if (graphHolder->graph != nullptr)
         graphHolder->graph->addChangeListener(this);
@@ -199,6 +230,10 @@ void MainHostWindow::detachGraphEditor()
 
     if (graphHolder != nullptr)
     {
+        Array<CommandID> commands;
+        graphHolder->graphPanel->getAllCommands(commands);
+        for (auto command : commands)
+            commandManager.removeCommand(command);
         if (graphHolder->graph != nullptr)
             graphHolder->graph->removeChangeListener(this);
     }
@@ -209,6 +244,8 @@ void MainHostWindow::detachGraphEditor()
 PluginWindow* MainHostWindow::getOrCreatePluginWindowFor(AudioProcessorGraphMT::Node* node, PluginWindow::Type type)
 {
     jassert(node != nullptr);
+    if (node == nullptr || dynamic_cast<MissingPlugin*>(node->getProcessor()) != nullptr)
+        return nullptr;
 
 #if JUCE_IOS || JUCE_ANDROID
     closeAnyOpenPluginWindows();
@@ -266,6 +303,7 @@ MainHostWindow::~MainHostWindow()
 {
     atk::logging::info("MainHostWindow::dtor", "begin");
 
+    sharedSettings->saveWindowState(*this, true);
     // Hide window before destroying components to prevent paint messages during destruction
     setVisible(false);
     removeFromDesktop();
@@ -283,8 +321,6 @@ MainHostWindow::~MainHostWindow()
     detachGraphEditor();
     knownPluginList.removeChangeListener(this);
 
-    getAppProperties().setValue("mainWindowPos", getWindowStateAsString());
-
     setMenuBar(nullptr);
 
     atk::logging::info("MainHostWindow::dtor", "completed");
@@ -292,22 +328,23 @@ MainHostWindow::~MainHostWindow()
 
 void MainHostWindow::closeButtonPressed()
 {
+    sharedSettings->saveWindowState(*this, true);
     setVisible(false);
 }
 
-struct AsyncQuitRetrier final : private Timer
+void MainHostWindow::moved()
 {
-    AsyncQuitRetrier()
-    {
-        startTimer(500);
-    }
+    DocumentWindow::moved();
+    if (!initialisingWindow)
+        sharedSettings->saveWindowState(*this);
+}
 
-    void timerCallback() override
-    {
-        stopTimer();
-        delete this;
-    }
-};
+void MainHostWindow::resized()
+{
+    DocumentWindow::resized();
+    if (!initialisingWindow)
+        sharedSettings->saveWindowState(*this);
+}
 
 void MainHostWindow::tryToQuitApplication()
 {
@@ -318,6 +355,7 @@ void MainHostWindow::tryToQuitApplication()
     if (ModalComponentManager::getInstance() != nullptr)
         (void)ModalComponentManager::getInstance()->cancelAllModalComponents();
 
+    sharedSettings->saveWindowState(*this, true);
     setVisible(false);
 }
 
@@ -344,6 +382,8 @@ StringArray MainHostWindow::getMenuBarNames()
 {
     StringArray names;
     names.add("File");
+    names.add("Edit");
+    names.add("View");
     names.add("Plugins");
     names.add("Options");
     names.add("Windows");
@@ -366,13 +406,24 @@ PopupMenu MainHostWindow::getMenuForIndex(int topLevelMenuIndex, const String& /
         recentFiles.createPopupMenuItems(recentFilesMenu, 100, true, true);
         menu.addSubMenu("Open recent file", recentFilesMenu);
 
-        // menu.addCommandItem(&getCommandManager(), CommandIDs::save);
         menu.addCommandItem(&getCommandManager(), CommandIDs::saveAs);
 
         menu.addSeparator();
         menu.addCommandItem(&getCommandManager(), StandardApplicationCommandIDs::quit);
     }
     else if (topLevelMenuIndex == 1)
+    {
+        if (graphHolder != nullptr)
+            graphHolder->graphPanel->addSelectionItemsToMenu(menu);
+    }
+    else if (topLevelMenuIndex == 2)
+    {
+        menu.addCommandItem(&getCommandManager(), CommandIDs::zoomIn);
+        menu.addCommandItem(&getCommandManager(), CommandIDs::zoomOut);
+        menu.addCommandItem(&getCommandManager(), CommandIDs::resetZoom);
+        menu.addCommandItem(&getCommandManager(), CommandIDs::zoomToFit);
+    }
+    else if (topLevelMenuIndex == 3)
     {
         // "Plugins" menu
         PopupMenu pluginsMenu;
@@ -381,7 +432,7 @@ PopupMenu MainHostWindow::getMenuForIndex(int topLevelMenuIndex, const String& /
         menu.addSeparator();
         menu.addItem(250, "Delete All Plug-ins");
     }
-    else if (topLevelMenuIndex == 2)
+    else if (topLevelMenuIndex == 4)
     {
         // "Options" menu
 
@@ -415,11 +466,8 @@ PopupMenu MainHostWindow::getMenuForIndex(int topLevelMenuIndex, const String& /
         menu.addSeparator();
         menu.addCommandItem(&getCommandManager(), CommandIDs::showAudioSettings);
         menu.addCommandItem(&getCommandManager(), CommandIDs::showMidiSettings);
-
-        if (autoScaleOptionAvailable)
-            menu.addCommandItem(&getCommandManager(), CommandIDs::autoScalePluginWindows);
     }
-    else if (topLevelMenuIndex == 3)
+    else if (topLevelMenuIndex == 5)
     {
         menu.addCommandItem(&getCommandManager(), CommandIDs::allWindowsForward);
     }
@@ -433,7 +481,12 @@ void MainHostWindow::menuItemSelected(int menuItemID, int /*topLevelMenuIndex*/)
     {
         if (graphHolder != nullptr)
             if (auto* graph = graphHolder->graph)
-                graph->clear();
+            {
+                PluginGraph::Edit edit(*graph, "Delete All Plug-ins");
+                auto nodes = graph->graph.getNodes();
+                for (auto* node : nodes)
+                    graph->removeNode(node->nodeID);
+            }
     }
     else if (menuItemID >= 100 && menuItemID < 200)
     {
@@ -498,6 +551,13 @@ void MainHostWindow::createPlugin(const PluginDescriptionAndPreference& desc, Po
         graphHolder->createNewPlugin(desc, pos);
 }
 
+void MainHostWindow::createPluginFromMenu(int menuId, Point<double> position)
+{
+    if (graphHolder != nullptr && graphHolder->graph != nullptr)
+        if (auto chosen = getChosenType(menuId))
+            graphHolder->graph->addPlugin(*chosen, position);
+}
+
 static bool containsDuplicateNames(const Array<PluginDescription>& plugins, const String& name)
 {
     int matches = 0;
@@ -556,13 +616,17 @@ void MainHostWindow::addPluginsToMenu(PopupMenu& m)
 {
     if (graphHolder != nullptr)
     {
+        PopupMenu internalPluginsMenu;
         int i = 0;
 
         for (auto& t : internalTypes)
         {
-            // m.addItem(++i, t.name + " (" + t.pluginFormatName + ")");
-            m.addItem(++i, t.name);
+            ++i;
+            if (!atk::ParentSourceProcessor::isParentDescription(t))
+                internalPluginsMenu.addItem(i, t.name);
         }
+
+        m.addSubMenu("Internal", internalPluginsMenu);
     }
 
     m.addSeparator();
@@ -595,7 +659,7 @@ std::optional<PluginDescriptionAndPreference> MainHostWindow::getChosenType(cons
 
 ApplicationCommandTarget* MainHostWindow::getNextCommandTarget()
 {
-    return findFirstTargetParentComponent();
+    return graphHolder != nullptr ? graphHolder->graphPanel.get() : nullptr;
 }
 
 void MainHostWindow::getAllCommands(Array<CommandID>& commands)
@@ -604,13 +668,11 @@ void MainHostWindow::getAllCommands(Array<CommandID>& commands)
     const CommandID ids[] = {
         CommandIDs::newFile,
         CommandIDs::open,
-        // CommandIDs::save,
         CommandIDs::saveAs,
         CommandIDs::showPluginListEditor,
         CommandIDs::showAudioSettings,
         CommandIDs::showMidiSettings,
-        CommandIDs::allWindowsForward,
-        CommandIDs::autoScalePluginWindows
+        CommandIDs::allWindowsForward
     };
 
     commands.addArray(ids, numElementsInArray(ids));
@@ -632,11 +694,6 @@ void MainHostWindow::getCommandInfo(const CommandID commandID, ApplicationComman
         result.defaultKeypresses.add(KeyPress('o', ModifierKeys::commandModifier, 0));
         break;
 
-        // case CommandIDs::save:
-        //     result.setInfo("Save", "Saves the current graph to a file", category, 0);
-        //     result.defaultKeypresses.add(KeyPress('s', ModifierKeys::commandModifier, 0));
-        //     break;
-
     case CommandIDs::saveAs:
         result.setInfo("Save As...", "Saves copy of current graph to file", category, 0);
         result.defaultKeypresses.add(KeyPress('s', ModifierKeys::shiftModifier | ModifierKeys::commandModifier, 0));
@@ -649,7 +706,7 @@ void MainHostWindow::getCommandInfo(const CommandID commandID, ApplicationComman
 
     case CommandIDs::showAudioSettings:
         result.setInfo("Audio...", {}, category, 0);
-        result.addDefaultKeypress('a', ModifierKeys::commandModifier);
+        result.addDefaultKeypress('a', ModifierKeys::commandModifier | ModifierKeys::shiftModifier);
         break;
 
     case CommandIDs::showMidiSettings:
@@ -660,10 +717,6 @@ void MainHostWindow::getCommandInfo(const CommandID commandID, ApplicationComman
     case CommandIDs::allWindowsForward:
         result.setInfo("All Windows Forward", "Bring all plug-in windows forward", category, 0);
         result.addDefaultKeypress('w', ModifierKeys::commandModifier);
-        break;
-
-    case CommandIDs::autoScalePluginWindows:
-        updateAutoScaleMenuItem(result);
         break;
 
     default:
@@ -709,11 +762,6 @@ bool MainHostWindow::perform(const InvocationInfo& info)
         }
         break;
 
-        // case CommandIDs::save:
-        //     if (graphHolder != nullptr && graphHolder->graph != nullptr)
-        //         graphHolder->graph->saveAsync(true, true, nullptr);
-        //     break;
-
     case CommandIDs::saveAs:
         if (graphHolder != nullptr && graphHolder->graph != nullptr)
             graphHolder->graph->saveAsAsync({}, true, true, true, nullptr);
@@ -733,17 +781,6 @@ bool MainHostWindow::perform(const InvocationInfo& info)
     case CommandIDs::showMidiSettings:
         showMidiSettings();
         break;
-
-    case CommandIDs::autoScalePluginWindows:
-    {
-        auto newAutoScale = !isAutoScalePluginWindowsEnabled();
-        getAppProperties().setValue("autoScalePluginWindows", var(newAutoScale));
-
-        ApplicationCommandInfo cmdInfo(info.commandID);
-        updateAutoScaleMenuItem(cmdInfo);
-        menuItemsChanged();
-    }
-    break;
 
     case CommandIDs::allWindowsForward:
     {
@@ -894,15 +931,4 @@ void MainHostWindow::filesDropped(const StringArray& files, int x, int y)
                     createPlugin(PluginDescriptionAndPreference{*desc}, pos);
         }
     }
-}
-
-bool MainHostWindow::isAutoScalePluginWindowsEnabled()
-{
-    return getAppProperties().getBoolValue("autoScalePluginWindows", false);
-}
-
-void MainHostWindow::updateAutoScaleMenuItem(ApplicationCommandInfo& info)
-{
-    info.setInfo("Auto-Scale Plug-in Windows", {}, "General", 0);
-    info.setTicked(isAutoScalePluginWindowsEnabled());
 }

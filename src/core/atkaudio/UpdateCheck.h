@@ -142,8 +142,7 @@ private:
         if (atk::updates::ShouldOfferUpdate(&remoteManifest, PLUGIN_BUILD_TIMESTAMP, skippedTimestamp))
         {
             fetchReleaseNotes();
-            auto message =
-                "A new build is available: " + latestRemoteVersion + "\nBuild: " + latestRemoteBuildTimestamp + " UTC";
+            auto message = "A new build is available: " + latestRemoteVersion;
 
             auto* updateAlert = new juce::AlertWindow(PLUGIN_DISPLAY_NAME, message, juce::AlertWindow::InfoIcon);
             updateAlert->addButton("Download", 1, juce::KeyPress(juce::KeyPress::returnKey));

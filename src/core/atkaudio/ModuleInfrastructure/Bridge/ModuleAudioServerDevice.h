@@ -27,7 +27,6 @@ struct AudioServerDeviceInfo
 class ModuleAudioServerDevice
     : public juce::AudioIODevice
     , public juce::AudioIODeviceCallback
-    , private juce::AsyncUpdater
 {
 private:
     std::shared_ptr<ModuleDeviceCoordinator> coordinator;
@@ -47,13 +46,14 @@ public:
         , actualDeviceKey(deviceType + "|" + actualDeviceName)
     {
         if (auto* server = AudioServer::getInstanceWithoutCreating())
-            server->requestDeviceActivation(actualDeviceKey);
+            lastError = server->prepareDevice(actualDeviceKey);
+        else
+            lastError = "AudioServer is not available";
     }
 
     ~ModuleAudioServerDevice() override
     {
         isDestroying.store(true, std::memory_order_release);
-        cancelPendingUpdate();
 
         if (auto* server = AudioServer::getInstanceWithoutCreating())
             server->unregisterDirectCallback(actualDeviceKey, this);
@@ -90,7 +90,7 @@ public:
     {
         if (auto* server = AudioServer::getInstanceWithoutCreating())
             return server->getAvailableBufferSizes(actualDeviceKey);
-        return {512};
+        return {};
     }
 
     int getDefaultBufferSize() override
@@ -107,86 +107,52 @@ public:
         int bufferSizeSamples
     ) override
     {
-        bool needsReopen = false;
+        auto* messageManager = juce::MessageManager::getInstanceWithoutCreating();
+        if (!messageManager || !messageManager->isThisTheMessageThread())
+            return "Audio device opening requires the message thread";
 
-        if (isOpen_)
+        double sampleRateChange = 0.0;
+        int bufferSizeChange = 0;
         {
             const juce::ScopedLock sl(lock);
-            if ((sampleRate > 0.0 && !juce::exactlyEqual(currentSampleRate, sampleRate))
-                || (bufferSizeSamples > 0 && currentBufferSize != bufferSizeSamples))
+            // JUCE reuses the current channel setup for manual format edits.
+            // New attachments and channel changes must inherit the hardware format.
+            if (isOpen_
+                && (inputChannels == requestedInputChannels || inputChannels == activeInputChannels)
+                && (outputChannels == requestedOutputChannels || outputChannels == activeOutputChannels))
             {
-                needsReopen = true;
+                if (sampleRate > 0.0 && sampleRate != currentSampleRate)
+                    sampleRateChange = sampleRate;
+                if (bufferSizeSamples > 0 && bufferSizeSamples != currentBufferSize)
+                    bufferSizeChange = bufferSizeSamples;
             }
         }
 
+        close();
+        lastError.clear();
+        auto* server = AudioServer::getInstanceWithoutCreating();
+        if (!server)
         {
-            const juce::ScopedLock sl(lock);
-
-            int actualInputChannelCount = 0;
-            int actualOutputChannelCount = 0;
-            if (auto* server = AudioServer::getInstanceWithoutCreating())
-            {
-                actualInputChannelCount = server->getDeviceNumChannels(actualDeviceKey, true);
-                actualOutputChannelCount = server->getDeviceNumChannels(actualDeviceKey, false);
-            }
-
-            requestedInputChannels = inputChannels;
-            requestedOutputChannels = outputChannels;
-            activeInputChannels = requestedInputChannels;
-            activeOutputChannels = requestedOutputChannels;
-
-            if (actualInputChannelCount > 0)
-            {
-                juce::BigInteger inputMask;
-                inputMask.setRange(0, actualInputChannelCount, true);
-                activeInputChannels &= inputMask;
-            }
-
-            if (actualOutputChannelCount > 0)
-            {
-                juce::BigInteger outputMask;
-                outputMask.setRange(0, actualOutputChannelCount, true);
-                activeOutputChannels &= outputMask;
-            }
+            lastError = "AudioServer is not available";
+            return lastError;
         }
 
-        if (needsReopen || !isOpen_)
+        if ((sampleRateChange > 0.0 && !server->setDeviceSampleRate(actualDeviceKey, sampleRateChange))
+            || (bufferSizeChange > 0 && !server->setDeviceBufferSize(actualDeviceKey, bufferSizeChange)))
         {
-            juce::AudioDeviceManager::AudioDeviceSetup currentSetup;
-            bool hasCurrentSetup = false;
-            if (auto* server = AudioServer::getInstanceWithoutCreating())
-                hasCurrentSetup = server->getCurrentDeviceSetup(actualDeviceKey, currentSetup);
-
-            if (needsReopen)
-                close();
-
-            if (!isOpen_)
-            {
-                if (auto* server = AudioServer::getInstance())
-                {
-                    juce::AudioDeviceManager::AudioDeviceSetup setup;
-
-                    if (hasCurrentSetup)
-                    {
-                        setup.sampleRate = needsReopen && sampleRate > 0.0 ? sampleRate : currentSetup.sampleRate;
-                        setup.bufferSize =
-                            needsReopen && bufferSizeSamples > 0 ? bufferSizeSamples : currentSetup.bufferSize;
-                    }
-                    else
-                    {
-                        setup.sampleRate = 0.0;
-                        setup.bufferSize = 0;
-                    }
-
-                    if (!server->registerDirectCallback(actualDeviceKey, this, setup))
-                        return "Failed to register with AudioServer";
-                }
-
-                const juce::ScopedLock sl(lock);
-                isOpen_ = true;
-            }
+            lastError = "The requested hardware setting is not available";
+            return lastError;
         }
 
+        requestedInputChannels = inputChannels;
+        requestedOutputChannels = outputChannels;
+        lastError =
+            server->openDeviceForCallback(actualDeviceKey, this, !inputChannels.isZero(), !outputChannels.isZero());
+        if (lastError.isNotEmpty())
+            return lastError;
+
+        const juce::ScopedLock sl(lock);
+        isOpen_ = true;
         return {};
     }
 
@@ -203,27 +169,41 @@ public:
         {
             const juce::ScopedLock sl(lock);
             isOpen_ = false;
+            nativeRunning = false;
+            currentSampleRate = 0.0;
+            currentBufferSize = 0;
+            activeInputChannels.clear();
+            activeOutputChannels.clear();
         }
     }
 
     bool isOpen() override
     {
         const juce::ScopedLock sl(lock);
-        return isOpen_;
+        return isOpen_ && nativeRunning;
     }
 
     void start(juce::AudioIODeviceCallback* newCallback) override
     {
-        if (!isOpen_ || newCallback == nullptr)
+        if (newCallback == nullptr)
             return;
+        if (!isOpen())
+        {
+            lastError = "Audio device is not open";
+            return;
+        }
 
         stop();
 
         if (coordinator && !coordinator->tryActivate(this))
+        {
+            lastError = "Another audio device is already active";
             return;
+        }
 
         {
             const juce::ScopedLock sl(lock);
+            lastError.clear();
             userCallback = newCallback;
             isPlaying_ = true;
 
@@ -252,7 +232,7 @@ public:
         juce::AudioIODeviceCallback* callbackToStop = nullptr;
         {
             const juce::ScopedLock sl(lock);
-            callbackToStop = userCallback;
+            callbackToStop = formatReady ? userCallback : nullptr;
             userCallback = nullptr;
             isPlaying_ = false;
             formatReady = false;
@@ -265,12 +245,13 @@ public:
     bool isPlaying() override
     {
         const juce::ScopedLock sl(lock);
-        return isPlaying_;
+        return isPlaying_ && nativeRunning && formatReady;
     }
 
     juce::String getLastError() override
     {
-        return {};
+        const juce::ScopedLock sl(lock);
+        return lastError;
     }
 
     int getCurrentBufferSizeSamples() override
@@ -278,8 +259,10 @@ public:
         const juce::ScopedLock sl(lock);
         if (currentBufferSize > 0)
             return currentBufferSize;
+        juce::AudioDeviceManager::AudioDeviceSetup setup;
         if (auto* server = AudioServer::getInstanceWithoutCreating())
-            return server->getCurrentBufferSize(actualDeviceKey);
+            if (server->getPreparedDeviceSetup(actualDeviceKey, setup))
+                return setup.bufferSize;
         return 0;
     }
 
@@ -288,8 +271,10 @@ public:
         const juce::ScopedLock sl(lock);
         if (currentSampleRate > 0.0)
             return currentSampleRate;
+        juce::AudioDeviceManager::AudioDeviceSetup setup;
         if (auto* server = AudioServer::getInstanceWithoutCreating())
-            return server->getCurrentSampleRate(actualDeviceKey);
+            if (server->getPreparedDeviceSetup(actualDeviceKey, setup))
+                return setup.sampleRate;
         return 0.0;
     }
 
@@ -426,61 +411,45 @@ private:
 
     void audioDeviceAboutToStart(juce::AudioIODevice* device) override
     {
-        {
-            const juce::ScopedLock sl(lock);
-            formatReady = false;
-            nativeRunning = true;
-
-            if (device != nullptr)
-            {
-                // Restore active channels from this instance's requested masks on every start.
-                auto deviceInputs = device->getActiveInputChannels();
-                auto deviceOutputs = device->getActiveOutputChannels();
-                activeInputChannels = requestedInputChannels;
-                activeOutputChannels = requestedOutputChannels;
-                activeInputChannels &= deviceInputs;
-                activeOutputChannels &= deviceOutputs;
-
-                currentSampleRate = device->getCurrentSampleRate();
-                currentBufferSize = device->getCurrentBufferSizeSamples();
-
-                auto inputCapacity = deviceInputs.countNumberOfSetBits();
-                auto outputCapacity = deviceOutputs.countNumberOfSetBits();
-                tempOutputBuffer.setSize(outputCapacity, currentBufferSize, false, false, true);
-                activeOutputPtrs.resize(outputCapacity);
-                activeInputPtrs.reserve(inputCapacity);
-            }
-        }
-        triggerAsyncUpdate();
-    }
-
-    void audioDeviceStopped() override
-    {
-        {
-            const juce::ScopedLock sl(lock);
-            nativeRunning = false;
-            formatReady = false;
-        }
-        triggerAsyncUpdate();
-    }
-
-    void handleAsyncUpdate() override
-    {
         const juce::ScopedLock sl(lock);
-        if (isDestroying.load(std::memory_order_acquire) || userCallback == nullptr)
-            return;
-        if (nativeRunning)
+        formatReady = false;
+        nativeRunning = true;
+
+        auto deviceInputs = device->getActiveInputChannels();
+        auto deviceOutputs = device->getActiveOutputChannels();
+        activeInputChannels = requestedInputChannels;
+        activeOutputChannels = requestedOutputChannels;
+        activeInputChannels &= deviceInputs;
+        activeOutputChannels &= deviceOutputs;
+
+        currentSampleRate = device->getCurrentSampleRate();
+        currentBufferSize = device->getCurrentBufferSizeSamples();
+
+        tempOutputBuffer.setSize(deviceOutputs.countNumberOfSetBits(), currentBufferSize, false, false, true);
+        activeOutputPtrs.resize(deviceOutputs.countNumberOfSetBits());
+        activeInputPtrs.reserve(deviceInputs.countNumberOfSetBits());
+
+        if (userCallback != nullptr && isPlaying_)
         {
             userCallback->audioDeviceAboutToStart(this);
             formatReady = true;
         }
-        else
+    }
+
+    void audioDeviceStopped() override
+    {
+        const juce::ScopedLock sl(lock);
+        nativeRunning = false;
+        bool wasReady = formatReady;
+        formatReady = false;
+        if (userCallback != nullptr && wasReady)
             userCallback->audioDeviceStopped();
     }
 
     juce::String actualDeviceName;
     juce::String deviceType;
     juce::String actualDeviceKey;
+    juce::String lastError;
     juce::AudioIODeviceCallback* userCallback = nullptr;
     juce::BigInteger requestedInputChannels;
     juce::BigInteger requestedOutputChannels;

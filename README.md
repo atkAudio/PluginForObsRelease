@@ -16,9 +16,13 @@
 - Use multiple plugins to create audio processing chains (or graphs) from OBS sources and audio devices
 - Always internally multithreading (no extra latency penalty)
 - Saving and loading of chains/graphs as files (share and collaborate)
-- Route audio and MIDI between sources, plugins and hardware (ASIO/CoreAudio included)
+- Undo/redo, multi-selection, lasso selection (left-drag on empty space), grab panning (right-drag on empty space), cut/copy/paste and duplicate
+- Nested groups with collapse, bypass, import/export and matching group-state loading
+- Route audio and MIDI between OBS sources, plugins and hardware (ASIO/CoreAudio included)
 - Sample rate converting and drift compensating internal buffering for seamless audio between OBS sources and audio devices
 - Set up OBS Sources volume and mute control via MIDI
+- Transport control: host-wide BPM, time signature, playback and editable musical position, with optional MIDI Clock/SPP input and output
+- Chord Analyzer: MIDI chord display; optional host-wide VST3 chord context updates on the following processing block
 - etc
 
 PluginHost2 can interface directly with audio and MIDI hardware, OBS audio sources, and output audio as new OBS sources, allowing for complex audio processing setups. E.g. use ASIO interface as audio device, take additional audio from OBS sources, route monitoring to ASIO outputs and/or different audio drivers/hardware, use plugins and create final mix, and output the processed audio as a new OBS source for recording and streaming. Or just create a simple soundboard with a sampler plugin and a MIDI keyboard.
@@ -86,12 +90,6 @@ cmake --build --preset ubuntu-x86_64
 
 Find `atkaudio-pluginforobs.so` and copy it to OBS plugins directory.
 See `CMakePresets.json` for Windows, macOS and other build presets.
-
-## Tests
-
-`tests` contains the non-Qt unit tests. `obs_qt_tests` links OBS/Qt and runs feature tests with Qt's offscreen platform; it does not start OBS.
-
-Add suites as `tests/*UiTest.cpp` or `tests/*ObsQtTest.cpp`, without a `main()`. They share [tests/ObsQtTestMain.cpp](tests/ObsQtTestMain.cpp) and are registered with CTest labels `obs` and `qt`. Add the feature's production sources to `obs_qt_test_support` in [tests/CMakeLists.txt](tests/CMakeLists.txt); fixtures own their feature resources and cleanup.
 
 ## Donation
 

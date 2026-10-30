@@ -1,3 +1,5 @@
+#include <atkaudio/obs_monitoring.h>
+
 #include "core/atkaudio/DeviceIo/DeviceIo.h"
 #include <atomic>
 #include <obs-frontend-api.h>
@@ -454,8 +456,8 @@ static void tick(void* data, float seconds)
         if (adio->followSourceVolume.load(std::memory_order_acquire) && parent)
         {
             bool obsMuted = obs_source_muted(parent);
-            int monitoringType = (int)obs_source_get_monitoring_type(parent);
-            bool effectiveMuted = obsMuted || (monitoringType == OBS_MONITORING_TYPE_MONITOR_ONLY);
+            bool monitorOnly = atk::obsMonitoring::isMonitorOnly(parent);
+            bool effectiveMuted = obsMuted || monitorOnly;
 
             auto fader = obs_source_get_volume(parent);
             if (effectiveMuted)

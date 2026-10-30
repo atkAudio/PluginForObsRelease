@@ -1,6 +1,8 @@
 #include "PluginHost2.h"
 
 #include "PluginGraph.h"
+#include "ParentSourceBridge.h"
+#include <atkaudio/ObsAudioChannelSet.h>
 #include "Editor/MainHostWindow.h"
 #include <atkaudio/Logging.h>
 #include <atkaudio/atkAudioModule.h>
@@ -11,34 +13,30 @@ namespace atk
 {
 class MidiClient;
 
-class PluginHost2RuntimeAudioCallback final
-    : public juce::AudioIODeviceCallback
-    , private juce::ChangeListener
+class PluginHost2RuntimeAudioCallback final : public juce::AudioIODeviceCallback
 {
 public:
     PluginHost2RuntimeAudioCallback(
         AudioProcessorGraphMT& graphModel,
-        juce::AudioDeviceManager& deviceManagerRef,
-        atk::MidiClient& midiClientRef
+        atk::MidiClient& midiClientRef,
+        ParentSourceBridge& parentBridge,
+        PublishedTransport& transportSettingsRef,
+        Vst3ChordContext& chordContextRef
     )
         : graph(graphModel)
-        , deviceManager(deviceManagerRef)
+        , bridge(parentBridge)
         , midiClient(midiClientRef)
+        , transportSettings(transportSettingsRef)
+        , chordContext(chordContextRef)
     {
-        atk::logging::debug("PluginHost2RuntimeAudioCallback::ctor", "begin");
-        updateMidiOutput();
-        deviceManager.addChangeListener(this);
         atk::logging::debug("PluginHost2RuntimeAudioCallback::ctor", "ready");
     }
 
     ~PluginHost2RuntimeAudioCallback() override
     {
         atk::logging::debug("PluginHost2RuntimeAudioCallback::dtor", "begin");
-        deviceManager.removeChangeListener(this);
         audioDeviceStopped();
-
-        if (midiOutput != nullptr)
-            midiOutput->stopBackgroundThread();
+        graph.setPlayHead(nullptr);
 
         atk::logging::debug("PluginHost2RuntimeAudioCallback::dtor", "completed");
     }
@@ -54,6 +52,14 @@ public:
         }
 
         auto& audioGraph = graph;
+        bridge.start(
+            device == nullptr                  ? ParentSourceBridge::stopped
+            : device->getName() == "OBS Audio" ? ParentSourceBridge::obsAudio
+                                               : ParentSourceBridge::hardware,
+            getDefaultObsAudioChannelSet().size(),
+            blockSize,
+            sampleRate
+        );
         audioGraph.setPlayConfigDetails(
             device ? device->getActiveInputChannels().countNumberOfSetBits() : 0,
             device ? device->getActiveOutputChannels().countNumberOfSetBits() : 0,
@@ -61,7 +67,12 @@ public:
             blockSize
         );
 
+        transport.restart(sampleRate);
+        transportSettings.generatedMidi.ensureSize(65536);
+        transport.beginBlock(transportSettings.get());
+        audioGraph.setPlayHead(&transport);
         audioGraph.prepareToPlay(sampleRate, blockSize);
+        chordContext.reset();
         midiMessages.ensureSize(MIDI_BUFFER_RESERVE_BYTES);
         isPrepared = true;
         loadMeasurer.reset(sampleRate, blockSize);
@@ -70,10 +81,12 @@ public:
     void audioDeviceStopped() override
     {
         const juce::ScopedLock lock(callbackLock);
+        bridge.stop();
 
         if (isPrepared)
         {
             graph.releaseResources();
+            chordContext.reset();
             isPrepared = false;
         }
     }
@@ -99,9 +112,10 @@ public:
         }
 
         juce::AudioProcessLoadMeasurer::ScopedTimer timer(loadMeasurer, numSamples);
+        double blockTimeMs = juce::Time::getMillisecondCounterHiRes();
 
         midiMessages.clear();
-        midiClient.getPendingMidi(midiMessages, numSamples, sampleRate);
+        midiClient.getPendingMidi(midiMessages, numSamples, sampleRate, blockTimeMs);
 
         juce::AudioBuffer<float> audioBuffer(outputChannelData, numOutputChannels, numSamples);
 
@@ -113,30 +127,11 @@ public:
             if (outputChannelData[ch] != nullptr)
                 juce::FloatVectorOperations::clear(outputChannelData[ch], numSamples);
 
+        transport.beginBlock(transportSettings, numSamples);
+        chordContext.beginBlock();
         graph.processBlock(audioBuffer, midiMessages);
+        transport.endBlock(numSamples);
         midiClient.sendMidi(midiMessages);
-
-        if (midiOutput != nullptr)
-            midiOutput->sendBlockOfMessagesNow(midiMessages);
-    }
-
-    void audioDeviceIOCallback(
-        const float* const* inputChannelData,
-        int numInputChannels,
-        float* const* outputChannelData,
-        int numOutputChannels,
-        int numSamples
-    )
-    {
-        juce::AudioIODeviceCallbackContext dummyContext;
-        audioDeviceIOCallbackWithContext(
-            inputChannelData,
-            numInputChannels,
-            outputChannelData,
-            numOutputChannels,
-            numSamples,
-            dummyContext
-        );
     }
 
     float getCpuLoad() const
@@ -154,30 +149,12 @@ public:
     }
 
 private:
-    void changeListenerCallback(juce::ChangeBroadcaster*) override
-    {
-        updateMidiOutput();
-    }
-
-    void updateMidiOutput()
-    {
-        auto* defaultMidiOutput = deviceManager.getDefaultMidiOutput();
-
-        if (midiOutput == defaultMidiOutput)
-            return;
-
-        if (midiOutput != nullptr)
-            midiOutput->stopBackgroundThread();
-
-        midiOutput = defaultMidiOutput;
-
-        if (midiOutput != nullptr)
-            midiOutput->startBackgroundThread();
-    }
-
     AudioProcessorGraphMT& graph;
-    juce::AudioDeviceManager& deviceManager;
+    ParentSourceBridge& bridge;
     atk::MidiClient& midiClient;
+    PublishedTransport& transportSettings;
+    Vst3ChordContext& chordContext;
+    HostTransport transport;
     juce::CriticalSection callbackLock;
     double sampleRate = 44100.0;
     int blockSize = 512;
@@ -185,7 +162,6 @@ private:
     juce::AudioProcessLoadMeasurer loadMeasurer;
     static constexpr int MIDI_BUFFER_RESERVE_BYTES = 4096;
     juce::MidiBuffer midiMessages; // Audio thread only; reused so incoming MIDI doesn't allocate per block
-    juce::MidiOutput* midiOutput = nullptr;
     mutable float peakCpuLoad = 0.0f;
     mutable double peakCpuTime = 0.0;
 };
@@ -194,6 +170,7 @@ private:
 atk::PluginHost2::PluginHost2()
     : audioDeviceManager(std::make_unique<juce::AudioDeviceManager>())
     , mainHostWindow(std::make_unique<MainHostWindow>(*audioDeviceManager))
+    , parentSourceBridge(std::make_unique<ParentSourceBridge>())
     , moduleDeviceManager(
           std::make_unique<atk::ModuleDeviceManager>(
               std::make_unique<atk::ModuleAudioIODeviceType>("PluginHost2 Audio"),
@@ -210,11 +187,14 @@ atk::PluginHost2::PluginHost2()
         mainHostWindow->getFormatManager(),
         mainHostWindow->getKnownPluginList()
     );
+    graphModel->setParentSourceBridge(parentSourceBridge.get());
 
     runtimeAudioCallback = std::make_unique<PluginHost2RuntimeAudioCallback>(
         graphModel->graph,
-        *audioDeviceManager,
-        moduleDeviceManager->getMidiClient()
+        moduleDeviceManager->getMidiClient(),
+        *parentSourceBridge,
+        graphModel->getPublishedTransport(),
+        graphModel->getVst3ChordContext()
     );
 
     mainHostWindow->setRuntimeCpuLoadProvider([callback = runtimeAudioCallback.get()]()
@@ -245,12 +225,13 @@ atk::PluginHost2::~PluginHost2()
 
     auto* windowPtr = mainHostWindow.release();
     auto* graphModelPtr = graphModel.release();
+    auto* parentBridgePtr = parentSourceBridge.release();
     auto* deviceManagerPtr = moduleDeviceManager.release();
     auto* runtimeAudioCallbackPtr = runtimeAudioCallback.release();
     auto* audioDeviceManagerPtr = audioDeviceManager.release();
 
     atkAudioModule::destroyOnMessageThread(
-        [windowPtr, graphModelPtr, deviceManagerPtr, runtimeAudioCallbackPtr, audioDeviceManagerPtr]()
+        [windowPtr, graphModelPtr, parentBridgePtr, deviceManagerPtr, runtimeAudioCallbackPtr, audioDeviceManagerPtr]()
         {
             atk::logging::debug("PluginHost2::dtor", "message-thread teardown begin");
 
@@ -269,6 +250,7 @@ atk::PluginHost2::~PluginHost2()
             delete deviceManagerPtr;
 
             delete graphModelPtr;
+            delete parentBridgePtr;
             delete audioDeviceManagerPtr;
 
             atk::logging::debug("PluginHost2::dtor", "message-thread teardown completed");
@@ -281,8 +263,6 @@ void atk::PluginHost2::handleAsyncUpdate()
 {
     if (pendingStateString.isEmpty())
         return;
-
-    graphModel->clear();
 
     auto xml = juce::XmlDocument::parse(pendingStateString);
     if (!xml)
@@ -312,7 +292,8 @@ void atk::PluginHost2::handleAsyncUpdate()
 
 void atk::PluginHost2::process(float** buffer, int numChannels, int numSamples, double sampleRate)
 {
-    moduleDeviceManager->processExternalAudio(buffer, numChannels, numSamples, sampleRate);
+    if (!parentSourceBridge->processParent(buffer, numChannels, numSamples, sampleRate))
+        moduleDeviceManager->processExternalAudio(buffer, numChannels, numSamples, sampleRate);
 }
 
 void atk::PluginHost2::getState(std::string& s)

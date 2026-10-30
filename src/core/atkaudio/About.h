@@ -11,6 +11,9 @@ static inline std::string getAboutText()
     std::string aboutText = PLUGIN_DISPLAY_NAME;
     aboutText += "\n";
     aboutText += PLUGIN_VERSION;
+    aboutText += "\nBuild: ";
+    aboutText += PLUGIN_BUILD_TIMESTAMP;
+    aboutText += " UTC";
     aboutText += "\n\nCopyright (c) ";
     aboutText += PLUGIN_YEAR;
     aboutText += " ";
@@ -24,6 +27,9 @@ static inline std::string getAboutRichText()
     std::string aboutText = PLUGIN_DISPLAY_NAME;
     aboutText += "<br>";
     aboutText += PLUGIN_VERSION;
+    aboutText += "<br>Build: ";
+    aboutText += PLUGIN_BUILD_TIMESTAMP;
+    aboutText += " UTC";
     aboutText += "<br><br>Copyright (c) ";
     aboutText += PLUGIN_YEAR;
     aboutText += " <a href=\"";

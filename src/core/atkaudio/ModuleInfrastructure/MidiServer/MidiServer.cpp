@@ -247,11 +247,10 @@ MidiClient& MidiClient::operator=(MidiClient&& other) noexcept
     return *this;
 }
 
-void MidiClient::getPendingMidi(juce::MidiBuffer& outBuffer, int numSamples, double sampleRate)
+void MidiClient::getPendingMidi(juce::MidiBuffer& outBuffer, int numSamples, double sampleRate, double blockEndTimeMs)
 {
-    juce::ignoreUnused(sampleRate);
     if (auto queue = incomingQueue.load(std::memory_order_acquire))
-        queue->popAll(outBuffer, numSamples);
+        queue->popAll(outBuffer, numSamples, sampleRate, blockEndTimeMs);
 }
 
 void MidiClient::getPendingMidiEvents(std::vector<MidiInputEvent>& outEvents, int numSamples, double sampleRate)
@@ -261,7 +260,7 @@ void MidiClient::getPendingMidiEvents(std::vector<MidiInputEvent>& outEvents, in
         queue->popAllDetailed(outEvents, numSamples);
 }
 
-void MidiClient::sendMidi(const juce::MidiBuffer& messages)
+void MidiClient::sendMidi(const juce::MidiBuffer& messages, double blockStartTimeMs, double sampleRate)
 {
     auto queue = outboundQueue.load(std::memory_order_acquire);
     if (!queue)
@@ -270,7 +269,10 @@ void MidiClient::sendMidi(const juce::MidiBuffer& messages)
     bool queuedAnyMessages = false;
     for (const auto metadata : messages)
     {
-        if (!queue->push(metadata.getMessage()))
+        double scheduledTimeMs = blockStartTimeMs > 0.0 && sampleRate > 0.0
+                                   ? blockStartTimeMs + metadata.samplePosition * 1000.0 / sampleRate
+                                   : 0.0;
+        if (!queue->push(metadata.getMessage(), {}, scheduledTimeMs))
             break; // Queue full
 
         queuedAnyMessages = true;
@@ -509,6 +511,8 @@ void MidiServer::handleIncomingMidiMessage(juce::MidiInput* source, const juce::
 
     juce::String sourceName = source->getName();
     juce::String sourceIdentifier;
+    double arrivalTimeSeconds =
+        message.getTimeStamp() > 0.0 ? message.getTimeStamp() : juce::Time::getMillisecondCounterHiRes() * 0.001;
 
     for (juce::HashMap<juce::String, juce::String>::Iterator it(activeInputDevices); it.next();)
     {
@@ -520,7 +524,7 @@ void MidiServer::handleIncomingMidiMessage(juce::MidiInput* source, const juce::
     }
 
     if (auto queue = monitorQueue)
-        queue->push(message, 0, sourceName);
+        queue->push(message, 0, sourceName, {}, arrivalTimeSeconds);
 
     auto snapshot = activeSnapshot.load(std::memory_order_acquire);
     if (!snapshot)
@@ -534,7 +538,7 @@ void MidiServer::handleIncomingMidiMessage(juce::MidiInput* source, const juce::
 
         for (const auto& clientSnapshot : it->second)
             if (clientSnapshot.incomingMidiQueue)
-                clientSnapshot.incomingMidiQueue->push(message, 0, sourceName);
+                clientSnapshot.incomingMidiQueue->push(message, 0, sourceName, {}, arrivalTimeSeconds);
 
         return true;
     };
@@ -590,7 +594,7 @@ void MidiServer::drainOutboundMidi()
         queue->popAll(outboundEvents);
 
         for (auto& event : outboundEvents)
-            dispatchOutboundMidi(event.message, state, event.outputDeviceName);
+            dispatchOutboundMidi(event.message, state, event.outputDeviceName, event.scheduledTimeMs);
     }
 }
 
@@ -603,12 +607,13 @@ void MidiServer::signalOutboundMidiReady()
 void MidiServer::dispatchOutboundMidi(
     const juce::MidiMessage& message,
     const MidiClientState& state,
-    const juce::String& outputDeviceName
+    const juce::String& outputDeviceName,
+    double scheduledTimeMs
 )
 {
     if (outputDeviceName.isNotEmpty())
     {
-        dispatchMidiToOutput(message, outputDeviceName);
+        dispatchMidiToOutput(message, outputDeviceName, scheduledTimeMs);
         return;
     }
 
@@ -620,11 +625,31 @@ void MidiServer::dispatchOutboundMidi(
 
         juce::String requestedKey =
             preferredIdentifier.isNotEmpty() ? preferredIdentifier : state.subscribedOutputDevices[i];
-        dispatchMidiToOutput(message, requestedKey);
+        dispatchMidiToOutput(message, requestedKey, scheduledTimeMs);
     }
 }
 
-void MidiServer::dispatchMidiToOutput(const juce::MidiMessage& message, const juce::String& requestedKey)
+static void sendScheduledMidi(juce::MidiOutput& output, const juce::MidiMessage& message, double scheduledTimeMs)
+{
+    if (scheduledTimeMs <= 0.0)
+        output.sendMessageNow(message);
+    else
+    {
+        juce::MidiBuffer buffer;
+        buffer.addEvent(message, 0);
+        output.sendBlockOfMessages(
+            buffer,
+            juce::jmax(scheduledTimeMs, juce::Time::getMillisecondCounterHiRes() + 1.0),
+            1000.0
+        );
+    }
+}
+
+void MidiServer::dispatchMidiToOutput(
+    const juce::MidiMessage& message,
+    const juce::String& requestedKey,
+    double scheduledTimeMs
+)
 {
     if (requestedKey.isEmpty())
         return;
@@ -633,7 +658,7 @@ void MidiServer::dispatchMidiToOutput(const juce::MidiMessage& message, const ju
         juce::ScopedLock lock(clientsMutex);
         if (auto* output = outputDevices[requestedKey])
         {
-            output->sendMessageNow(message);
+            sendScheduledMidi(*output, message, scheduledTimeMs);
             return;
         }
     }
@@ -647,7 +672,7 @@ void MidiServer::dispatchMidiToOutput(const juce::MidiMessage& message, const ju
         juce::ScopedLock lock(clientsMutex);
         if (auto* output = outputDevices[lookup.cacheKey])
         {
-            output->sendMessageNow(message);
+            sendScheduledMidi(*output, message, scheduledTimeMs);
             return;
         }
     }
@@ -661,11 +686,12 @@ void MidiServer::dispatchMidiToOutput(const juce::MidiMessage& message, const ju
         juce::MidiOutput* openedOutput = juce::MidiOutput::openDevice(device.identifier).release();
         if (openedOutput == nullptr)
             return;
+        openedOutput->startBackgroundThread();
 
         {
             juce::ScopedLock lock(clientsMutex);
             outputDevices.set(lookup.cacheKey, openedOutput);
-            openedOutput->sendMessageNow(message);
+            sendScheduledMidi(*openedOutput, message, scheduledTimeMs);
         }
 
         atk::logging::debug(
@@ -853,6 +879,7 @@ void MidiServer::syncMidiOutputDevices()
             juce::MidiOutput* openedOutput = juce::MidiOutput::openDevice(device.identifier).release();
             if (openedOutput != nullptr)
             {
+                openedOutput->startBackgroundThread();
                 juce::ScopedLock lock(clientsMutex);
                 outputDevices.set(it.getKey(), openedOutput);
                 atk::logging::debug(

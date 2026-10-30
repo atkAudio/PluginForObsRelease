@@ -1,3 +1,5 @@
+#include <atkaudio/obs_monitoring.h>
+
 #include "DeviceIo2ObsControl.h"
 
 #include <obs-frontend-api.h>
@@ -186,8 +188,8 @@ bool enumSourceLevelByUuid(void* param, obs_source_t* src)
         return true;
 
     bool obsMuted = obs_source_muted(src);
-    int monitoringType = (int)obs_source_get_monitoring_type(src);
-    bool effectiveMuted = obsMuted || (monitoringType == OBS_MONITORING_TYPE_MONITOR_ONLY);
+    bool monitorOnly = atk::obsMonitoring::isMonitorOnly(src);
+    bool effectiveMuted = obsMuted || monitorOnly;
 
     context->sourceVolume = obs_source_get_volume(src);
     context->sourceMuted = effectiveMuted;

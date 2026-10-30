@@ -268,6 +268,8 @@ public:
     juce::String getStateXml() const
     {
         auto state = deviceManager.createStateXml();
+        if (state)
+            atk::removeHardwareSettingsFromDeviceState(*state);
         return state ? state->toString() : juce::String();
     }
 
@@ -280,14 +282,15 @@ public:
         if (!xml)
             return;
 
-        auto* deviceSetup = xml->getChildByName("DEVICESETUP");
+        atk::removeHardwareSettingsFromDeviceState(*xml);
+        auto* deviceSetup = xml->hasTagName("DEVICESETUP") ? xml.get() : xml->getChildByName("DEVICESETUP");
         if (!deviceSetup)
             return;
 
         juce::String savedOutputDevice = deviceSetup->getStringAttribute("audioOutputDeviceName");
         juce::String savedInputDevice = deviceSetup->getStringAttribute("audioInputDeviceName");
         pendingDeviceName = savedOutputDevice.isNotEmpty() ? savedOutputDevice : savedInputDevice;
-        pendingStateXml = xmlString;
+        pendingStateXml = xml->toString();
 
         tryRestorePendingDevice();
     }

@@ -1,8 +1,8 @@
 #include "GraphEditorPanel.h"
+#include "../missing_plugin.h"
 
 #include "../../Logging.h"
-#include "../InternalPlugins/InternalPlugins.h"
-#include "MainHostWindow.h"
+#include <set>
 
 struct GraphEditorPanel::PinComponent final
     : public Component
@@ -35,7 +35,9 @@ struct GraphEditorPanel::PinComponent final
                         || ioType == AudioProcessorGraphMT::AudioGraphIOProcessor::audioOutputNode)
                     {
                         // Try to get actual channel name from the current audio device
-                        if (auto* device = graph.getMainHostWindow().getDeviceManager().getCurrentAudioDevice())
+                        auto* host = graph.getNativeEditorHost();
+                        auto* device = host != nullptr ? host->getDeviceManager().getCurrentAudioDevice() : nullptr;
+                        if (device != nullptr)
                         {
                             auto channelNames = ioType == AudioProcessorGraphMT::AudioGraphIOProcessor::audioInputNode
                                                   ? device->getInputChannelNames()
@@ -96,6 +98,7 @@ struct GraphEditorPanel::PinComponent final
 
     void mouseDown(const MouseEvent& e) override
     {
+        panel.cancelGestures(panel.documentGeneration != graph.getDocumentGeneration());
         AudioProcessorGraphMT::NodeAndChannel dummy{{}, 0};
 
         panel.beginConnectorDrag(isInput ? dummy : pin, isInput ? pin : dummy, e);
@@ -122,6 +125,7 @@ struct GraphEditorPanel::PinComponent final
 
 struct GraphEditorPanel::PluginComponent final
     : public Component
+    , public SettableTooltipClient
     , public Timer
     , private AudioProcessorParameter::Listener
     , private AsyncUpdater
@@ -130,9 +134,9 @@ struct GraphEditorPanel::PluginComponent final
         : panel(p)
         , graph(p.graph)
         , pluginID(id)
+        , processorNode(graph.graph.getNodeForId(id))
     {
-        shadow.setShadowProperties(DropShadow(Colours::black.withAlpha(0.5f), 3, {0, 1}));
-        setComponentEffect(&shadow);
+        shadow = DropShadow(Colours::black.withAlpha(0.5f), 3, {0, 1});
 
         if (auto f = graph.graph.getNodeForId(pluginID))
         {
@@ -151,7 +155,7 @@ struct GraphEditorPanel::PluginComponent final
 
     ~PluginComponent() override
     {
-        if (auto f = graph.graph.getNodeForId(pluginID))
+        if (auto f = processorNode)
         {
             if (auto* processor = f->getProcessor())
             {
@@ -163,43 +167,41 @@ struct GraphEditorPanel::PluginComponent final
 
     void mouseDown(const MouseEvent& e) override
     {
-        originalPos = localPointToGlobal(Point<int>());
-
         toFront(true);
-
         if (e.mods.isPopupMenu())
-            showPopupMenu();
+        {
+            if (!panel.selection.isSelected(pluginID))
+                panel.selection.selectOnly(pluginID);
+            panel.showSelectionMenu(e.getScreenPosition());
+            return;
+        }
+        selectionResultOnMouseDown = panel.selection.addToSelectionOnMouseDown(pluginID, e.mods);
+        panel.beginDraggingNodes(panel.getSelectedNodes(), e);
+        if (e.source.isTouch())
+        {
+            originalPos = e.position.toInt();
+            startTimer(750);
+        }
     }
 
     void mouseDrag(const MouseEvent& e) override
     {
-        if (!e.mods.isPopupMenu())
-        {
-            auto pos = originalPos + e.getOffsetFromDragStart();
-
-            if (getParentComponent() != nullptr)
-                pos = getParentComponent()->getLocalPoint(nullptr, pos);
-
-            pos += getLocalBounds().getCentre();
-
-            graph.setNodePosition(pluginID, {pos.x / (double)getParentWidth(), pos.y / (double)getParentHeight()});
-
-            panel.updateComponents();
-        }
+        if (e.source.isTouch() && e.getDistanceFromDragStart() > 5)
+            stopTimer();
+        if (!e.mods.isPopupMenu() && panel.selection.isSelected(pluginID))
+            panel.dragNodes(e);
     }
 
     void mouseUp(const MouseEvent& e) override
     {
-        if (e.mouseWasDraggedSinceMouseDown())
-        {
-            graph.setChangedFlag(true);
-        }
-        else if (e.getNumberOfClicks() == 2)
-        {
-            if (auto f = graph.graph.getNodeForId(pluginID))
-                if (auto* w = graph.getOrCreateWindowFor(f, PluginWindow::Type::normal))
-                    w->toFront(true);
-        }
+        stopTimer();
+        if (e.mods.isPopupMenu())
+            return;
+        bool wasDragged = e.mouseWasDraggedSinceMouseDown();
+        panel.selection.addToSelectionOnMouseUp(pluginID, e.mods, wasDragged, selectionResultOnMouseDown);
+        panel.endDraggingNodes(wasDragged);
+        if (!wasDragged && e.getNumberOfClicks() == 2)
+            panel.showNodeWindow(pluginID, PluginWindow::Type::normal);
     }
 
     bool hitTest(int x, int y) override
@@ -214,6 +216,7 @@ struct GraphEditorPanel::PluginComponent final
     void paint(Graphics& g) override
     {
         auto boxArea = getLocalBounds().reduced(4, pinSize);
+        shadow.drawForRectangle(g, boxArea);
         bool isBypassed = false;
         String displayName = getName();
 
@@ -235,8 +238,21 @@ struct GraphEditorPanel::PluginComponent final
         g.setColour(boxColour);
         g.fillRect(boxArea.toFloat());
 
+        if (panel.selection.isSelected(pluginID))
+        {
+            g.setColour(findColour(TextEditor::focusedOutlineColourId));
+            g.drawRect(boxArea.toFloat(), 2.0f);
+        }
+
         g.setColour(findColour(TextEditor::textColourId));
         g.setFont(font);
+        if (dynamic_cast<MissingPlugin*>(getProcessor()) != nullptr)
+        {
+            auto status = boxArea.removeFromBottom(16);
+            g.setColour(Colours::darkorange);
+            g.drawText("Missing", status, Justification::centred);
+            g.setColour(findColour(TextEditor::textColourId));
+        }
         g.drawFittedText(displayName, boxArea, Justification::centred, 2);
     }
 
@@ -295,22 +311,34 @@ struct GraphEditorPanel::PluginComponent final
         if (processor.producesMidi())
             ++numOuts;
 
+        auto* missing = dynamic_cast<MissingPlugin*>(&processor);
         int w = 100;
-        int h = 60;
+        int h = missing != nullptr ? 80 : 60;
 
         w = jmax(w, (jmax(numIns, numOuts) + 1) * 20);
 
         const auto textWidth = GlyphArrangement::getStringWidthInt(font, processor.getName());
         w = jmax(w, 16 + jmin(textWidth, 300));
         if (textWidth > 300)
-            h = 100;
+            h = missing != nullptr ? 116 : 100;
 
         setSize(w, h);
         setName(processor.getName() + formatSuffix);
+        setTooltip(
+            missing != nullptr ? "Missing: "
+                                     + missing->description.name
+                                     + "\n"
+                                     + missing->description.pluginFormatName
+                                     + "\n"
+                                     + missing->description.fileOrIdentifier
+                                     + "\n"
+                                     + missing->failureReason
+                               : String{}
+        );
 
         {
             auto p = graph.getNodePosition(pluginID);
-            setCentreRelative((float)p.x, (float)p.y);
+            setCentrePosition((GraphViewGeometry::canvasPosition(p) + panel.getLayoutOrigin().toDouble()).roundToInt());
         }
 
         if (numIns != numInputs || numOuts != numOutputs)
@@ -348,130 +376,12 @@ struct GraphEditorPanel::PluginComponent final
         return {};
     }
 
-    bool isNodeUsingARA() const
-    {
-        if (auto node = graph.graph.getNodeForId(pluginID))
-            return node->properties["useARA"];
-
-        return false;
-    }
-
-    void showPopupMenu()
-    {
-        menu.reset(new PopupMenu);
-        menu->addItem("Delete this filter", [this] { graph.graph.removeNode(pluginID); });
-        menu->addItem("Disconnect all pins", [this] { graph.graph.disconnectNode(pluginID); });
-        menu->addItem(
-            "Toggle Bypass",
-            [this]
-            {
-                if (auto* node = graph.graph.getNodeForId(pluginID))
-                    node->setBypassed(!node->isBypassed());
-
-                repaint();
-            }
-        );
-        menu->addItem(
-            "Rename Node",
-            [this]
-            {
-                if (auto* node = graph.graph.getNodeForId(pluginID))
-                {
-                    auto currentName = node->properties["customName"].toString();
-                    if (currentName.isEmpty())
-                        currentName = getProcessor()->getName();
-
-                    auto* alertWindow = new AlertWindow(
-                        "Rename Node",
-                        "Enter new name (leave empty to reset to default):",
-                        MessageBoxIconType::QuestionIcon
-                    );
-
-                    alertWindow->addTextEditor("name", currentName, String());
-                    alertWindow->addButton("OK", 1, KeyPress(KeyPress::returnKey));
-                    alertWindow->addButton("Cancel", 0, KeyPress(KeyPress::escapeKey));
-
-                    auto callback = [this, alertWindow, pluginID = this->pluginID, graphRef = &graph](int result)
-                    {
-                        if (result == 1)
-                        {
-                            String newName = alertWindow->getTextEditorContents("name").trim();
-
-                            if (auto* node = graphRef->graph.getNodeForId(pluginID))
-                            {
-                                if (newName.isEmpty())
-                                    node->properties.remove("customName");
-                                else
-                                    node->properties.set("customName", newName);
-
-                                graphRef->setChangedFlag(true);
-                                graphRef->sendChangeMessage();
-
-                                // Repaint the component to show the new name
-                                repaint();
-                            }
-                        }
-
-                        delete alertWindow;
-                    };
-
-                    alertWindow->enterModalState(true, ModalCallbackFunction::create(callback), true);
-
-                    if (auto* editor = alertWindow->getTextEditor("name"))
-                    {
-                        editor->grabKeyboardFocus();
-                        editor->selectAll();
-                    }
-                }
-            }
-        );
-
-        menu->addSeparator();
-        if (getProcessor()->hasEditor())
-            menu->addItem("Show plugin GUI", [this] { showWindow(PluginWindow::Type::normal); });
-
-        menu->addItem("Show all programs", [this] { showWindow(PluginWindow::Type::programs); });
-        menu->addItem("Show all parameters", [this] { showWindow(PluginWindow::Type::generic); });
-        menu->addItem("Show debug log", [this] { showWindow(PluginWindow::Type::debug); });
-
-#if JUCE_PLUGINHOST_ARA && (JUCE_MAC || JUCE_WINDOWS || JUCE_LINUX)
-        if (auto* instance = dynamic_cast<AudioPluginInstance*>(getProcessor()))
-            if (instance->getPluginDescription().hasARAExtension && isNodeUsingARA())
-                menu->addItem("Show ARA host controls", [this] { showWindow(PluginWindow::Type::araHost); });
-#endif
-
-        menu->addSeparator();
-        menu->addItem("Configure Audio I/O", [this] { showWindow(PluginWindow::Type::audioIO); });
-        menu->addItem("Test state save/load", [this] { testStateSaveLoad(); });
-
-#if !JUCE_IOS && !JUCE_ANDROID
-        menu->addSeparator();
-        menu->addItem("Save plugin state", [this] { savePluginState(); });
-        menu->addItem("Load plugin state", [this] { loadPluginState(); });
-#endif
-
-        menu->showMenuAsync({});
-    }
-
-    void testStateSaveLoad()
-    {
-        if (auto* processor = getProcessor())
-        {
-            MemoryBlock state;
-            processor->getStateInformation(state);
-            processor->setStateInformation(state.getData(), (int)state.getSize());
-        }
-    }
-
-    void showWindow(PluginWindow::Type type)
-    {
-        if (auto node = graph.graph.getNodeForId(pluginID))
-            if (auto* w = graph.getOrCreateWindowFor(node, type))
-                w->toFront(true);
-    }
-
     void timerCallback() override
     {
+        stopTimer();
+        if (!panel.selection.isSelected(pluginID))
+            panel.selection.selectOnly(pluginID);
+        panel.showSelectionMenu(localPointToGlobal(originalPos));
     }
 
     void parameterValueChanged(int, float) override
@@ -490,71 +400,18 @@ struct GraphEditorPanel::PluginComponent final
         repaint();
     }
 
-    void savePluginState()
-    {
-        fileChooser = std::make_unique<FileChooser>("Save plugin state");
-
-        const auto onChosen = [ref = SafePointer<PluginComponent>(this)](const FileChooser& chooser)
-        {
-            if (ref == nullptr)
-                return;
-
-            const auto result = chooser.getResult();
-
-            if (result == File())
-                return;
-
-            if (auto* node = ref->graph.graph.getNodeForId(ref->pluginID))
-            {
-                MemoryBlock block;
-                node->getProcessor()->getStateInformation(block);
-                result.replaceWithData(block.getData(), block.getSize());
-            }
-        };
-
-        fileChooser->launchAsync(FileBrowserComponent::saveMode | FileBrowserComponent::warnAboutOverwriting, onChosen);
-    }
-
-    void loadPluginState()
-    {
-        fileChooser = std::make_unique<FileChooser>("Load plugin state");
-
-        const auto onChosen = [ref = SafePointer<PluginComponent>(this)](const FileChooser& chooser)
-        {
-            if (ref == nullptr)
-                return;
-
-            const auto result = chooser.getResult();
-
-            if (result == File())
-                return;
-
-            if (auto* node = ref->graph.graph.getNodeForId(ref->pluginID))
-            {
-                if (auto stream = result.createInputStream())
-                {
-                    MemoryBlock block;
-                    stream->readIntoMemoryBlock(block);
-                    node->getProcessor()->setStateInformation(block.getData(), (int)block.getSize());
-                }
-            }
-        };
-
-        fileChooser->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles, onChosen);
-    }
-
     GraphEditorPanel& panel;
     PluginGraph& graph;
     const AudioProcessorGraphMT::NodeID pluginID;
+    AudioProcessorGraphMT::Node::Ptr processorNode;
     OwnedArray<PinComponent> pins;
     int numInputs = 0, numOutputs = 0;
     int pinSize = 16;
     Point<int> originalPos;
+    bool selectionResultOnMouseDown = false;
     Font font = FontOptions{13.0f, Font::bold};
     int numIns = 0, numOuts = 0;
-    DropShadowEffect shadow;
-    std::unique_ptr<PopupMenu> menu;
-    std::unique_ptr<FileChooser> fileChooser;
+    DropShadow shadow;
     const String formatSuffix = getFormatSuffix(getProcessor());
 };
 
@@ -566,7 +423,7 @@ struct GraphEditorPanel::ConnectorComponent final
         : panel(p)
         , graph(p.graph)
     {
-        setAlwaysOnTop(true);
+        setComponentID("connection");
     }
 
     void setInput(AudioProcessorGraphMT::NodeAndChannel newSource)
@@ -625,14 +482,28 @@ struct GraphEditorPanel::ConnectorComponent final
 
     void getPoints(Point<float>& p1, Point<float>& p2) const
     {
-        p1 = lastInputPos;
-        p2 = lastOutputPos;
-
-        if (auto* src = panel.getComponentForPlugin(connection.source.nodeID))
-            p1 = src->getPinPos(connection.source.channelIndex, false);
-
-        if (auto* dest = panel.getComponentForPlugin(connection.destination.nodeID))
-            p2 = dest->getPinPos(connection.destination.channelIndex, true);
+        auto source =
+            panel.getEndpointAnchor(connection.source.nodeID, connection.source.channelIndex, true, lastInputPos);
+        auto destination = panel.getEndpointAnchor(
+            connection.destination.nodeID,
+            connection.destination.channelIndex,
+            false,
+            lastOutputPos
+        );
+        p1 = panel.getVisibleEndpoint(
+            connection.source.nodeID,
+            connection.source.channelIndex,
+            true,
+            destination,
+            source
+        );
+        p2 = panel.getVisibleEndpoint(
+            connection.destination.nodeID,
+            connection.destination.channelIndex,
+            false,
+            source,
+            destination
+        );
     }
 
     void paint(Graphics& g) override
@@ -663,6 +534,7 @@ struct GraphEditorPanel::ConnectorComponent final
 
     void mouseDown(const MouseEvent&) override
     {
+        panel.cancelGestures(panel.documentGeneration != graph.getDocumentGeneration());
         dragging = false;
     }
 
@@ -674,9 +546,13 @@ struct GraphEditorPanel::ConnectorComponent final
         }
         else if (e.mouseWasDraggedSinceMouseDown())
         {
+            if (panel.documentGeneration != graph.getDocumentGeneration())
+                return;
             dragging = true;
 
-            graph.graph.removeConnection(connection);
+            panel.connectorEdit = std::make_unique<PluginGraph::Edit>(graph, "Move connection");
+            panel.originalConnection = connection;
+            graph.removeConnection(connection);
 
             double distanceFromStart, distanceFromEnd;
             getDistancesFromEnds(getPosition().toFloat() + e.position, distanceFromStart, distanceFromEnd);
@@ -757,17 +633,202 @@ struct GraphEditorPanel::ConnectorComponent final
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ConnectorComponent)
 };
 
+struct GraphEditorPanel::GroupComponent final : public Component
+{
+    GroupComponent(GraphEditorPanel& p, uint32 id)
+        : panel(p)
+        , groupId(id)
+    {
+        setComponentID("group:" + String(id));
+    }
+
+    void update(const NodeGroup& group)
+    {
+        juce::Rectangle<int> area;
+        for (auto uid : panel.graph.getGroups().getNodeUids(groupId))
+            if (auto* component = panel.getComponentForPlugin(NodeID(uid)))
+                area = area.isEmpty() ? component->getBounds() : area.getUnion(component->getBounds());
+        name = group.name;
+        bypassed = group.bypassed;
+        collapsed = group.collapsed;
+        if (collapsed)
+            setBounds(juce::Rectangle<int>(180, 58).withCentre(area.getCentre()));
+        else
+        {
+            area = {};
+            for (auto& member : group.members)
+                if (auto* component = panel.getComponentForPlugin(NodeID(member.uid)))
+                    area = area.isEmpty() ? component->getBounds() : area.getUnion(component->getBounds());
+            for (auto& child : group.childGroups)
+                if (auto* frame = panel.getComponentForGroup(child.groupId))
+                    area = area.isEmpty() ? frame->getBounds() : area.getUnion(frame->getBounds());
+            setBounds(area.expanded(10).withTrimmedTop(-titleHeight));
+        }
+        repaint();
+    }
+
+    Array<NodeID> getMembers() const
+    {
+        Array<NodeID> members;
+        for (auto uid : panel.graph.getGroups().getNodeUids(groupId))
+            members.add(NodeID(uid));
+        return members;
+    }
+
+    bool hitTest(int x, int y) override
+    {
+        return collapsed || y < titleHeight || x < 6 || x >= getWidth() - 6 || y >= getHeight() - 6;
+    }
+
+    void paint(Graphics& graphics) override
+    {
+        auto bounds = getLocalBounds().toFloat().reduced(1.0f);
+        auto accent = findColour(TextEditor::focusedOutlineColourId);
+        auto text = findColour(TextEditor::textColourId);
+        bool selected = panel.getSelectedGroupId() == groupId;
+        float alpha = bypassed ? 0.5f : 1.0f;
+        graphics.setColour(accent.withAlpha(0.08f * alpha));
+        graphics.fillRoundedRectangle(bounds, 6.0f);
+        graphics.setColour((selected ? accent : text.withAlpha(0.4f)).withMultipliedAlpha(alpha));
+        graphics.drawRoundedRectangle(bounds, 6.0f, selected ? 2.0f : 1.0f);
+        graphics.setColour(text.withMultipliedAlpha(alpha));
+        graphics.setFont(FontOptions{13.0f, Font::bold});
+        auto titleBounds = getLocalBounds().removeFromTop(titleHeight);
+        titleBounds.removeFromRight(disclosureWidth);
+        graphics.drawText(
+            name + (bypassed ? " (bypassed)" : ""),
+            titleBounds.reduced(8, 0),
+            Justification::centredLeft,
+            true
+        );
+        Path disclosure;
+        auto centre = getLocalBounds().removeFromTop(titleHeight).removeFromRight(20).toFloat().getCentre();
+        if (collapsed)
+            disclosure.addTriangle(
+                centre.x - 2.5f,
+                centre.y - 4.0f,
+                centre.x - 2.5f,
+                centre.y + 4.0f,
+                centre.x + 3.5f,
+                centre.y
+            );
+        else
+            disclosure.addTriangle(
+                centre.x - 4.0f,
+                centre.y - 2.5f,
+                centre.x + 4.0f,
+                centre.y - 2.5f,
+                centre.x,
+                centre.y + 3.5f
+            );
+        graphics.fillPath(disclosure);
+    }
+
+    void mouseDown(const MouseEvent& event) override
+    {
+        auto members = getMembers();
+        bool allSelected =
+            std::all_of(members.begin(), members.end(), [this](NodeID id) { return panel.selection.isSelected(id); });
+        if (event.mods.isPopupMenu())
+        {
+            if (!allSelected)
+                panel.selectOnly(members);
+            panel.showSelectionMenu(event.getScreenPosition());
+            return;
+        }
+        selectOnlyOnMouseUp = allSelected && !event.mods.isCommandDown() && !event.mods.isShiftDown();
+        if (event.mods.isCommandDown() || event.mods.isShiftDown())
+        {
+            for (auto id : members)
+                if (event.mods.isCommandDown() && allSelected)
+                    panel.selection.deselect(id);
+                else
+                    panel.selection.addToSelection(id);
+        }
+        else if (!allSelected)
+            panel.selectOnly(members);
+        panel.beginDraggingNodes(panel.getSelectedNodes(), event);
+    }
+
+    void mouseDrag(const MouseEvent& event) override
+    {
+        auto members = getMembers();
+        if (!event.mods.isPopupMenu()
+            && std::all_of(members.begin(), members.end(), [this](NodeID id) { return panel.selection.isSelected(id); }))
+            panel.dragNodes(event);
+    }
+
+    void mouseUp(const MouseEvent& event) override
+    {
+        if (event.mods.isPopupMenu())
+            return;
+        bool dragged = event.mouseWasDraggedSinceMouseDown();
+        panel.endDraggingNodes(dragged);
+        if (!dragged && selectOnlyOnMouseUp)
+            panel.selectOnly(getMembers());
+        if (!dragged && event.y < titleHeight)
+        {
+            if (event.x >= getWidth() - disclosureWidth)
+            {
+                if (auto* group = panel.graph.getGroups().find(groupId))
+                    panel.graph.setGroupCollapsed(groupId, !group->collapsed);
+            }
+            else if (event.getNumberOfClicks() == 2)
+                panel.showRenameGroupWindow(groupId);
+        }
+    }
+
+    enum
+    {
+        titleHeight = 20,
+        disclosureWidth = 22
+    };
+
+    GraphEditorPanel& panel;
+    uint32 groupId;
+    String name;
+    bool bypassed = false, collapsed = false, selectOnlyOnMouseUp = false;
+};
+
 GraphEditorPanel::GraphEditorPanel(PluginGraph& g)
     : graph(g)
 {
     graph.addChangeListener(this);
+    graph.getUndoManager().addChangeListener(this);
+    selection.addChangeListener(this);
+    auto accent = findColour(TextEditor::focusedOutlineColourId);
+    lasso.setColour(LassoComponent<NodeID>::lassoFillColourId, accent.withAlpha(0.15f));
+    lasso.setColour(LassoComponent<NodeID>::lassoOutlineColourId, accent.withAlpha(0.8f));
+    lasso.setAlwaysOnTop(true);
+    addChildComponent(lasso);
     setOpaque(true);
+    setWantsKeyboardFocus(true);
+    documentGeneration = graph.getDocumentGeneration();
+    setSize(GraphViewGeometry::canvasWidth, GraphViewGeometry::canvasHeight);
+    if (graph.getNativeEditorHost() == nullptr)
+    {
+        localCommandManager.registerAllCommandsForTarget(this);
+        localCommandManager.setFirstCommandTarget(this);
+        addKeyListener(localCommandManager.getKeyMappings());
+    }
+}
+
+ApplicationCommandManager& GraphEditorPanel::getCommandManager()
+{
+    auto* host = graph.getNativeEditorHost();
+    return host != nullptr ? host->getCommandManager() : localCommandManager;
 }
 
 GraphEditorPanel::~GraphEditorPanel()
 {
+    cancelGestures(documentGeneration != graph.getDocumentGeneration());
+    fileChooser.reset();
+    renameWindow.reset();
+    selection.removeChangeListener(this);
+    graph.getUndoManager().removeChangeListener(this);
     graph.removeChangeListener(this);
     draggingConnector = nullptr;
+    groupFrames.clear();
     nodes.clear();
     connectors.clear();
 }
@@ -779,21 +840,71 @@ void GraphEditorPanel::paint(Graphics& g)
 
 void GraphEditorPanel::mouseDown(const MouseEvent& e)
 {
-    if (e.mods.isPopupMenu())
+    grabKeyboardFocus();
+    cancelGestures(documentGeneration != graph.getDocumentGeneration());
+    bool pan = graphViewport != nullptr && !e.source.isTouch() && e.mods.isRightButtonDown();
+    if (pan)
+    {
+        backgroundGesture = BackgroundGesture::pan;
+        graphViewport->beginPan(e);
+        return;
+    }
+    if (!e.mods.isCommandDown() && !e.mods.isShiftDown())
+        selection.deselectAll();
+    if (e.source.isTouch())
+    {
+        originalTouchPos = e.position.toInt();
+        startTimer(750);
+    }
+    else if (e.mods.isPopupMenu())
         showPopupMenu(e.position.toInt());
+    if (!e.mods.isPopupMenu() && !e.mods.isShiftDown())
+    {
+        backgroundGesture = BackgroundGesture::lasso;
+        lasso.beginLasso(e, this);
+        lasso.toFront(false);
+    }
 }
 
-void GraphEditorPanel::mouseUp(const MouseEvent&)
+void GraphEditorPanel::mouseUp(const MouseEvent& e)
 {
+    bool showMenu = backgroundGesture == BackgroundGesture::pan && !e.mouseWasDraggedSinceMouseDown();
+    if (backgroundGesture == BackgroundGesture::pan && graphViewport != nullptr)
+        graphViewport->endPan();
+    backgroundGesture = BackgroundGesture::none;
+    stopTimer();
+    lasso.endLasso();
+    if (showMenu)
+        showPopupMenu(e.position.toInt());
 }
 
 void GraphEditorPanel::mouseDrag(const MouseEvent& e)
 {
+    if (backgroundGesture == BackgroundGesture::pan)
+    {
+        if (graphViewport != nullptr && e.mouseWasDraggedSinceMouseDown())
+            graphViewport->dragPan(e);
+        return;
+    }
+    if (e.source.isTouch() && e.getDistanceFromDragStart() > 5)
+        stopTimer();
+    if (backgroundGesture == BackgroundGesture::lasso && !e.mods.isShiftDown())
+        lasso.dragLasso(e);
 }
 
 void GraphEditorPanel::createNewPlugin(const PluginDescriptionAndPreference& desc, Point<int> position)
 {
-    graph.addPlugin(desc, position.toDouble() / Point<double>((double)getWidth(), (double)getHeight()));
+    auto normalised = toNormalised(position);
+    graph.addPlugin(
+        desc,
+        normalised,
+        [safe = SafePointer<GraphEditorPanel>(this),
+         generation = graph.getDocumentGeneration()](const Result& result, PluginGraph::NodeID)
+        {
+            if (safe != nullptr && safe->graph.getDocumentGeneration() == generation)
+                safe->showError("Couldn't create plugin", result);
+        }
+    );
 }
 
 GraphEditorPanel::PluginComponent* GraphEditorPanel::getComponentForPlugin(AudioProcessorGraphMT::NodeID nodeID) const
@@ -819,6 +930,8 @@ GraphEditorPanel::PinComponent* GraphEditorPanel::findPinAt(Point<float> pos) co
 {
     for (auto* fc : nodes)
     {
+        if (!fc->isVisible())
+            continue;
         // NB: A Visual Studio optimiser error means we have to put this Component* in a local
         // variable before trying to cast it, or it gets mysteriously optimised away..
         auto* comp = fc->getComponentAt(pos.toInt() - fc->getPosition());
@@ -830,35 +943,69 @@ GraphEditorPanel::PinComponent* GraphEditorPanel::findPinAt(Point<float> pos) co
     return nullptr;
 }
 
-void GraphEditorPanel::resized()
+void GraphEditorPanel::changeListenerCallback(ChangeBroadcaster* source)
 {
+    if (source == &selection || source == &graph.getUndoManager())
+    {
+        repaint();
+        for (auto* node : nodes)
+            node->repaint();
+        for (auto* frame : groupFrames)
+            frame->repaint();
+        getCommandManager().commandStatusChanged();
+        return;
+    }
+    bool replaced = documentGeneration != graph.getDocumentGeneration();
+    if (replaced)
+    {
+        cancelGestures(true);
+        fileChooser.reset();
+        renameWindow.reset();
+        menu.reset();
+        selection.deselectAll();
+        nodes.clear();
+        connectors.clear();
+        groupFrames.clear();
+    }
+    documentGeneration = graph.getDocumentGeneration();
     updateComponents();
-}
-
-void GraphEditorPanel::changeListenerCallback(ChangeBroadcaster*)
-{
-    updateComponents();
+    if (replaced && graphViewport != nullptr)
+        graphViewport->resetView();
+    getCommandManager().commandStatusChanged();
 }
 
 void GraphEditorPanel::updateComponents()
 {
+    if (documentGeneration != graph.getDocumentGeneration())
+    {
+        changeListenerCallback(&graph);
+        return;
+    }
+    auto previousCentre =
+        graphViewport != nullptr
+            ? graphViewport->getLogicalCentre()
+            : Point<double>(GraphViewGeometry::canvasWidth * 0.5, GraphViewGeometry::canvasHeight * 0.5);
     for (int i = nodes.size(); --i >= 0;)
-        if (graph.graph.getNodeForId(nodes.getUnchecked(i)->pluginID) == nullptr)
+        if (!graph.isNodeVisible(nodes.getUnchecked(i)->pluginID)
+            || graph.graph.getNodeForId(nodes.getUnchecked(i)->pluginID) != nodes.getUnchecked(i)->processorNode.get())
+        {
+            cancelGestures(false);
+            selection.deselect(nodes.getUnchecked(i)->pluginID);
             nodes.remove(i);
+        }
 
     for (int i = connectors.size(); --i >= 0;)
-        if (!graph.graph.isConnected(connectors.getUnchecked(i)->connection))
+        if (!graph.graph.isConnected(connectors.getUnchecked(i)->connection)
+            || !graph.isNodeVisible(connectors.getUnchecked(i)->connection.source.nodeID)
+            || !graph.isNodeVisible(connectors.getUnchecked(i)->connection.destination.nodeID))
             connectors.remove(i);
 
     for (auto* fc : nodes)
         fc->update();
 
-    for (auto* cc : connectors)
-        cc->update();
-
     for (auto* f : graph.graph.getNodes())
     {
-        if (getComponentForPlugin(f->nodeID) == nullptr)
+        if (graph.isNodeVisible(f->nodeID) && getComponentForPlugin(f->nodeID) == nullptr)
         {
             auto* comp = nodes.add(new PluginComponent(*this, f->nodeID));
             addAndMakeVisible(comp);
@@ -866,9 +1013,34 @@ void GraphEditorPanel::updateComponents()
         }
     }
 
+    auto& groups = graph.getGroups();
+    for (int i = groupFrames.size(); --i >= 0;)
+        if (groups.find(groupFrames.getUnchecked(i)->groupId) == nullptr)
+            groupFrames.remove(i);
+    for (auto& group : groups.getAll())
+        if (getComponentForGroup(group.id) == nullptr)
+            addAndMakeVisible(groupFrames.add(new GroupComponent(*this, group.id)));
+
+    std::function<void(const NodeGroup&)> updateTree = [&](const NodeGroup& group)
+    {
+        for (auto& child : group.childGroups)
+            if (auto* childGroup = groups.find(child.groupId))
+                updateTree(*childGroup);
+        auto* frame = getComponentForGroup(group.id);
+        frame->update(group);
+        frame->toBack();
+    };
+    for (auto& group : groups.getAll())
+        if (groups.findParentOf(group.id) == nullptr)
+            updateTree(group);
+    for (auto* node : nodes)
+        node->setVisible(getCollapsedGroupFor(node->pluginID) == nullptr);
+
     for (auto& c : graph.graph.getConnections())
     {
-        if (getComponentForConnection(c) == nullptr)
+        if (graph.isNodeVisible(c.source.nodeID)
+            && graph.isNodeVisible(c.destination.nodeID)
+            && getComponentForConnection(c) == nullptr)
         {
             auto* comp = connectors.add(new ConnectorComponent(*this));
             addAndMakeVisible(comp);
@@ -877,24 +1049,49 @@ void GraphEditorPanel::updateComponents()
             comp->setOutput(c.destination);
         }
     }
+    for (auto* connector : connectors)
+    {
+        connector->toBack();
+        auto* sourceGroup = getCollapsedGroupFor(connector->connection.source.nodeID);
+        auto* destinationGroup = getCollapsedGroupFor(connector->connection.destination.nodeID);
+        connector->setVisible(sourceGroup == nullptr || sourceGroup != destinationGroup);
+        connector->update();
+    }
+    for (auto* frame : groupFrames)
+    {
+        auto* ancestor = groups.findParentOf(frame->groupId);
+        bool hidden = false;
+        while (ancestor != nullptr)
+        {
+            hidden = hidden || ancestor->collapsed;
+            ancestor = groups.findParentOf(ancestor->id);
+        }
+        frame->setVisible(!hidden);
+    }
+    updateLayoutBounds();
+    if (graphViewport != nullptr)
+        graphViewport->contentChanged(previousCentre);
 }
 
 void GraphEditorPanel::showPopupMenu(Point<int> mousePos)
 {
     menu.reset(new PopupMenu);
 
-    if (auto* mainWindow = findParentComponentOfClass<MainHostWindow>())
+    if (auto* host = graph.getNativeEditorHost())
     {
-        mainWindow->addPluginsToMenu(*menu);
+        host->addPluginsToMenu(*menu);
+        menu->addSeparator();
+        addSelectionItemsToMenu(*menu, mousePos);
 
         menu->showMenuAsync(
             {},
             ModalCallbackFunction::create(
-                [this, mousePos](int r)
+                [safe = SafePointer<GraphEditorPanel>(this), generation = graph.getDocumentGeneration(), mousePos](int r)
                 {
-                    if (auto* mainWin = findParentComponentOfClass<MainHostWindow>())
-                        if (const auto chosen = mainWin->getChosenType(r))
-                            createNewPlugin(*chosen, mousePos);
+                    if (safe == nullptr || safe->graph.getDocumentGeneration() != generation)
+                        return;
+                    if (auto* currentHost = safe->graph.getNativeEditorHost())
+                        currentHost->createPluginFromMenu(r, safe->toNormalised(mousePos));
                 }
             )
         );
@@ -907,9 +1104,18 @@ void GraphEditorPanel::beginConnectorDrag(
     const MouseEvent& e
 )
 {
+    if (documentGeneration != graph.getDocumentGeneration())
+    {
+        cancelGestures(true);
+        return;
+    }
+    grabKeyboardFocus();
     auto* c = dynamic_cast<ConnectorComponent*>(e.originalComponent);
     connectors.removeObject(c, false);
     draggingConnector.reset(c);
+
+    if (connectorEdit == nullptr)
+        connectorEdit = std::make_unique<PluginGraph::Edit>(graph, "Connect");
 
     if (draggingConnector == nullptr)
         draggingConnector.reset(new ConnectorComponent(*this));
@@ -925,6 +1131,11 @@ void GraphEditorPanel::beginConnectorDrag(
 
 void GraphEditorPanel::dragConnector(const MouseEvent& e)
 {
+    if (documentGeneration != graph.getDocumentGeneration())
+    {
+        cancelGestures(true);
+        return;
+    }
     auto e2 = e.getEventRelativeTo(this);
 
     if (draggingConnector != nullptr)
@@ -959,7 +1170,10 @@ void GraphEditorPanel::dragConnector(const MouseEvent& e)
 void GraphEditorPanel::endDraggingConnector(const MouseEvent& e)
 {
     if (draggingConnector == nullptr)
+    {
+        cancelGestures(documentGeneration != graph.getDocumentGeneration());
         return;
+    }
 
     draggingConnector->setTooltip({});
 
@@ -968,498 +1182,932 @@ void GraphEditorPanel::endDraggingConnector(const MouseEvent& e)
 
     draggingConnector = nullptr;
 
-    if (auto* pin = findPinAt(e2.position))
+    bool connected = false;
+    auto* pin = findPinAt(e2.position);
+    if (pin != nullptr)
     {
         if (connection.source.nodeID == AudioProcessorGraphMT::NodeID())
         {
-            if (pin->isInput)
-                return;
-
-            connection.source = pin->pin;
+            if (!pin->isInput)
+                connection.source = pin->pin;
         }
         else
         {
-            if (!pin->isInput)
-                return;
-
-            connection.destination = pin->pin;
+            if (pin->isInput)
+                connection.destination = pin->pin;
         }
-
-        graph.graph.addConnection(connection);
+        if (documentGeneration == graph.getDocumentGeneration() && graph.graph.canConnect(connection))
+            connected = graph.addConnection(connection).wasOk();
     }
+    if (!connected && pin != nullptr && originalConnection && documentGeneration == graph.getDocumentGeneration())
+        showError("Restore connection", graph.restoreConnection(*originalConnection));
+    originalConnection.reset();
+    connectorEdit.reset();
+    updateComponents();
 }
 
 void GraphEditorPanel::timerCallback()
 {
+    stopTimer();
+    showPopupMenu(originalTouchPos);
 }
 
-struct GraphDocumentComponent::TooltipBar final
-    : public Component
-    , private Timer
+void GraphEditorPanel::showSelectionMenu(Point<int> screenPosition)
 {
-    TooltipBar()
+    menu = std::make_unique<PopupMenu>();
+    addSelectionItemsToMenu(*menu, getLocalPoint(nullptr, screenPosition));
+    menu->showMenuAsync(PopupMenu::Options{}.withTargetScreenArea(juce::Rectangle<int>{}.withPosition(screenPosition)));
+}
+
+void GraphEditorPanel::addSelectionItemsToMenu(PopupMenu& items, std::optional<Point<int>> insertPosition)
+{
+    auto action =
+        [safe = SafePointer<GraphEditorPanel>(this), generation = graph.getDocumentGeneration()](auto callback)
     {
-        startTimer(100);
-    }
-
-    void paint(Graphics& g) override
-    {
-        g.setFont(FontOptions((float)getHeight() * 0.7f, Font::bold));
-        g.setColour(Colours::black);
-        g.drawFittedText(tip, 10, 0, getWidth() - 12, getHeight(), Justification::centredLeft, 1);
-    }
-
-    void timerCallback() override
-    {
-        String newTip;
-
-        if (auto* underMouse = Desktop::getInstance().getMainMouseSource().getComponentUnderMouse())
-            if (auto* ttc = dynamic_cast<TooltipClient*>(underMouse))
-                if (!(underMouse->isMouseButtonDown() || underMouse->isCurrentlyBlockedByAnotherModalComponent()))
-                    newTip = ttc->getTooltip();
-
-        if (newTip != tip)
+        return [safe, generation, callback]
         {
-            tip = newTip;
-            repaint();
-        }
-    }
-
-    String tip;
-
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(TooltipBar)
-};
-
-class GraphDocumentComponent::TitleBarComponent final
-    : public Component
-    , private Button::Listener
-{
-public:
-    explicit TitleBarComponent(GraphDocumentComponent& graphDocumentComponent)
-        : owner(graphDocumentComponent)
-    {
-        static const unsigned char burgerMenuPathData[] = {
-            110, 109, 0,   0,   128, 64,  0,   0,   32,  65,  108, 0,   0,   224, 65,  0,   0,  32,  65,  98,  254,
-            212, 232, 65,  0,   0,   32,  65,  0,   0,   240, 65,  252, 169, 17,  65,  0,   0,  240, 65,  0,   0,
-            0,   65,  98,  0,   0,   240, 65,  8,   172, 220, 64,  254, 212, 232, 65,  0,   0,  192, 64,  0,   0,
-            224, 65,  0,   0,   192, 64,  108, 0,   0,   128, 64,  0,   0,   192, 64,  98,  16, 88,  57,  64,  0,
-            0,   192, 64,  0,   0,   0,   64,  8,   172, 220, 64,  0,   0,   0,   64,  0,   0,  0,   65,  98,  0,
-            0,   0,   64,  252, 169, 17,  65,  16,  88,  57,  64,  0,   0,   32,  65,  0,   0,  128, 64,  0,   0,
-            32,  65,  99,  109, 0,   0,   224, 65,  0,   0,   96,  65,  108, 0,   0,   128, 64, 0,   0,   96,  65,
-            98,  16,  88,  57,  64,  0,   0,   96,  65,  0,   0,   0,   64,  4,   86,  110, 65, 0,   0,   0,   64,
-            0,   0,   128, 65,  98,  0,   0,   0,   64,  254, 212, 136, 65,  16,  88,  57,  64, 0,   0,   144, 65,
-            0,   0,   128, 64,  0,   0,   144, 65,  108, 0,   0,   224, 65,  0,   0,   144, 65, 98,  254, 212, 232,
-            65,  0,   0,   144, 65,  0,   0,   240, 65,  254, 212, 136, 65,  0,   0,   240, 65, 0,   0,   128, 65,
-            98,  0,   0,   240, 65,  4,   86,  110, 65,  254, 212, 232, 65,  0,   0,   96,  65, 0,   0,   224, 65,
-            0,   0,   96,  65,  99,  109, 0,   0,   224, 65,  0,   0,   176, 65,  108, 0,   0,  128, 64,  0,   0,
-            176, 65,  98,  16,  88,  57,  64,  0,   0,   176, 65,  0,   0,   0,   64,  2,   43, 183, 65,  0,   0,
-            0,   64,  0,   0,   192, 65,  98,  0,   0,   0,   64,  254, 212, 200, 65,  16,  88, 57,  64,  0,   0,
-            208, 65,  0,   0,   128, 64,  0,   0,   208, 65,  108, 0,   0,   224, 65,  0,   0,  208, 65,  98,  254,
-            212, 232, 65,  0,   0,   208, 65,  0,   0,   240, 65,  254, 212, 200, 65,  0,   0,  240, 65,  0,   0,
-            192, 65,  98,  0,   0,   240, 65,  2,   43,  183, 65,  254, 212, 232, 65,  0,   0,  176, 65,  0,   0,
-            224, 65,  0,   0,   176, 65,  99,  101, 0,   0
+            if (safe != nullptr && safe->graph.getDocumentGeneration() == generation)
+                callback(*safe);
         };
-
-        static const unsigned char pluginListPathData[] = {
-            110, 109, 193, 202, 222, 64,  80,  50,  21,  64,  108, 0,   0,   48,  65,  0,   0,   0,   0,   108, 160,
-            154, 112, 65,  80,  50,  21,  64,  108, 0,   0,   48,  65,  80,  50,  149, 64,  108, 193, 202, 222, 64,
-            80,  50,  21,  64,  99,  109, 0,   0,   192, 64,  251, 220, 127, 64,  108, 160, 154, 32,  65,  165, 135,
-            202, 64,  108, 160, 154, 32,  65,  250, 220, 47,  65,  108, 0,   0,   192, 64,  102, 144, 10,  65,  108,
-            0,   0,   192, 64,  251, 220, 127, 64,  99,  109, 0,   0,   128, 65,  251, 220, 127, 64,  108, 0,   0,
-            128, 65,  103, 144, 10,  65,  108, 96,  101, 63,  65,  251, 220, 47,  65,  108, 96,  101, 63,  65,  166,
-            135, 202, 64,  108, 0,   0,   128, 65,  251, 220, 127, 64,  99,  109, 96,  101, 79,  65,  148, 76,  69,
-            65,  108, 0,   0,   136, 65,  0,   0,   32,  65,  108, 80,  77,  168, 65,  148, 76,  69,  65,  108, 0,
-            0,   136, 65,  40,  153, 106, 65,  108, 96,  101, 79,  65,  148, 76,  69,  65,  99,  109, 0,   0,   64,
-            65,  63,  247, 95,  65,  108, 80,  77,  128, 65,  233, 161, 130, 65,  108, 80,  77,  128, 65,  125, 238,
-            167, 65,  108, 0,   0,   64,  65,  51,  72,  149, 65,  108, 0,   0,   64,  65,  63,  247, 95,  65,  99,
-            109, 0,   0,   176, 65,  63,  247, 95,  65,  108, 0,   0,   176, 65,  51,  72,  149, 65,  108, 176, 178,
-            143, 65,  125, 238, 167, 65,  108, 176, 178, 143, 65,  233, 161, 130, 65,  108, 0,   0,   176, 65,  63,
-            247, 95,  65,  99,  109, 12,  86,  118, 63,  148, 76,  69,  65,  108, 0,   0,   160, 64,  0,   0,   32,
-            65,  108, 159, 154, 16,  65,  148, 76,  69,  65,  108, 0,   0,   160, 64,  40,  153, 106, 65,  108, 12,
-            86,  118, 63,  148, 76,  69,  65,  99,  109, 0,   0,   0,   0,   63,  247, 95,  65,  108, 62,  53,  129,
-            64,  233, 161, 130, 65,  108, 62,  53,  129, 64,  125, 238, 167, 65,  108, 0,   0,   0,   0,   51,  72,
-            149, 65,  108, 0,   0,   0,   0,   63,  247, 95,  65,  99,  109, 0,   0,   32,  65,  63,  247, 95,  65,
-            108, 0,   0,   32,  65,  51,  72,  149, 65,  108, 193, 202, 190, 64,  125, 238, 167, 65,  108, 193, 202,
-            190, 64,  233, 161, 130, 65,  108, 0,   0,   32,  65,  63,  247, 95,  65,  99,  101, 0,   0
-        };
-
+    };
+    if (auto selected = getSingleSelectedNode())
+    {
+        if (auto* node = graph.graph.getNodeForId(*selected); node != nullptr && !graph.isParentNode(*selected))
         {
-            Path p;
-            p.loadPathFromData(burgerMenuPathData, sizeof(burgerMenuPathData));
-            burgerButton.setShape(p, true, true, false);
-        }
-
-        {
-            Path p;
-            p.loadPathFromData(pluginListPathData, sizeof(pluginListPathData));
-            pluginButton.setShape(p, true, true, false);
-        }
-
-        burgerButton.addListener(this);
-        addAndMakeVisible(burgerButton);
-
-        pluginButton.addListener(this);
-        addAndMakeVisible(pluginButton);
-
-        titleLabel.setJustificationType(Justification::centredLeft);
-        addAndMakeVisible(titleLabel);
-
-        setOpaque(true);
-    }
-
-private:
-    void paint(Graphics& g) override
-    {
-        auto titleBarBackgroundColour = getLookAndFeel().findColour(ResizableWindow::backgroundColourId).darker();
-
-        g.setColour(titleBarBackgroundColour);
-        g.fillRect(getLocalBounds());
-    }
-
-    void resized() override
-    {
-        auto r = getLocalBounds();
-
-        burgerButton.setBounds(r.removeFromLeft(40).withSizeKeepingCentre(20, 20));
-
-        pluginButton.setBounds(r.removeFromRight(40).withSizeKeepingCentre(20, 20));
-
-        titleLabel.setFont(FontOptions(static_cast<float>(getHeight()) * 0.5f, Font::plain));
-        titleLabel.setBounds(r);
-    }
-
-    void buttonClicked(Button* b) override
-    {
-        owner.showSidePanel(b == &burgerButton);
-    }
-
-    GraphDocumentComponent& owner;
-
-    Label titleLabel{"titleLabel", "PluginHost"};
-    ShapeButton burgerButton{"burgerButton", Colours::lightgrey, Colours::lightgrey, Colours::white};
-    ShapeButton pluginButton{"pluginButton", Colours::lightgrey, Colours::lightgrey, Colours::white};
-
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(TitleBarComponent)
-};
-
-struct GraphDocumentComponent::PluginListBoxModel final
-    : public ListBoxModel
-    , public ChangeListener
-    , public MouseListener
-{
-    PluginListBoxModel(ListBox& lb, KnownPluginList& kpl)
-        : owner(lb)
-        , knownPlugins(kpl)
-    {
-        knownPlugins.addChangeListener(this);
-        owner.addMouseListener(this, true);
-
-#if JUCE_IOS
-        scanner.reset(new AUScanner(knownPlugins));
-#endif
-    }
-
-    int getNumRows() override
-    {
-        return knownPlugins.getNumTypes();
-    }
-
-    void paintListBoxItem(int rowNumber, Graphics& g, int width, int height, bool rowIsSelected) override
-    {
-        g.fillAll(rowIsSelected ? Colour(0xff42A2C8) : Colour(0xff263238));
-
-        g.setColour(rowIsSelected ? Colours::black : Colours::white);
-
-        if (rowNumber < knownPlugins.getNumTypes())
-            g.drawFittedText(
-                knownPlugins.getTypes()[rowNumber].name,
-                {0, 0, width, height - 2},
-                Justification::centred,
-                1
+            auto id = *selected;
+            auto* processor = node->getProcessor();
+            bool available = dynamic_cast<MissingPlugin*>(processor) == nullptr;
+            if (processor->hasEditor())
+                items.addItem(
+                    "Show plugin GUI",
+                    action([id](GraphEditorPanel& panel) { panel.showNodeWindow(id, PluginWindow::Type::normal); })
+                );
+            items.addItem(
+                "Show all programs",
+                available,
+                false,
+                action([id](GraphEditorPanel& panel) { panel.showNodeWindow(id, PluginWindow::Type::programs); })
             );
-
-        g.setColour(Colours::black.withAlpha(0.4f));
-        g.drawRect(0, height - 1, width, 1);
-    }
-
-    var getDragSourceDescription(const SparseSet<int>& selectedRows) override
-    {
-        if (!isOverSelectedRow)
-            return var();
-
-        return String("PLUGIN: " + String(selectedRows[0]));
-    }
-
-    void changeListenerCallback(ChangeBroadcaster*) override
-    {
-        owner.updateContent();
-    }
-
-    void mouseDown(const MouseEvent& e) override
-    {
-        isOverSelectedRow = owner.getRowPosition(owner.getSelectedRow(), true)
-                                .contains(e.getEventRelativeTo(&owner).getMouseDownPosition());
-    }
-
-    ListBox& owner;
-    KnownPluginList& knownPlugins;
-
-    bool isOverSelectedRow = false;
-
-#if JUCE_IOS
-    std::unique_ptr<AUScanner> scanner;
+            items.addItem(
+                "Show all parameters",
+                available,
+                false,
+                action([id](GraphEditorPanel& panel) { panel.showNodeWindow(id, PluginWindow::Type::generic); })
+            );
+            items.addItem(
+                "Show debug log",
+                available,
+                false,
+                action([id](GraphEditorPanel& panel) { panel.showNodeWindow(id, PluginWindow::Type::debug); })
+            );
+#if JUCE_PLUGINHOST_ARA && (JUCE_MAC || JUCE_WINDOWS || JUCE_LINUX)
+            if (auto* instance = dynamic_cast<AudioPluginInstance*>(processor))
+                if (available && instance->getPluginDescription().hasARAExtension && (bool)node->properties["useARA"])
+                    items.addItem(
+                        "Show ARA host controls",
+                        action([id](GraphEditorPanel& panel) { panel.showNodeWindow(id, PluginWindow::Type::araHost); })
+                    );
 #endif
-
-    JUCE_DECLARE_NON_COPYABLE(PluginListBoxModel)
-};
-
-GraphDocumentComponent::GraphDocumentComponent(
-    MainHostWindow& mainWindow,
-    PluginGraph& graphModel,
-    AudioDeviceManager& dm,
-    KnownPluginList& kpl
-)
-    : graph(&graphModel)
-    , deviceManager(dm)
-    , pluginList(kpl)
-    , mainHostWindow(mainWindow)
-{
-    atk::logging::debug("GraphDocumentComponent::ctor", "begin");
-
-    init();
-
-    deviceManager.addChangeListener(graphPanel.get());
-    deviceManager.addChangeListener(this);
-
-    startTimer(100);
-
-    atk::logging::debug("GraphDocumentComponent::ctor", "completed");
-}
-
-void GraphDocumentComponent::setCpuLoad()
-{
-    auto cpuLoad = mainHostWindow.getRuntimeCpuLoad();
-
-    auto latencySamples = graph != nullptr ? graph->graph.getLatencySamples() : 0;
-    auto* currentDevice = deviceManager.getCurrentAudioDevice();
-    auto latencyMs = latencySamples > 0 && currentDevice != nullptr
-                       ? (int)std::round((float)latencySamples / currentDevice->getCurrentSampleRate() * 1000.0f)
-                       : 0;
-
-    cpuLoadLabel.setText(
-        "dly: " + juce::String(latencyMs) + "ms, " + "cpu: " + juce::String(cpuLoad, 2).replace("0.", "."),
-        juce::dontSendNotification
-    );
-}
-
-void GraphDocumentComponent::init()
-{
-    atk::logging::debug("GraphDocumentComponent::init", "begin");
-
-    updateMidiOutput();
-
-    graphPanel.reset(new GraphEditorPanel(*graph));
-    addAndMakeVisible(graphPanel.get());
-
-    // Connect virtual keyboard to inject MIDI into MidiServer
-    keyState.addListener(this);
-
-    keyboardComp.reset(new MidiKeyboardComponent(keyState, MidiKeyboardComponent::horizontalKeyboard));
-    addAndMakeVisible(keyboardComp.get());
-
-    statusBar.reset(new TooltipBar());
-    addAndMakeVisible(statusBar.get());
-
-    addAndMakeVisible(cpuLoadLabel);
-    cpuLoadLabel.setText("CPU Load: --", juce::dontSendNotification);
-    cpuLoadLabel.setJustificationType(juce::Justification::centredRight);
-
-    graphPanel->updateComponents();
-
-    atk::logging::debug("GraphDocumentComponent::init", "completed");
-}
-
-GraphDocumentComponent::~GraphDocumentComponent()
-{
-    atk::logging::debug("GraphDocumentComponent::dtor", "begin");
-
-    if (midiOutput != nullptr)
-        midiOutput->stopBackgroundThread();
-
-    keyState.removeListener(this);
-    releaseGraph();
-
-    atk::logging::debug("GraphDocumentComponent::dtor", "completed");
-}
-
-void GraphDocumentComponent::resized()
-{
-    auto area = getLocalBounds();
-    cpuLoadLabel.setBounds(area.removeFromTop(24).removeFromRight(180));
-
-    auto r = [this]
-    {
-        auto bounds = getLocalBounds();
-
-        if (auto* display = Desktop::getInstance().getDisplays().getDisplayForRect(getScreenBounds()))
-            return display->safeAreaInsets.subtractedFrom(bounds);
-
-        return bounds;
-    }();
-
-    const int titleBarHeight = 40;
-    const int keysHeight = 60;
-    const int statusHeight = 20;
-
-    keyboardComp->setBounds(r.removeFromBottom(keysHeight));
-    statusBar->setBounds(r.removeFromBottom(statusHeight));
-    graphPanel->setBounds(r);
-
-    checkAvailableWidth();
-}
-
-void GraphDocumentComponent::createNewPlugin(const PluginDescriptionAndPreference& desc, Point<int> pos)
-{
-    graphPanel->createNewPlugin(desc, pos);
-}
-
-void GraphDocumentComponent::releaseGraph()
-{
-    deviceManager.removeChangeListener(this);
-
-    if (graphPanel != nullptr)
-    {
-        deviceManager.removeChangeListener(graphPanel.get());
-        graphPanel = nullptr;
+            items.addItem(
+                "Configure Audio I/O",
+                available,
+                false,
+                action([id](GraphEditorPanel& panel) { panel.showNodeWindow(id, PluginWindow::Type::audioIO); })
+            );
+            items.addItem(
+                "Test state save/load",
+                available,
+                false,
+                action(
+                    [id](GraphEditorPanel& panel)
+                    {
+                        if (auto* current = panel.graph.graph.getNodeForId(id))
+                        {
+                            MemoryBlock state;
+                            current->getProcessor()->getStateInformation(state);
+                            current->getProcessor()->setStateInformation(state.getData(), (int)state.getSize());
+                            panel.graph.setChangedFlag(true);
+                        }
+                    }
+                )
+            );
+            items.addItem("Rename Node...", action([id](GraphEditorPanel& panel) { panel.showRenameNodeWindow(id); }));
+            items.addSeparator();
+        }
     }
-
-    keyboardComp = nullptr;
-    statusBar = nullptr;
-
-    graph = nullptr;
-}
-
-bool GraphDocumentComponent::isInterestedInDragSource(const SourceDetails& details)
-{
-    return (
-        (dynamic_cast<ListBox*>(details.sourceComponent.get()) != nullptr)
-        && details.description.toString().startsWith("PLUGIN")
+    auto* manager = &getCommandManager();
+    items.addCommandItem(manager, StandardApplicationCommandIDs::undo);
+    items.addCommandItem(manager, StandardApplicationCommandIDs::redo);
+    items.addSeparator();
+    items.addCommandItem(manager, StandardApplicationCommandIDs::cut);
+    items.addCommandItem(manager, StandardApplicationCommandIDs::copy);
+    items.addCommandItem(manager, StandardApplicationCommandIDs::paste);
+    items.addCommandItem(manager, CommandIDs::duplicateSelection);
+    items.addCommandItem(manager, CommandIDs::deleteSelection);
+    items.addCommandItem(manager, StandardApplicationCommandIDs::selectAll);
+    items.addSeparator();
+    items.addCommandItem(manager, CommandIDs::disconnectSelection);
+    items.addCommandItem(manager, CommandIDs::toggleBypassSelection);
+    items.addSeparator();
+    items.addCommandItem(manager, CommandIDs::groupSelection);
+    items.addCommandItem(manager, CommandIDs::ungroupSelection);
+    items.addCommandItem(manager, CommandIDs::renameGroup);
+#if !JUCE_IOS && !JUCE_ANDROID
+    items.addSeparator();
+    items.addCommandItem(manager, CommandIDs::saveNodeState);
+    items.addCommandItem(manager, CommandIDs::loadNodeState);
+    items.addCommandItem(manager, CommandIDs::saveGroup);
+    items.addCommandItem(manager, CommandIDs::loadGroupState);
+    auto position = insertPosition.value_or(visibleCentre());
+    items.addItem(
+        "Insert group from file...",
+        action(
+            [position](GraphEditorPanel& panel)
+            {
+                panel.chooseFile(
+                    "Insert group from file",
+                    PluginGraph::nodeGroupWildcard,
+                    false,
+                    [&panel, position](const File& file)
+                    { return panel.graph.insertGroupFromFile(file, panel.toNormalised(position)); }
+                );
+            }
+        )
     );
+#endif
 }
 
-void GraphDocumentComponent::itemDropped(const SourceDetails& details)
+ApplicationCommandTarget* GraphEditorPanel::getNextCommandTarget()
 {
-    // don't allow items to be dropped behind the sidebar
-    if (pluginListSidePanel.getBounds().contains(details.localPosition))
+    return nullptr;
+}
+
+void GraphEditorPanel::getAllCommands(Array<CommandID>& commands)
+{
+    const CommandID ids[] = {
+        StandardApplicationCommandIDs::undo,
+        StandardApplicationCommandIDs::redo,
+        StandardApplicationCommandIDs::cut,
+        StandardApplicationCommandIDs::copy,
+        StandardApplicationCommandIDs::paste,
+        StandardApplicationCommandIDs::selectAll,
+        CommandIDs::deleteSelection,
+        CommandIDs::disconnectSelection,
+        CommandIDs::toggleBypassSelection,
+        CommandIDs::groupSelection,
+        CommandIDs::ungroupSelection,
+        CommandIDs::renameGroup,
+        CommandIDs::saveNodeState,
+        CommandIDs::loadNodeState,
+        CommandIDs::saveGroup,
+        CommandIDs::loadGroupState,
+        CommandIDs::duplicateSelection,
+        CommandIDs::zoomIn,
+        CommandIDs::zoomOut,
+        CommandIDs::resetZoom,
+        CommandIDs::zoomToFit
+    };
+    commands.addArray(ids, numElementsInArray(ids));
+}
+
+void GraphEditorPanel::getCommandInfo(CommandID id, ApplicationCommandInfo& info)
+{
+    auto selected = getSelectedNodes();
+    bool hasSelection = !selected.isEmpty();
+    bool single = selected.size() == 1;
+    bool groupSelected = getSelectedGroupId() != 0;
+    bool copyable = false, grouped = false;
+    bool editable = false;
+    std::vector<uint32> groupable;
+    for (auto nodeId : selected)
+    {
+        if (auto* node = graph.graph.getNodeForId(nodeId))
+        {
+            editable = editable || !graph.isParentNode(nodeId);
+            if (PluginGraph::isGroupable(*node))
+            {
+                copyable = true;
+                groupable.push_back(nodeId.uid);
+            }
+            grouped = grouped || graph.getGroups().findGroupOf(nodeId.uid) != nullptr;
+        }
+    }
+    auto& history = graph.getUndoManager();
+    switch (id)
+    {
+    case StandardApplicationCommandIDs::undo:
+        info.setInfo(
+            history.canUndo() ? "Undo " + history.getUndoDescription() : "Undo",
+            "Undoes the last graph edit",
+            "Edit",
+            0
+        );
+        info.addDefaultKeypress('z', ModifierKeys::commandModifier);
+        info.setActive(history.canUndo());
+        break;
+    case StandardApplicationCommandIDs::redo:
+        info.setInfo(
+            history.canRedo() ? "Redo " + history.getRedoDescription() : "Redo",
+            "Redoes the last graph edit",
+            "Edit",
+            0
+        );
+        info.addDefaultKeypress('z', ModifierKeys::commandModifier | ModifierKeys::shiftModifier);
+#if !JUCE_MAC
+        info.addDefaultKeypress('y', ModifierKeys::commandModifier);
+#endif
+        info.setActive(history.canRedo());
+        break;
+    case StandardApplicationCommandIDs::cut:
+        info.setInfo("Cut", "Copies and deletes the selected nodes", "Edit", 0);
+        info.addDefaultKeypress('x', ModifierKeys::commandModifier);
+        info.setActive(copyable);
+        break;
+    case StandardApplicationCommandIDs::copy:
+        info.setInfo("Copy", "Copies the selected nodes", "Edit", 0);
+        info.addDefaultKeypress('c', ModifierKeys::commandModifier);
+        info.setActive(copyable);
+        break;
+    case StandardApplicationCommandIDs::paste:
+        info.setInfo("Paste", "Pastes copied nodes", "Edit", 0);
+        info.addDefaultKeypress('v', ModifierKeys::commandModifier);
+        break;
+    case StandardApplicationCommandIDs::selectAll:
+        info.setInfo("Select All", "Selects all nodes", "Edit", 0);
+        info.addDefaultKeypress('a', ModifierKeys::commandModifier);
+        info.setActive(!nodes.isEmpty());
+        break;
+    case CommandIDs::duplicateSelection:
+        info.setInfo("Duplicate", "Duplicates the selected nodes", "Edit", 0);
+        info.addDefaultKeypress('d', ModifierKeys::commandModifier);
+        info.setActive(copyable);
+        break;
+    case CommandIDs::deleteSelection:
+        info.setInfo("Delete", "Deletes the selected nodes", "Edit", 0);
+        info.addDefaultKeypress(KeyPress::deleteKey, ModifierKeys::noModifiers);
+        info.addDefaultKeypress(KeyPress::backspaceKey, ModifierKeys::noModifiers);
+        info.setActive(editable);
+        break;
+    case CommandIDs::disconnectSelection:
+        info.setInfo("Disconnect All Pins", "Removes connections of the selected nodes", "Edit", 0);
+        info.setActive(hasSelection);
+        break;
+    case CommandIDs::toggleBypassSelection:
+        info.setInfo(
+            groupSelected ? "Toggle Group Bypass" : "Toggle Bypass",
+            "Toggles bypass of the selection",
+            "Edit",
+            0
+        );
+        info.addDefaultKeypress('b', ModifierKeys::commandModifier);
+        info.setActive(editable);
+        break;
+    case CommandIDs::groupSelection:
+    {
+        info.setInfo("Group", "Groups the selected nodes", "Edit", 0);
+        info.addDefaultKeypress('g', ModifierKeys::commandModifier);
+        auto groups = graph.getGroups().getGroupIdsWithin(groupable);
+        auto units = groupable.size() + groups.size();
+        for (auto groupId : groups)
+            units -= graph.getGroups().getNodeUids(groupId).size();
+        info.setActive(units >= 2);
+        break;
+    }
+    case CommandIDs::ungroupSelection:
+        info.setInfo("Ungroup", "Ungroups the selected groups", "Edit", 0);
+        info.addDefaultKeypress('g', ModifierKeys::commandModifier | ModifierKeys::shiftModifier);
+        info.setActive(grouped);
+        break;
+    case CommandIDs::renameGroup:
+        info.setInfo("Rename Group...", "Renames the selected group", "Edit", 0);
+        info.addDefaultKeypress(KeyPress::F2Key, ModifierKeys::noModifiers);
+        info.setActive(groupSelected);
+        break;
+    case CommandIDs::saveNodeState:
+        info.setInfo("Save Node State...", "Saves the selected node state", "Edit", 0);
+        info.setActive(single);
+        break;
+    case CommandIDs::loadNodeState:
+        info.setInfo("Load Node State...", "Loads state onto the selected node", "Edit", 0);
+        info.setActive(single);
+        break;
+    case CommandIDs::saveGroup:
+        info.setInfo("Save Group...", "Exports the selected group", "Edit", 0);
+        info.setActive(groupSelected);
+        break;
+    case CommandIDs::loadGroupState:
+        info.setInfo("Load Group State...", "Loads state onto the selected group", "Edit", 0);
+        info.setActive(groupSelected);
+        break;
+    case CommandIDs::zoomIn:
+        info.setInfo("Zoom In", "Magnifies the graph canvas", "View", 0);
+        info.addDefaultKeypress('=', ModifierKeys::commandModifier);
+        info.addDefaultKeypress('+', ModifierKeys::commandModifier);
+        info.addDefaultKeypress('=', ModifierKeys::commandModifier | ModifierKeys::shiftModifier);
+        info.addDefaultKeypress('+', ModifierKeys::commandModifier | ModifierKeys::shiftModifier);
+        info.setActive(graphViewport != nullptr && graphViewport->getZoom() < GraphViewGeometry::maximumZoom);
+        break;
+    case CommandIDs::zoomOut:
+        info.setInfo("Zoom Out", "Reduces the graph magnification", "View", 0);
+        info.addDefaultKeypress('-', ModifierKeys::commandModifier);
+        info.setActive(graphViewport != nullptr && graphViewport->getZoom() > GraphViewGeometry::minimumZoom);
+        break;
+    case CommandIDs::resetZoom:
+        info.setInfo("Reset Zoom", "Shows the graph at 100%", "View", 0);
+        info.addDefaultKeypress('0', ModifierKeys::commandModifier);
+        info.setActive(graphViewport != nullptr);
+        break;
+    case CommandIDs::zoomToFit:
+        info.setInfo("Zoom to Fit", "Fits all graph nodes and groups", "View", 0);
+        info.addDefaultKeypress('f', ModifierKeys::commandModifier | ModifierKeys::shiftModifier);
+        info.setActive(graphViewport != nullptr);
+        break;
+    default:
+        break;
+    }
+    if (graph.isEditInProgress() || documentGeneration != graph.getDocumentGeneration())
+        info.setActive(false);
+}
+
+bool GraphEditorPanel::perform(const InvocationInfo& invocation)
+{
+    if (documentGeneration != graph.getDocumentGeneration())
+    {
+        changeListenerCallback(&graph);
+        return false;
+    }
+    if (invocation.invocationMethod == InvocationInfo::fromKeyPress)
+    {
+        auto* origin = invocation.originatingComponent;
+        if (origin != nullptr && origin->getTopLevelComponent() != getTopLevelComponent())
+            return false;
+        auto* focus = Component::getCurrentlyFocusedComponent();
+        if (focus != nullptr
+            && (focus->getTopLevelComponent() != getTopLevelComponent()
+                || dynamic_cast<TextEditor*>(focus) != nullptr
+                || focus->findParentComponentOfClass<TextEditor>() != nullptr))
+            return false;
+    }
+    if (graph.isEditInProgress())
+        return false;
+    switch (invocation.commandID)
+    {
+    case StandardApplicationCommandIDs::undo:
+        graph.getUndoManager().undo();
+        break;
+    case StandardApplicationCommandIDs::redo:
+        graph.getUndoManager().redo();
+        break;
+    case StandardApplicationCommandIDs::cut:
+    {
+        PluginGraph::Edit edit(graph, "Cut");
+        copySelection();
+        deleteSelection();
+        break;
+    }
+    case StandardApplicationCommandIDs::copy:
+        copySelection();
+        break;
+    case StandardApplicationCommandIDs::paste:
+        pasteFromClipboard();
+        break;
+    case StandardApplicationCommandIDs::selectAll:
+    {
+        Array<NodeID> all;
+        for (auto* node : graph.graph.getNodes())
+            all.add(node->nodeID);
+        selectOnly(all);
+        break;
+    }
+    case CommandIDs::duplicateSelection:
+        duplicateSelection();
+        break;
+    case CommandIDs::deleteSelection:
+        deleteSelection();
+        break;
+    case CommandIDs::disconnectSelection:
+    {
+        PluginGraph::Edit edit(graph, "Disconnect");
+        for (auto id : getSelectedNodes())
+            graph.disconnectNode(id);
+        break;
+    }
+    case CommandIDs::toggleBypassSelection:
+        toggleBypassOfSelection();
+        break;
+    case CommandIDs::groupSelection:
+        if (auto groupId = graph.groupNodes(getSelectedNodes()))
+        {
+            Array<NodeID> members;
+            for (auto uid : graph.getGroups().getNodeUids(groupId))
+                members.add(NodeID(uid));
+            selectOnly(members);
+        }
+        break;
+    case CommandIDs::ungroupSelection:
+    {
+        PluginGraph::Edit edit(graph, "Ungroup");
+        std::set<uint32> groups;
+        if (auto id = getSelectedGroupId())
+            groups.insert(id);
+        else
+            for (auto nodeId : getSelectedNodes())
+                if (auto* group = graph.getGroups().findGroupOf(nodeId.uid))
+                    groups.insert(group->id);
+        for (auto id : groups)
+            graph.ungroup(id);
+        break;
+    }
+    case CommandIDs::renameGroup:
+        showRenameGroupWindow(getSelectedGroupId());
+        break;
+    case CommandIDs::saveNodeState:
+        if (auto id = getSingleSelectedNode())
+            chooseFile(
+                "Save node state",
+                PluginGraph::nodeStateWildcard,
+                true,
+                [this, id = *id](const File& file) { return graph.saveNodeState(id, file); }
+            );
+        break;
+    case CommandIDs::loadNodeState:
+        if (auto id = getSingleSelectedNode())
+            chooseFile(
+                "Load node state",
+                PluginGraph::nodeStateWildcard,
+                false,
+                [this, id = *id](const File& file) { return graph.loadNodeState(id, file); }
+            );
+        break;
+    case CommandIDs::saveGroup:
+        if (auto id = getSelectedGroupId())
+            chooseFile(
+                "Save group",
+                PluginGraph::nodeGroupWildcard,
+                true,
+                [this, id](const File& file) { return graph.saveGroup(id, file); }
+            );
+        break;
+    case CommandIDs::loadGroupState:
+        if (auto id = getSelectedGroupId())
+            chooseFile(
+                "Load group state",
+                PluginGraph::nodeGroupWildcard,
+                false,
+                [this, id](const File& file) { return graph.loadGroupState(id, file); }
+            );
+        break;
+    case CommandIDs::zoomIn:
+    case CommandIDs::zoomOut:
+    case CommandIDs::resetZoom:
+    case CommandIDs::zoomToFit:
+        if (graphViewport == nullptr)
+            return false;
+        if (invocation.commandID == CommandIDs::zoomToFit)
+            graphViewport->zoomToFit();
+        else if (invocation.commandID == CommandIDs::resetZoom)
+            graphViewport->setZoom(1.0);
+        else
+            graphViewport->setZoom(
+                graphViewport->getZoom()
+                * (invocation.commandID == CommandIDs::zoomIn ? GraphViewGeometry::zoomStep
+                                                              : 1.0 / GraphViewGeometry::zoomStep)
+            );
+        break;
+    default:
+        return false;
+    }
+    updateComponents();
+    getCommandManager().commandStatusChanged();
+    return true;
+}
+
+void GraphEditorPanel::mouseWheelMove(const MouseEvent& event, const MouseWheelDetails& wheel)
+{
+    if (graphViewport != nullptr)
+        graphViewport->wheelMove(event, wheel);
+    else
+        Component::mouseWheelMove(event, wheel);
+}
+
+bool GraphEditorPanel::keyPressed(const KeyPress& key)
+{
+    if (key == KeyPress::escapeKey)
+    {
+        cancelGestures(documentGeneration != graph.getDocumentGeneration());
+        updateComponents();
+        return true;
+    }
+    return false;
+}
+
+void GraphEditorPanel::cancelGestures(bool documentReplaced)
+{
+    stopTimer();
+    lasso.endLasso();
+    if (graphViewport != nullptr)
+        graphViewport->endPan();
+    backgroundGesture = BackgroundGesture::none;
+    for (auto* node : nodes)
+        node->stopTimer();
+    draggingConnector.reset();
+    if (!documentReplaced)
+    {
+        if (originalConnection)
+            showError("Restore connection", graph.restoreConnection(*originalConnection));
+        for (auto& entry : dragStartPositions)
+            graph.setNodePosition(entry.first, entry.second);
+    }
+    originalConnection.reset();
+    dragStartPositions.clear();
+    connectorEdit.reset();
+    dragEdit.reset();
+}
+
+void GraphEditorPanel::findLassoItemsInArea(Array<NodeID>& found, const juce::Rectangle<int>& area)
+{
+    for (auto* node : nodes)
+        if (node->isVisible() && node->getBounds().intersects(area))
+            found.addIfNotAlreadyThere(node->pluginID);
+    for (auto* frame : groupFrames)
+        if (frame->isVisible() && frame->collapsed && frame->getBounds().intersects(area))
+            for (auto id : frame->getMembers())
+                found.addIfNotAlreadyThere(id);
+}
+
+SelectedItemSet<GraphEditorPanel::NodeID>& GraphEditorPanel::getLassoSelection()
+{
+    return selection;
+}
+
+Array<GraphEditorPanel::NodeID> GraphEditorPanel::getSelectedNodes() const
+{
+    return selection.getItemArray();
+}
+
+std::optional<GraphEditorPanel::NodeID> GraphEditorPanel::getSingleSelectedNode() const
+{
+    if (selection.getNumSelected() == 1)
+        return selection.getSelectedItem(0);
+    return {};
+}
+
+uint32 GraphEditorPanel::getSelectedGroupId() const
+{
+    auto& selected = selection.getItemArray();
+    if (selected.isEmpty())
+        return 0;
+    for (auto& group : graph.getGroups().getAll())
+    {
+        auto members = graph.getGroups().getNodeUids(group.id);
+        if (members.size() == static_cast<size_t>(selected.size())
+            && std::all_of(
+                members.begin(),
+                members.end(),
+                [&selected](uint32 uid) { return selected.contains(NodeID(uid)); }
+            ))
+            return group.id;
+    }
+    return 0;
+}
+
+void GraphEditorPanel::selectOnly(const Array<NodeID>& ids)
+{
+    selection.deselectAll();
+    for (auto id : ids)
+        if (graph.isNodeVisible(id))
+            selection.addToSelection(id);
+}
+
+void GraphEditorPanel::beginDraggingNodes(const Array<NodeID>& ids, const MouseEvent& event)
+{
+    cancelGestures(documentGeneration != graph.getDocumentGeneration());
+    if (documentGeneration != graph.getDocumentGeneration())
         return;
-
-    auto pluginTypeIndex = details.description.toString().fromFirstOccurrenceOf("PLUGIN: ", false, false).getIntValue();
-
-    // must be a valid index!
-    jassert(isPositiveAndBelow(pluginTypeIndex, pluginList.getNumTypes()));
-
-    createNewPlugin(PluginDescriptionAndPreference{pluginList.getTypes()[pluginTypeIndex]}, details.localPosition);
+    grabKeyboardFocus();
+    nodeDragStartScreenPosition = event.eventComponent->localPointToGlobal(event.position);
+    for (auto id : ids)
+        dragStartPositions[id] = graph.getNodePosition(id);
 }
 
-void GraphDocumentComponent::showSidePanel(bool showSettingsPanel)
+void GraphEditorPanel::dragNodes(const MouseEvent& event)
 {
-    if (showSettingsPanel)
-        mobileSettingsSidePanel.showOrHide(true);
+    if (documentGeneration != graph.getDocumentGeneration())
+    {
+        cancelGestures(true);
+        return;
+    }
+    if (dragStartPositions.empty() || !event.mouseWasDraggedSinceMouseDown())
+        return;
+    if (dragEdit == nullptr)
+        dragEdit = std::make_unique<PluginGraph::Edit>(graph, "Move");
+    auto offset = event.eventComponent->localPointToGlobal(event.position) - nodeDragStartScreenPosition;
+    double zoom = graphViewport != nullptr ? graphViewport->getZoom() : 1.0;
+    auto normalisedOffset = GraphViewGeometry::normalisePosition(offset.toDouble() / zoom);
+    for (auto& entry : dragStartPositions)
+        graph.setNodePosition(entry.first, entry.second + normalisedOffset);
+    updateComponents();
+}
+
+void GraphEditorPanel::endDraggingNodes(bool wasDragged)
+{
+    if (documentGeneration != graph.getDocumentGeneration())
+    {
+        cancelGestures(true);
+        return;
+    }
+    if (!wasDragged)
+    {
+        cancelGestures(false);
+        return;
+    }
+    dragStartPositions.clear();
+    dragEdit.reset();
+}
+
+Point<double> GraphEditorPanel::toNormalised(Point<int> position) const
+{
+    return GraphViewGeometry::normalisePosition((position - layoutOrigin).toDouble());
+}
+
+Point<double> GraphEditorPanel::getPasteOffset() const
+{
+    return GraphViewGeometry::normalisePosition({20, 20});
+}
+
+Point<int> GraphEditorPanel::visibleCentre() const
+{
+    return graphViewport != nullptr ? graphViewport->getVisiblePanelCentre() : getLocalBounds().getCentre();
+}
+
+void GraphEditorPanel::copySelection()
+{
+    if (auto xml = graph.createSnippetXml(getSelectedNodes()))
+        SystemClipboard::copyTextToClipboard(xml->toString());
+}
+
+void GraphEditorPanel::pasteFromClipboard()
+{
+    auto xml = parseXML(SystemClipboard::getTextFromClipboard());
+    if (xml == nullptr || !PluginGraph::isSnippetXml(*xml))
+        return;
+    auto mouse = getMouseXYRelative();
+    bool overGraph = graphViewport != nullptr ? juce::Rectangle<int>(
+                                                    0,
+                                                    0,
+                                                    graphViewport->getViewport().getMaximumVisibleWidth(),
+                                                    graphViewport->getViewport().getMaximumVisibleHeight()
+                                                )
+                                                    .contains(graphViewport->getViewport().getMouseXYRelative())
+                                              : getLocalBounds().contains(mouse);
+    auto position = overGraph
+                      ? toNormalised(mouse)
+                      : Point<double>(xml->getDoubleAttribute("x"), xml->getDoubleAttribute("y")) + getPasteOffset();
+    insertSnippet(*xml, position);
+}
+
+void GraphEditorPanel::duplicateSelection()
+{
+    PluginGraph::Edit edit(graph, "Duplicate");
+    if (auto xml = graph.createSnippetXml(getSelectedNodes()))
+        insertSnippet(
+            *xml,
+            Point<double>(xml->getDoubleAttribute("x"), xml->getDoubleAttribute("y")) + getPasteOffset()
+        );
+}
+
+void GraphEditorPanel::insertSnippet(const XmlElement& xml, Point<double> position)
+{
+    Array<NodeID> inserted;
+    auto result = graph.insertSnippetXml(xml, position, &inserted);
+    if (result.failed())
+        showError("Paste", result);
     else
-        pluginListSidePanel.showOrHide(true);
-
-    checkAvailableWidth();
-
-    lastOpenedSidePanel = showSettingsPanel ? &mobileSettingsSidePanel : &pluginListSidePanel;
+        selectOnly(inserted);
 }
 
-void GraphDocumentComponent::hideLastSidePanel()
+GraphEditorPanel::GroupComponent* GraphEditorPanel::getComponentForGroup(uint32 id) const
 {
-    if (lastOpenedSidePanel != nullptr)
-        lastOpenedSidePanel->showOrHide(false);
-
-    if (mobileSettingsSidePanel.isPanelShowing())
-        lastOpenedSidePanel = &mobileSettingsSidePanel;
-    else if (pluginListSidePanel.isPanelShowing())
-        lastOpenedSidePanel = &pluginListSidePanel;
-    else
-        lastOpenedSidePanel = nullptr;
+    for (auto* frame : groupFrames)
+        if (frame->groupId == id)
+            return frame;
+    return nullptr;
 }
 
-void GraphDocumentComponent::checkAvailableWidth()
+GraphEditorPanel::GroupComponent* GraphEditorPanel::getCollapsedGroupFor(NodeID id) const
 {
-    if (mobileSettingsSidePanel.isPanelShowing() && pluginListSidePanel.isPanelShowing())
+    auto* group = graph.getGroups().findGroupOf(id.uid);
+    GroupComponent* collapsed = nullptr;
+    while (group != nullptr)
     {
-        if (getWidth() - (mobileSettingsSidePanel.getWidth() + pluginListSidePanel.getWidth()) < 150)
-            hideLastSidePanel();
+        if (group->collapsed)
+            collapsed = getComponentForGroup(group->id);
+        group = graph.getGroups().findParentOf(group->id);
     }
+    return collapsed;
 }
 
-bool GraphDocumentComponent::closeAnyOpenPluginWindows()
+Point<float> GraphEditorPanel::getEndpointAnchor(NodeID id, int channel, bool output, Point<float> fallback) const
 {
-    return graph != nullptr ? graph->closeAnyOpenPluginWindows() : false;
+    if (auto* collapsed = getCollapsedGroupFor(id))
+        return collapsed->getBounds().toFloat().getCentre();
+    if (auto* component = getComponentForPlugin(id))
+        return component->getPinPos(channel, !output);
+    return fallback;
 }
 
-void GraphDocumentComponent::changeListenerCallback(ChangeBroadcaster*)
+Point<float>
+GraphEditorPanel::getVisibleEndpoint(NodeID id, int channel, bool output, Point<float> other, Point<float> fallback) const
 {
-    updateMidiOutput();
-
-    // When audio device changes, the graph I/O nodes need to be updated
-    // The AudioProcessorPlayer (graphPlayer) will automatically call prepareToPlay()
-    // on the graph when the device changes, which updates the I/O node channel counts.
-    // We just need to update the UI to reflect any connection changes.
-    if (graphPanel != nullptr)
+    if (auto* collapsed = getCollapsedGroupFor(id))
     {
-        graphPanel->updateComponents();
-        graphPanel->repaint();
+        auto bounds = collapsed->getBounds().toFloat();
+        auto delta = other - bounds.getCentre();
+        if (std::abs(delta.x) >= std::abs(delta.y))
+            return {
+                delta.x >= 0.0f ? bounds.getRight() : bounds.getX(),
+                jlimit(bounds.getY() + 8.0f, bounds.getBottom() - 8.0f, other.y)
+            };
+        return {
+            jlimit(bounds.getX() + 8.0f, bounds.getRight() - 8.0f, other.x),
+            delta.y >= 0.0f ? bounds.getBottom() : bounds.getY()
+        };
     }
-
-    // Remove any illegal connections that might have been created due to channel count changes
-    if (graph != nullptr)
-        graph->graph.removeIllegalConnections();
+    if (auto* component = getComponentForPlugin(id))
+        return component->getPinPos(channel, !output);
+    return fallback;
 }
 
-void GraphDocumentComponent::updateMidiOutput()
+void GraphEditorPanel::updateLayoutBounds()
 {
-    auto* defaultMidiOutput = deviceManager.getDefaultMidiOutput();
-
-    if (midiOutput != defaultMidiOutput)
+    graphVisualBounds = {};
+    auto include = [this](juce::Rectangle<int> bounds)
     {
-        midiOutput = defaultMidiOutput;
-
-        if (midiOutput != nullptr)
-            midiOutput->startBackgroundThread();
-    }
+        bounds -= layoutOrigin;
+        graphVisualBounds = graphVisualBounds.isEmpty() ? bounds : graphVisualBounds.getUnion(bounds);
+    };
+    for (auto* node : nodes)
+        if (node->isVisible())
+            include(node->getBounds());
+    for (auto* frame : groupFrames)
+        if (frame->isVisible())
+            include(frame->getBounds());
+    auto canvas = juce::Rectangle<int>(0, 0, GraphViewGeometry::canvasWidth, GraphViewGeometry::canvasHeight);
+    auto bounds = canvas.getUnion(graphVisualBounds).expanded(GraphViewGeometry::padding);
+    auto newOrigin = -bounds.getPosition();
+    auto offset = newOrigin - layoutOrigin;
+    layoutOrigin = newOrigin;
+    for (auto* node : nodes)
+        node->setTopLeftPosition(node->getPosition() + offset);
+    for (auto* frame : groupFrames)
+        frame->setTopLeftPosition(frame->getPosition() + offset);
+    setSize(bounds.getWidth(), bounds.getHeight());
+    for (auto* connector : connectors)
+        connector->update();
 }
 
-void GraphDocumentComponent::handleNoteOn(
-    juce::MidiKeyboardState* source,
-    int midiChannel,
-    int midiNoteNumber,
-    float velocity
+void GraphEditorPanel::deleteSelection()
+{
+    PluginGraph::Edit edit(graph, "Delete");
+    auto selected = getSelectedNodes();
+    selection.deselectAll();
+    for (auto id : selected)
+        graph.removeNode(id);
+}
+
+void GraphEditorPanel::toggleBypassOfSelection()
+{
+    if (auto id = getSelectedGroupId())
+    {
+        graph.setGroupBypassed(id, !graph.getGroups().find(id)->bypassed);
+        return;
+    }
+    PluginGraph::Edit edit(graph, "Bypass");
+    auto selected = getSelectedNodes();
+    bool anyActive = false;
+    for (auto id : selected)
+        if (auto* node = graph.graph.getNodeForId(id))
+            anyActive = anyActive || !node->isBypassed();
+    for (auto id : selected)
+        graph.setNodeBypassed(id, anyActive);
+}
+
+void GraphEditorPanel::showRenameGroupWindow(uint32 id)
+{
+    auto* group = graph.getGroups().find(id);
+    if (group == nullptr)
+        return;
+    renameWindow = std::make_unique<AlertWindow>("Rename group", String(), MessageBoxIconType::NoIcon, this);
+    renameWindow->addTextEditor("name", group->name);
+    renameWindow->addButton("OK", 1, KeyPress(KeyPress::returnKey));
+    renameWindow->addButton("Cancel", 0, KeyPress(KeyPress::escapeKey));
+    renameWindow->enterModalState(
+        true,
+        ModalCallbackFunction::create(
+            [safe = SafePointer<GraphEditorPanel>(this),
+             dialog = SafePointer<AlertWindow>(renameWindow.get()),
+             generation = graph.getDocumentGeneration(),
+             id](int result)
+            {
+                if (safe == nullptr
+                    || dialog == nullptr
+                    || safe->renameWindow.get() != dialog.getComponent()
+                    || safe->graph.getDocumentGeneration() != generation)
+                    return;
+                auto name = safe->renameWindow->getTextEditorContents("name").trim();
+                if (result == 1 && name.isNotEmpty())
+                    safe->showError("Rename group", safe->graph.renameGroup(id, name));
+                safe->renameWindow.reset();
+            }
+        ),
+        false
+    );
+}
+
+void GraphEditorPanel::showRenameNodeWindow(NodeID id)
+{
+    auto* node = graph.graph.getNodeForId(id);
+    if (node == nullptr)
+        return;
+    renameWindow = std::make_unique<AlertWindow>(
+        "Rename node",
+        "Leave empty to reset to default",
+        MessageBoxIconType::NoIcon,
+        this
+    );
+    renameWindow->addTextEditor("name", node->properties["customName"].toString());
+    renameWindow->addButton("OK", 1, KeyPress(KeyPress::returnKey));
+    renameWindow->addButton("Cancel", 0, KeyPress(KeyPress::escapeKey));
+    renameWindow->enterModalState(
+        true,
+        ModalCallbackFunction::create(
+            [safe = SafePointer<GraphEditorPanel>(this),
+             dialog = SafePointer<AlertWindow>(renameWindow.get()),
+             generation = graph.getDocumentGeneration(),
+             id](int result)
+            {
+                if (safe == nullptr
+                    || dialog == nullptr
+                    || safe->renameWindow.get() != dialog.getComponent()
+                    || safe->graph.getDocumentGeneration() != generation)
+                    return;
+                auto name = safe->renameWindow->getTextEditorContents("name").trim();
+                if (result == 1)
+                    safe->showError("Rename node", safe->graph.setNodeName(id, name));
+                safe->renameWindow.reset();
+            }
+        ),
+        false
+    );
+}
+
+void GraphEditorPanel::showNodeWindow(NodeID id, PluginWindow::Type type)
+{
+    if (graph.isParentNode(id))
+        return;
+    if (auto node = graph.graph.getNodeForId(id))
+        if (auto* window = graph.getOrCreateWindowFor(node, type))
+            window->toFront(true);
+}
+
+void GraphEditorPanel::chooseFile(
+    const String& title,
+    const String& wildcard,
+    bool saving,
+    std::function<Result(const File&)> callback
 )
 {
-    juce::ignoreUnused(source);
-
-    // Inject virtual keyboard MIDI into MidiServer
-    auto message = juce::MidiMessage::noteOn(midiChannel, midiNoteNumber, velocity);
-    juce::MidiBuffer buffer;
-    buffer.addEvent(message, 0);
-    mainHostWindow.getMidiClient().injectMidi(buffer);
+    fileChooser = std::make_unique<FileChooser>(title, File(), wildcard);
+    int flags = saving ? FileBrowserComponent::saveMode | FileBrowserComponent::warnAboutOverwriting
+                       : FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles;
+    fileChooser->launchAsync(
+        flags,
+        [safe = SafePointer<GraphEditorPanel>(this),
+         generation = graph.getDocumentGeneration(),
+         title,
+         wildcard,
+         saving,
+         callback = std::move(callback)](const FileChooser& chooser)
+        {
+            if (safe == nullptr
+                || safe->fileChooser.get() != &chooser
+                || safe->graph.getDocumentGeneration() != generation)
+                return;
+            auto file = chooser.getResult();
+            if (file == File())
+                return;
+            if (saving)
+                file = file.withFileExtension(wildcard.fromLastOccurrenceOf(".", true, false));
+            safe->showError(title, callback(file));
+        }
+    );
 }
 
-void GraphDocumentComponent::handleNoteOff(
-    juce::MidiKeyboardState* source,
-    int midiChannel,
-    int midiNoteNumber,
-    float velocity
-)
+void GraphEditorPanel::showError(const String& title, const Result& result)
 {
-    juce::ignoreUnused(source);
-
-    // Inject virtual keyboard MIDI into MidiServer
-    auto message = juce::MidiMessage::noteOff(midiChannel, midiNoteNumber, velocity);
-    juce::MidiBuffer buffer;
-    buffer.addEvent(message, 0);
-    mainHostWindow.getMidiClient().injectMidi(buffer);
+    if (result.failed())
+        messageBox = AlertWindow::showScopedAsync(
+            MessageBoxOptions::makeOptionsOk(MessageBoxIconType::WarningIcon, title, result.getErrorMessage()),
+            nullptr
+        );
 }

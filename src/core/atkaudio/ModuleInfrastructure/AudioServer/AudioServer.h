@@ -11,6 +11,8 @@
 namespace atk
 {
 
+void removeHardwareSettingsFromDeviceState(juce::XmlElement& state);
+
 class AudioServer;
 class AudioClient;
 
@@ -182,9 +184,13 @@ public:
     AudioDeviceHandler(const juce::String& deviceName, const juce::String& deviceKey);
     ~AudioDeviceHandler() override;
 
-    bool openDevice();
+    juce::String prepareDevice();
+    juce::String openDevice(bool useInput = false, bool useOutput = false);
     void closeDevice();
     bool isDeviceOpen() const;
+    int getNumConnections();
+    void resetIdleDeadline();
+    bool releaseDeviceIfIdle(double nowMs);
 
     void audioDeviceIOCallbackWithContext(
         const float* const* inputChannelData,
@@ -200,10 +206,8 @@ public:
 
     void addClientSubscription(void* clientId, const std::vector<ChannelSubscription>& subscriptions, bool isInput);
     void removeClientSubscription(void* clientId, bool isInput);
-    bool hasActiveSubscriptions() const;
-    bool hasDesiredSubscriptions() const;
 
-    bool registerDirectCallback(juce::AudioIODeviceCallback* callback);
+    bool registerDirectCallback(juce::AudioIODeviceCallback* callback, bool useInput = true, bool useOutput = true);
     void unregisterDirectCallback(juce::AudioIODeviceCallback* callback);
     bool hasDirectCallback() const;
 
@@ -215,6 +219,7 @@ public:
     int getNumChannels() const;
     double getSampleRate() const;
     int getBufferSize() const;
+    int getDefaultBufferSize();
 
     void reportNegotiatedSetup(const juce::String& context) const;
 
@@ -240,6 +245,9 @@ public:
         bool hasOutput = false;
     };
 
+    DesiredClientSubscriptions getRequiredDirections(bool useInput = false, bool useOutput = false) const;
+    bool needsDirectionChange(bool useInput = false, bool useOutput = false) const;
+
     struct DeviceSnapshot
     {
         std::unordered_map<void*, ClientBuffersSnapshot> clients;
@@ -248,6 +256,8 @@ public:
     struct DirectCallbackInfo
     {
         juce::AudioIODeviceCallback* callback;
+        bool useInput = true;
+        bool useOutput = true;
         std::atomic<bool> prepared{false};
         std::atomic<bool> enabled{true};
         std::atomic<int> activeCalls{0};
@@ -301,9 +311,8 @@ public:
     std::shared_ptr<DeviceSnapshot> getSnapshot() const;
     void rebuildDirectCallbackSnapshotLocked();
     void prepareDirectCallback(DirectCallbackInfo& info, juce::AudioIODevice& device);
-    void updatePreferredRecoverySetup(const juce::AudioDeviceManager::AudioDeviceSetup& preferredSetup);
-    juce::AudioDeviceManager::AudioDeviceSetup getPreferredRecoverySetup() const;
-    bool canAttemptRecovery(double nowMs, double retryIntervalMs);
+    void requestHardwareSetup(double sampleRate, int bufferSize);
+    juce::AudioDeviceManager::AudioDeviceSetup takePendingHardwareSetup(uint64_t& revision);
     void markRecoveryPending();
     void clearRecoveryPending();
     void resetSubscriptionBuffersAfterRecovery();
@@ -314,9 +323,14 @@ private:
     juce::String deviceName;
     juce::String deviceKey;
     std::unique_ptr<juce::AudioIODevice> device;
+    juce::StringArray availableInputChannelNames;
+    juce::StringArray availableOutputChannelNames;
+    DesiredClientSubscriptions deviceDirections{true, true};
     std::atomic<bool> deviceOpen{false};
+    std::atomic<double> idleDeadlineMs{0.0};
     std::atomic<double> currentSampleRate{0.0};
     std::atomic<int> currentBufferSize{0};
+    std::atomic<int> defaultBufferSize{0};
     std::atomic<int> currentChannelCount{0};
     mutable std::mutex setupMutex;
 
@@ -333,12 +347,10 @@ private:
     std::vector<float*> rtSubscriptionPointers;
     std::vector<const float*> rtInputPointers;
 
-    juce::AudioDeviceManager::AudioDeviceSetup preferredRecoverySetup;
-    bool hasPreferredRecoverySetup = false;
+    juce::AudioDeviceManager::AudioDeviceSetup pendingHardwareSetup;
     std::atomic<bool> recoveryPending{false};
     std::atomic<uint64_t> desiredSetupRevision{0};
     std::atomic<uint64_t> appliedSetupRevision{0};
-    double lastRecoveryAttemptMs = 0.0;
     std::atomic<bool> isRunning{false};
 };
 
@@ -365,8 +377,19 @@ public:
     void initialize(std::unique_ptr<juce::AudioDeviceManager> nativeDeviceManager = {});
     void shutdown();
 
-    std::unique_ptr<juce::AudioIODevice> createNativeDevice(const juce::String& deviceKey);
+    std::unique_ptr<juce::AudioIODevice>
+    createNativeDevice(const juce::String& deviceKey, bool useInput = true, bool useOutput = true);
     void requestDeviceActivation(const juce::String& deviceKey);
+    void requestDeviceProbe(const juce::String& deviceKey, bool refresh = false);
+
+    // JUCE device selection needs completed results on the message thread.
+    juce::String prepareDevice(juce::String deviceKey);
+    juce::String openDeviceForCallback(
+        juce::String deviceKey,
+        juce::AudioIODeviceCallback* callback,
+        bool useInput = true,
+        bool useOutput = true
+    );
 
     void registerClient(void* clientId, const AudioClientState& state, int bufferSize = 8192);
     void unregisterClient(void* clientId);
@@ -388,6 +411,8 @@ public:
 
     bool setDeviceSampleRate(const juce::String& deviceName, double newSampleRate);
     bool setDeviceBufferSize(const juce::String& deviceName, int newBufferSize);
+    bool
+    getPreparedDeviceSetup(const juce::String& deviceName, juce::AudioDeviceManager::AudioDeviceSetup& setup) const;
     double getCurrentSampleRate(const juce::String& deviceName) const;
     int getCurrentBufferSize(const juce::String& deviceName) const;
     bool
@@ -406,7 +431,8 @@ public:
     bool registerDirectCallback(
         const juce::String& deviceName,
         juce::AudioIODeviceCallback* callback,
-        const juce::AudioDeviceManager::AudioDeviceSetup& preferredSetup
+        bool useInput = true,
+        bool useOutput = true
     );
     void unregisterDirectCallback(const juce::String& deviceName, juce::AudioIODeviceCallback* callback);
     bool hasDirectCallback(const juce::String& deviceName) const;
@@ -420,8 +446,8 @@ private:
     void timerCallback() override;
     void setupDeviceEnumeratorListeners();
     void scanDeviceCatalog();
-    void attemptPendingDeviceRecovery(const juce::String& reason);
-    bool shouldRecoverDevice(AudioDeviceHandler* handler) const;
+    void processPendingDeviceRequests();
+    void processPendingDeviceProbes();
 
     static juce::String makeDeviceKey(const juce::String& deviceType, const juce::String& deviceName);
     juce::String resolveDeviceKeyForSubscription(const ChannelSubscription& sub) const;
@@ -470,6 +496,7 @@ private:
 
     mutable std::mutex devicesMutex;
     std::unordered_map<juce::String, std::shared_ptr<AudioDeviceHandler>> deviceHandlers;
+    std::unordered_map<juce::String, bool> pendingDeviceProbes;
 
     mutable std::mutex deviceEnumeratorMutex;
     mutable std::unique_ptr<juce::AudioDeviceManager> deviceEnumerator;
@@ -500,11 +527,6 @@ private:
 
     std::atomic<bool> initialized{false};
     bool processingDeviceRequests = false;
-
-    enum
-    {
-        recoveryRetryIntervalMs = 1000
-    };
 };
 
 } // namespace atk

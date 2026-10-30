@@ -51,14 +51,17 @@ public:
         audioDeviceManager.closeAudioDevice();
         obsDevice.store(nullptr, std::memory_order_release);
         pendingDeviceState = std::make_unique<juce::XmlElement>(state);
+        removeHardwareSettingsFromDeviceState(*pendingDeviceState);
         audioServerDeviceListChanged();
     }
 
     std::unique_ptr<juce::XmlElement> createDeviceStateXml()
     {
-        if (pendingDeviceState)
-            return std::make_unique<juce::XmlElement>(*pendingDeviceState);
-        return audioDeviceManager.createStateXml();
+        auto state = pendingDeviceState ? std::make_unique<juce::XmlElement>(*pendingDeviceState)
+                                        : audioDeviceManager.createStateXml();
+        if (state)
+            removeHardwareSettingsFromDeviceState(*state);
+        return state;
     }
 
     bool openOBSDevice()

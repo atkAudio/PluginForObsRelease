@@ -74,15 +74,14 @@ void AudioServerSettingsComponent::DeviceChannelTreeItem::itemClicked(const juce
 void AudioServerSettingsComponent::DeviceChannelTreeItem::itemOpennessChanged(bool isNowOpen)
 {
     // Lazily load channels when a device item is opened
-    if (isNowOpen && itemType == ItemType::Device && !childrenLoaded && server)
+    if (isNowOpen && itemType == ItemType::Device && getNumSubItems() == 0 && server)
     {
-        childrenLoaded = true;
-
         // Get both channel count and actual channel names from the device
         auto* typeItem = dynamic_cast<DeviceChannelTreeItem*>(getParentItem());
         auto key = typeItem ? typeItem->getItemName() + "|" + deviceName : deviceName;
-        server->requestDeviceActivation(key);
         juce::StringArray channelNames = server->getDeviceChannelNames(key, isInput);
+        if (channelNames.isEmpty())
+            server->requestDeviceProbe(key, true);
         int numChannels = static_cast<int>(channelNames.size());
 
         for (int ch = 0; ch < numChannels; ++ch)
@@ -101,6 +100,9 @@ void AudioServerSettingsComponent::DeviceChannelTreeItem::itemOpennessChanged(bo
             channelItem->setSettingsComponent(settingsComponent);
             addSubItem(channelItem);
         }
+
+        if (settingsComponent)
+            settingsComponent->setSubscriptionState(settingsComponent->getSubscriptionState());
     }
 }
 
@@ -597,7 +599,8 @@ void AudioServerSettingsComponent::ChannelMappingMatrix::setMappings(
 }
 
 AudioServerSettingsComponent::AudioServerSettingsComponent(AudioClient* audioClient, int clientChannels)
-    : client(audioClient)
+    : juce::ComponentMovementWatcher(this)
+    , client(audioClient)
     , server(AudioServer::getInstance())
 {
     // Input tree
@@ -666,7 +669,7 @@ AudioServerSettingsComponent::AudioServerSettingsComponent(AudioClient* audioCli
     if (client)
     {
         auto currentState = client->getSubscriptions();
-        setSubscriptionState(currentState, true);
+        setSubscriptionState(currentState);
 
         std::vector<ChannelMappingMatrix::MappingRow> inputRows;
         std::vector<ChannelMappingMatrix::MappingRow> outputRows;
@@ -800,13 +803,7 @@ void AudioServerSettingsComponent::updateDeviceTrees()
             deviceItem->setServerInstance(server);
             deviceItem->setSettingsComponent(this);
             typeItem->addSubItem(deviceItem);
-
-            // Don't create channels yet - they will be loaded lazily when device is opened
-            // Don't open device items - keep them collapsed
         }
-
-        // Keep type category open to show device names
-        typeItem->setOpen(true);
     }
 
     // Populate output devices grouped by type (ASIO, WASAPI, etc.)
@@ -831,21 +828,60 @@ void AudioServerSettingsComponent::updateDeviceTrees()
             deviceItem->setServerInstance(server);
             deviceItem->setSettingsComponent(this);
             typeItem->addSubItem(deviceItem);
-
-            // Don't create channels yet - they will be loaded lazily when device is opened
-            // Don't open device items - keep them collapsed
         }
-
-        // Keep type category open to show device names
-        typeItem->setOpen(true);
     }
 
-    // Restore subscriptions from client state (but don't expand tree on initial load)
     if (client)
     {
         auto state = client->getSubscriptions();
-        setSubscriptionState(state, false); // Don't expand - keep devices collapsed
+        resetDeviceTreeOpenness(state);
     }
+}
+
+void AudioServerSettingsComponent::resetDeviceTreeOpenness(const AudioClientState& state)
+{
+    auto resetOpenness = [](DeviceChannelTreeItem* root, const std::vector<ChannelSubscription>& subscriptions)
+    {
+        for (int i = 0; i < root->getNumSubItems(); ++i)
+        {
+            auto* typeItem = static_cast<DeviceChannelTreeItem*>(root->getSubItem(i));
+            bool typeSubscribed = false;
+            for (int j = 0; j < typeItem->getNumSubItems(); ++j)
+            {
+                auto* deviceItem = static_cast<DeviceChannelTreeItem*>(typeItem->getSubItem(j));
+                bool deviceSubscribed = false;
+                for (const auto& subscription : subscriptions)
+                {
+                    if (subscription.deviceName == deviceItem->getDeviceName()
+                        && (subscription.deviceType.isEmpty() || subscription.deviceType == typeItem->getItemName()))
+                    {
+                        deviceSubscribed = true;
+                        break;
+                    }
+                }
+                deviceItem->setOpen(deviceSubscribed);
+                typeSubscribed = typeSubscribed || deviceSubscribed;
+            }
+            typeItem->setOpen(typeSubscribed);
+        }
+    };
+    resetOpenness(inputRootItem.get(), state.inputSubscriptions);
+    resetOpenness(outputRootItem.get(), state.outputSubscriptions);
+    setSubscriptionState(state);
+}
+
+void AudioServerSettingsComponent::componentMovedOrResized(bool, bool)
+{
+}
+
+void AudioServerSettingsComponent::componentPeerChanged()
+{
+}
+
+void AudioServerSettingsComponent::componentVisibilityChanged()
+{
+    if (isShowing())
+        resetDeviceTreeOpenness(getSubscriptionState());
 }
 
 void AudioServerSettingsComponent::updateMappingMatrix()
@@ -981,12 +1017,9 @@ AudioClientState AudioServerSettingsComponent::getSubscriptionState() const
     return state;
 }
 
-void AudioServerSettingsComponent::setSubscriptionState(const AudioClientState& state, bool expandToSubscriptions)
+void AudioServerSettingsComponent::setSubscriptionState(const AudioClientState& state)
 {
-    // Mark channels as subscribed in trees and optionally expand to show them
-    // Structure: Root > DeviceType > Device > Channel
-    auto markSubscribedAndExpand =
-        [expandToSubscriptions](DeviceChannelTreeItem* root, const std::vector<ChannelSubscription>& subscriptions)
+    auto markSubscribed = [](DeviceChannelTreeItem* root, const std::vector<ChannelSubscription>& subscriptions)
     {
         auto matchesDevice =
             [](const ChannelSubscription& sub, const juce::String& deviceType, const juce::String& deviceName)
@@ -1001,29 +1034,12 @@ void AudioServerSettingsComponent::setSubscriptionState(const AudioClientState& 
                 continue;
 
             juce::String deviceType = typeItem->getItemName();
-            bool typeHasSubscriptions = false;
 
             for (int j = 0; j < typeItem->getNumSubItems(); ++j)
             {
                 auto* deviceItem = dynamic_cast<DeviceChannelTreeItem*>(typeItem->getSubItem(j));
                 if (!deviceItem || deviceItem->getType() != DeviceChannelTreeItem::ItemType::Device)
                     continue;
-
-                bool deviceHasSubscriptions = false;
-
-                // Only trigger lazy loading if we need to expand
-                if (expandToSubscriptions && deviceItem->getNumSubItems() == 0)
-                {
-                    // Check if this device has any subscriptions before expanding
-                    for (const auto& sub : subscriptions)
-                    {
-                        if (matchesDevice(sub, deviceType, deviceItem->getDeviceName()))
-                        {
-                            deviceItem->setOpen(true); // Trigger lazy load
-                            break;
-                        }
-                    }
-                }
 
                 for (int k = 0; k < deviceItem->getNumSubItems(); ++k)
                 {
@@ -1039,27 +1055,17 @@ void AudioServerSettingsComponent::setSubscriptionState(const AudioClientState& 
                             && sub.channelIndex == channelItem->getChannelIndex())
                         {
                             subscribed = true;
-                            deviceHasSubscriptions = true;
-                            typeHasSubscriptions = true;
                             break;
                         }
                     }
                     channelItem->setSubscribed(subscribed);
                 }
-
-                // Expand device if it has subscriptions and we want to expand
-                if (expandToSubscriptions && deviceHasSubscriptions)
-                    deviceItem->setOpen(true);
             }
-
-            // Keep type item open (it should already be open)
-            if (typeHasSubscriptions)
-                typeItem->setOpen(true);
         }
     };
 
-    markSubscribedAndExpand(inputRootItem.get(), state.inputSubscriptions);
-    markSubscribedAndExpand(outputRootItem.get(), state.outputSubscriptions);
+    markSubscribed(inputRootItem.get(), state.inputSubscriptions);
+    markSubscribed(outputRootItem.get(), state.outputSubscriptions);
 
     // Don't call updateMappingMatrix() here - subscriptions are already set in constructor
     // and routing matrix has been restored. This just marks checkboxes in the tree.
@@ -1432,16 +1438,15 @@ void AudioServerSettingsComponent::timerCallback()
                     {
                         atk::logging::debug(
                             "AudioServerSettingsComponent::timerCallback",
-                            juce::String::formatted(
-                                "device \"%s\" channel count changed %d -> %d",
-                                deviceName.toRawUTF8(),
-                                deviceItem->getNumSubItems(),
-                                newChannelCount
-                            )
+                            "device \""
+                                + deviceName
+                                + "\" channel count changed "
+                                + juce::String(deviceItem->getNumSubItems())
+                                + " -> "
+                                + juce::String(newChannelCount)
                         );
                         // Clear and rebuild child items
                         deviceItem->clearSubItems();
-                        deviceItem->resetChildrenLoadedFlag();
 
                         // Reload channels
                         for (int ch = 0; ch < newChannelCount; ++ch)
@@ -1471,7 +1476,7 @@ void AudioServerSettingsComponent::timerCallback()
     // Refresh both input and output trees
     refreshOpenDeviceNodes(inputRootItem.get());
     refreshOpenDeviceNodes(outputRootItem.get());
-    setSubscriptionState(stagedState, false);
+    setSubscriptionState(stagedState);
 }
 
 void AudioServerSettingsComponent::audioServerDeviceListChanged()
@@ -1480,7 +1485,7 @@ void AudioServerSettingsComponent::audioServerDeviceListChanged()
     if (lastInputDevices != server->getInputDevicesByType() || lastOutputDevices != server->getOutputDevicesByType())
         updateDeviceTrees();
     timerCallback();
-    setSubscriptionState(state, false);
+    setSubscriptionState(state);
 }
 
 void AudioServerSettingsComponent::updateDeviceSettings(const juce::String& deviceName)

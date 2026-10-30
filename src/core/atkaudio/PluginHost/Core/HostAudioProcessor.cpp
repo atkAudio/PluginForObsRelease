@@ -250,6 +250,7 @@ void HostAudioProcessorImpl::processBlock(AudioBuffer<float>& buffer, MidiBuffer
     if (inner == nullptr)
         return;
 
+    double blockTimeMs = juce::Time::getMillisecondCounterHiRes();
     AudioBuffer<float> tempBuffer;
 
     int numOutputChannels = 0;
@@ -291,7 +292,7 @@ void HostAudioProcessorImpl::processBlock(AudioBuffer<float>& buffer, MidiBuffer
         numInputSubs
     );
 
-    midiClient.getPendingMidi(midiBuffer, buffer.getNumSamples(), getSampleRate());
+    midiClient.getPendingMidi(midiBuffer, buffer.getNumSamples(), getSampleRate(), blockTimeMs);
 
     inputMidiCopy.clear();
     inputMidiCopy.addEvents(midiBuffer, 0, buffer.getNumSamples(), 0);

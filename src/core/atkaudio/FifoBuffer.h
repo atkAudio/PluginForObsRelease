@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <vector>
 
 namespace atk
@@ -21,10 +22,15 @@ public:
 
     void reset()
     {
-        readPos.store(0, std::memory_order_release);
-        writePos.store(0, std::memory_order_release);
+        resetPositions();
         for (auto& channel : buffer)
             std::fill(channel.begin(), channel.end(), 0.0f);
+    }
+
+    void resetPositions()
+    {
+        readPos.store(0, std::memory_order_release);
+        writePos.store(0, std::memory_order_release);
     }
 
     void read(float* dest, int channel, int numSamples, bool advance = true)
@@ -51,7 +57,7 @@ public:
             std::copy(src, src + size2, dest + size1);
 
         if (advance)
-            readPos.store((readPosition + toRead) % totalSize, std::memory_order_release);
+            readPos.store((static_cast<int64_t>(readPosition) + toRead) % totalSize, std::memory_order_release);
     }
 
     void write(const float* data, int channel, int numSamples, bool advance = true)
@@ -78,13 +84,13 @@ public:
             std::copy(data + size1, data + size1 + size2, dst);
 
         if (advance)
-            writePos.store((writePosition + toWrite) % totalSize, std::memory_order_release);
+            writePos.store((static_cast<int64_t>(writePosition) + toWrite) % totalSize, std::memory_order_release);
     }
 
     void advanceRead(int numSamples)
     {
         const int readPosition = readPos.load(std::memory_order_acquire);
-        readPos.store((readPosition + numSamples) % totalSize, std::memory_order_release);
+        readPos.store((static_cast<int64_t>(readPosition) + numSamples) % totalSize, std::memory_order_release);
     }
 
     int getNumReady() const

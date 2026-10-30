@@ -29,6 +29,7 @@ struct MidiInputEvent
     int samplePosition = 0;
     juce::String inputDeviceName;
     juce::String outputDeviceName;
+    double arrivalTimeSeconds = 0.0;
 };
 
 struct MidiOutputEvent
@@ -36,6 +37,7 @@ struct MidiOutputEvent
     juce::MidiMessage message;
     juce::String outputDeviceName;
     unsigned long long sequence = 0;
+    double scheduledTimeMs = 0.0;
 };
 
 class MidiMessageQueue;
@@ -52,10 +54,10 @@ public:
     MidiClient(MidiClient&&) noexcept;
     MidiClient& operator=(MidiClient&&) noexcept;
 
-    void getPendingMidi(juce::MidiBuffer& outBuffer, int numSamples, double sampleRate);
+    void getPendingMidi(juce::MidiBuffer& outBuffer, int numSamples, double sampleRate, double blockEndTimeMs = 0.0);
     void getPendingMidiEvents(std::vector<MidiInputEvent>& outEvents, int numSamples, double sampleRate);
 
-    void sendMidi(const juce::MidiBuffer& messages);
+    void sendMidi(const juce::MidiBuffer& messages, double blockStartTimeMs = 0.0, double sampleRate = 0.0);
     void sendMidiToDevice(const juce::MidiBuffer& messages, juce::String outputDeviceName);
 
     void injectMidi(const juce::MidiBuffer& messages);
@@ -90,7 +92,8 @@ public:
         const juce::MidiMessage& message,
         int samplePosition,
         const juce::String& inputDeviceName = {},
-        const juce::String& outputDeviceName = {}
+        const juce::String& outputDeviceName = {},
+        double arrivalTimeSeconds = 0.0
     )
     {
         juce::SpinLock::ScopedLockType lock(producerLock);
@@ -105,13 +108,15 @@ public:
                 (samplePosition == 0) ? autoIncrementPosition.fetch_add(1, std::memory_order_relaxed) : samplePosition;
             messages[start1].inputDeviceName = inputDeviceName;
             messages[start1].outputDeviceName = outputDeviceName;
+            messages[start1].arrivalTimeSeconds = arrivalTimeSeconds;
             fifo.finishedWrite(1);
             return true;
         }
         return false;
     }
 
-    void popAll(juce::MidiBuffer& outBuffer, int maxSamples = 65536)
+    void
+    popAll(juce::MidiBuffer& outBuffer, int maxSamples = 65536, double sampleRate = 0.0, double blockEndTimeMs = 0.0)
     {
         int start1, size1, start2, size2;
         const int numReady = fifo.getNumReady();
@@ -120,17 +125,27 @@ public:
         {
             fifo.prepareToRead(numReady, start1, size1, start2, size2);
             const int maxPos = (maxSamples > 0) ? maxSamples - 1 : 0;
+            auto samplePosition = [&](const MidiInputEvent& event)
+            {
+                if (sampleRate > 0.0 && blockEndTimeMs > 0.0 && event.arrivalTimeSeconds > 0.0)
+                {
+                    double position =
+                        (event.arrivalTimeSeconds * 1000.0 - blockEndTimeMs) * sampleRate / 1000.0 + maxSamples;
+                    return static_cast<int>(std::clamp(position, 0.0, static_cast<double>(maxPos)));
+                }
+                return std::clamp(event.samplePosition, 0, maxPos);
+            };
 
             for (int i = 0; i < size1; ++i)
             {
                 const auto& msg = messages[start1 + i];
-                outBuffer.addEvent(msg.message, std::clamp(msg.samplePosition, 0, maxPos));
+                outBuffer.addEvent(msg.message, samplePosition(msg));
             }
 
             for (int i = 0; i < size2; ++i)
             {
                 const auto& msg = messages[start2 + i];
-                outBuffer.addEvent(msg.message, std::clamp(msg.samplePosition, 0, maxPos));
+                outBuffer.addEvent(msg.message, samplePosition(msg));
             }
 
             fifo.finishedRead(size1 + size2);
@@ -154,13 +169,15 @@ public:
         for (int i = 0; i < size1; ++i)
         {
             const auto& msg = messages[start1 + i];
-            outEvents.push_back({msg.message, std::clamp(msg.samplePosition, 0, maxPos), msg.inputDeviceName});
+            outEvents.push_back(msg);
+            outEvents.back().samplePosition = std::clamp(msg.samplePosition, 0, maxPos);
         }
 
         for (int i = 0; i < size2; ++i)
         {
             const auto& msg = messages[start2 + i];
-            outEvents.push_back({msg.message, std::clamp(msg.samplePosition, 0, maxPos), msg.inputDeviceName});
+            outEvents.push_back(msg);
+            outEvents.back().samplePosition = std::clamp(msg.samplePosition, 0, maxPos);
         }
 
         fifo.finishedRead(size1 + size2);
@@ -201,7 +218,7 @@ public:
         messages.resize(queueSize);
     }
 
-    bool push(const juce::MidiMessage& message, const juce::String& outputDeviceName = {})
+    bool push(const juce::MidiMessage& message, const juce::String& outputDeviceName = {}, double scheduledTimeMs = 0.0)
     {
         int start1, size1, start2, size2;
         fifo.prepareToWrite(1, start1, size1, start2, size2);
@@ -215,6 +232,7 @@ public:
         messages[start1].message = message;
         messages[start1].outputDeviceName = outputDeviceName;
         messages[start1].sequence = nextSequence.fetch_add(1, std::memory_order_relaxed);
+        messages[start1].scheduledTimeMs = scheduledTimeMs;
         fifo.finishedWrite(1);
         return true;
     }
@@ -301,9 +319,11 @@ private:
     void dispatchOutboundMidi(
         const juce::MidiMessage& message,
         const MidiClientState& state,
-        const juce::String& outputDeviceName
+        const juce::String& outputDeviceName,
+        double scheduledTimeMs
     );
-    void dispatchMidiToOutput(const juce::MidiMessage& message, const juce::String& requestedKey);
+    void
+    dispatchMidiToOutput(const juce::MidiMessage& message, const juce::String& requestedKey, double scheduledTimeMs);
     void syncMidiInputDevices();
     void syncMidiOutputDevices();
     void syncMidiDevices();

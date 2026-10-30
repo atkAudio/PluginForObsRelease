@@ -4,6 +4,7 @@ It is distributed under the AGPLv3 license. See the LICENSE file for details.
 */
 
 #include "config.h"
+#include "core/atkaudio/obs_monitoring.h"
 #include "core/atkaudio/About.h"
 #include "core/atkaudio/GlobalSettings.h"
 #include "core/atkaudio/Logging.h"
@@ -224,6 +225,13 @@ bool obs_module_load(void)
         showDuplicateInstallAlert(loadedModuleConflict);
 
         atk::logging::error("OBS_API", "obs_module_load failed due duplicate atkAudio installation detection");
+        atk::settings::shutdown();
+        return false;
+    }
+
+    if (!atk::obsMonitoring::initialize())
+    {
+        obs_log(LOG_ERROR, "Failed to resolve OBS monitoring API");
         atk::settings::shutdown();
         return false;
     }
