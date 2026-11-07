@@ -727,6 +727,17 @@ void populateTargetComboForMapping(
 
     if (isHotkeyAction(mapping.actionType) && selectedIndex < 0 && mapping.targetUuid.isNotEmpty())
     {
+        auto* controller = atk::MidiControlController::getInstanceWithoutCreating();
+        if (controller != nullptr)
+        {
+            auto resolvedToken = controller->resolveHotkeyTargetToken(mapping);
+            if (resolvedToken.isNotEmpty())
+                selectedIndex = combo->findData(toQString(resolvedToken));
+        }
+    }
+
+    if (isHotkeyAction(mapping.actionType) && selectedIndex < 0 && mapping.targetUuid.isNotEmpty())
+    {
         auto manualLabel = mapping.targetName.isNotEmpty() ? mapping.targetName : mapping.targetUuid;
         atk::MidiControlHotkeyTarget target;
         auto legacyTarget =
@@ -1726,6 +1737,24 @@ void MidiControlDialog::buildLayout()
     delayedOutputRow->addStretch(1);
     mainLayout->addLayout(delayedOutputRow);
 
+    hotkeyDescriptionFallbackCheckBox = new QCheckBox("Match unavailable hotkeys by description", this);
+    hotkeyDescriptionFallbackCheckBox->setToolTip(
+        "Use a unique matching description when the registered hotkey name is missing. "
+        "A different macro with the same description can match, including in another scene collection. "
+        "Renaming a macro or changing the OBS language can prevent matching."
+    );
+    mainLayout->addWidget(hotkeyDescriptionFallbackCheckBox);
+    connect(
+        hotkeyDescriptionFallbackCheckBox,
+        &QCheckBox::toggled,
+        this,
+        [this](bool enabled)
+        {
+            if (!rebuildingUi)
+                MidiControlController::getInstance()->setHotkeyDescriptionFallbackEnabled(enabled);
+        }
+    );
+
     connect(
         parameterAutoSyncCheckBox,
         &QCheckBox::toggled,
@@ -2170,12 +2199,14 @@ void MidiControlDialog::reloadFromController()
     {
         if (parameterAutoSyncCheckBox != nullptr
             && matchByNameCheckBox != nullptr
+            && hotkeyDescriptionFallbackCheckBox != nullptr
             && delayedFeedbackOutputCheckBox != nullptr
             && lastTouchedTrackingCheckBox != nullptr
             && delayedFeedbackOutputIdleMsSpinBox != nullptr)
         {
             QSignalBlocker autoSyncBlocker(parameterAutoSyncCheckBox);
             QSignalBlocker matchByNameBlocker(matchByNameCheckBox);
+            QSignalBlocker hotkeyDescriptionFallbackBlocker(hotkeyDescriptionFallbackCheckBox);
             QSignalBlocker enabledBlocker(delayedFeedbackOutputCheckBox);
             QSignalBlocker lastTouchedTrackingBlocker(lastTouchedTrackingCheckBox);
             QSignalBlocker delayBlocker(delayedFeedbackOutputIdleMsSpinBox);
@@ -2183,6 +2214,7 @@ void MidiControlDialog::reloadFromController()
             parameterAutoSyncCheckBox->setChecked(!controller->isParameterAutoSyncEnabled());
             delayedFeedbackOutputCheckBox->setChecked(controller->isDelayedFeedbackOutputEnabled());
             matchByNameCheckBox->setChecked(controller->isMatchByNameEnabled());
+            hotkeyDescriptionFallbackCheckBox->setChecked(controller->isHotkeyDescriptionFallbackEnabled());
             lastTouchedTrackingCheckBox->setChecked(controller->isLastTouchedTrackingEnabled());
             delayedFeedbackOutputIdleMsSpinBox->setValue(controller->getDelayedFeedbackOutputIdleMs());
         }

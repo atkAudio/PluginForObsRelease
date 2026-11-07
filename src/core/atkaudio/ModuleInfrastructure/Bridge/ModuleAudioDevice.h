@@ -102,12 +102,8 @@ public:
         return getOBSAudioFrameSize();
     }
 
-    juce::String open(
-        const juce::BigInteger& inputChannels,
-        const juce::BigInteger& outputChannels,
-        double sampleRate,
-        int bufferSizeSamples
-    ) override
+    juce::String
+    open(const juce::BigInteger& inputChannels, const juce::BigInteger& outputChannels, double, int) override
     {
         close();
 
@@ -236,7 +232,7 @@ public:
         float* const* outputChannelData,
         int numOutputChannels,
         int numSamples,
-        double sampleRate = 0.0
+        double = 0.0
     )
     {
         // Check if we're the active device

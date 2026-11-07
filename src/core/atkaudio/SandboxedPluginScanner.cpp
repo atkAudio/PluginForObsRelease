@@ -199,8 +199,8 @@ void SandboxedScanner::offerFallbackScan()
                                .withIconType(juce::MessageBoxIconType::QuestionIcon)
                                .withTitle("Out-of-process scan failed")
                                .withMessage(message)
-                               .withButton("Retry")
-                               .withButton("Skip");
+                               .withButton("Retry", 1)
+                               .withButton("Skip", 0);
 
             juce::AlertWindow::showAsync(
                 options,

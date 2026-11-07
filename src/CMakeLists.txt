@@ -1,5 +1,9 @@
 # Single source-tree entry point for the plugin sources.
 file(GLOB_RECURSE OBS_PLUGIN_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
+if(APPLE)
+    file(GLOB_RECURSE OBS_PLUGIN_NATIVE_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.mm")
+    list(APPEND OBS_PLUGIN_SOURCES ${OBS_PLUGIN_NATIVE_SOURCES})
+endif()
 list(FILTER OBS_PLUGIN_SOURCES EXCLUDE REGEX [[.*/scanner/.*]])
 
 target_sources(${PROJECT_NAME} PRIVATE ${OBS_PLUGIN_SOURCES})
@@ -14,11 +18,17 @@ target_include_directories(
 # Always use JUCE modules only (no helper tools)
 set(JUCE_MODULES_ONLY ON CACHE BOOL "Only build JUCE modules" FORCE)
 
-# Persist JUCE across cache resets by reusing the repository's checked-out source tree.
-set(_juce_source_dir "${CMAKE_SOURCE_DIR}/_deps/juce-src")
+# Keep each pinned JUCE version in its own reusable checkout.
+set(_juce_version 9.0.5)
+set(_juce_base_dir "${CMAKE_SOURCE_DIR}/_deps/juce-${_juce_version}")
+set(_juce_source_dir "${_juce_base_dir}/juce-src")
+set(FETCHCONTENT_BASE_DIR "${_juce_base_dir}")
 if(EXISTS "${_juce_source_dir}/CMakeLists.txt")
     set(FETCHCONTENT_SOURCE_DIR_JUCE "${_juce_source_dir}" CACHE PATH "Source directory for JUCE" FORCE)
     message(STATUS "Using existing JUCE checkout at ${FETCHCONTENT_SOURCE_DIR_JUCE}")
+else()
+    unset(FETCHCONTENT_SOURCE_DIR_JUCE CACHE)
+    unset(FETCHCONTENT_SOURCE_DIR_JUCE)
 endif()
 
 include(FetchContent)
@@ -26,7 +36,7 @@ FetchContent_Declare(
     juce
     EXCLUDE_FROM_ALL
     GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
-    GIT_TAG 9.0.4
+    GIT_TAG ${_juce_version}
     GIT_SHALLOW TRUE
 )
 FetchContent_MakeAvailable(juce)

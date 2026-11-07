@@ -1,0 +1,19 @@
+diff --git a/modules/juce_audio_processors_headless/format_types/juce_VST3PluginFormatImpl.h b/modules/juce_audio_processors_headless/format_types/juce_VST3PluginFormatImpl.h
+--- a/modules/juce_audio_processors_headless/format_types/juce_VST3PluginFormatImpl.h
++++ b/modules/juce_audio_processors_headless/format_types/juce_VST3PluginFormatImpl.h
+@@ -2604,10 +2604,13 @@
+         auto* inputArrangementData  = inputArrangements .empty() ? &nullArrangement : inputArrangements .data();
+         auto* outputArrangementData = outputArrangements.empty() ? &nullArrangement : outputArrangements.data();
+ 
+-        if (processor->setBusArrangements (inputArrangementData,  static_cast<int32> (inputArrangements .size()),
+-                                           outputArrangementData, static_cast<int32> (outputArrangements.size())) != kResultTrue)
++        const auto result = processor->setBusArrangements (inputArrangementData,  static_cast<int32> (inputArrangements .size()),
++                                                          outputArrangementData, static_cast<int32> (outputArrangements.size()));
++        if (result != kResultTrue && result != kResultFalse)
+             return false;
+ 
++        // Fixed-layout plugins may return kResultFalse even when the requested layout is current.
++        // Accept only an exact readback match below, including after kResultFalse.
+         // check if the layout matches the request
+         const auto inArrActual  = getActualArrangements (true);
+         const auto outArrActual = getActualArrangements (false);

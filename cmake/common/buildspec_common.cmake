@@ -78,7 +78,21 @@ function(_setup_obs_studio)
     elseif(OS_MACOS)
         set(_cmake_generator "Xcode")
         set(_cmake_arch "-DCMAKE_OSX_ARCHITECTURES:STRING=${CMAKE_OSX_ARCHITECTURES}")
-        set(_cmake_extra "-DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+        set(_cmake_extra
+            "-DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}"
+            "-DCMAKE_OSX_SYSROOT:PATH=${macos_sdk_path}"
+        )
+        if(EXISTS "${dependencies_dir}/${_obs_destination}/build_${arch}/CMakeCache.txt")
+            load_cache(
+                "${dependencies_dir}/${_obs_destination}/build_${arch}"
+                READ_WITH_PREFIX _obs_cached_
+                CMAKE_OSX_SYSROOT
+            )
+        endif()
+        if(NOT "${_obs_cached_CMAKE_OSX_SYSROOT}" STREQUAL "${macos_sdk_path}")
+            message(STATUS "macOS SDK changed; refreshing OBS dependency CMake cache")
+            set(_is_fresh --fresh)
+        endif()
     endif()
 
     message(STATUS "Configure ${label} (${arch})")

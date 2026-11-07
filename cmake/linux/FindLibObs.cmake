@@ -18,6 +18,8 @@ find_package(PkgConfig QUIET)
 if(PKG_CONFIG_FOUND)
     pkg_check_modules(PC_LIBOBS QUIET libobs)
     set(LibObs_DEFINITIONS ${PC_LIBOBS_CFLAGS_OTHER})
+    # The consumer selects its language standard and warning policy.
+    list(FILTER LibObs_DEFINITIONS EXCLUDE REGEX "^(-std=|-Werror($|=))")
 endif()
 
 # Find the include directory
@@ -55,12 +57,14 @@ find_library(
 
 # Handle the QUIETLY and REQUIRED arguments
 find_package_handle_standard_args(
-    LibObs
+    ${CMAKE_FIND_PACKAGE_NAME}
     REQUIRED_VARS
         LibObs_LIBRARY
         LibObs_INCLUDE_DIR
     VERSION_VAR PC_LIBOBS_VERSION
 )
+
+set(LibObs_FOUND "${${CMAKE_FIND_PACKAGE_NAME}_FOUND}")
 
 if(LibObs_FOUND)
     set(LibObs_LIBRARIES ${LibObs_LIBRARY})

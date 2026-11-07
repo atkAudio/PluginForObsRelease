@@ -242,11 +242,19 @@ struct ResolvedTargetSource
 struct HotkeyNameLookupContext
 {
     juce::String wantedName;
+    juce::String wantedDescription;
+    juce::String descriptionRegisteredName;
     obs_hotkey_id resolvedId = OBS_INVALID_HOTKEY_ID;
+    obs_hotkey_id descriptionId = OBS_INVALID_HOTKEY_ID;
     int matchCount = 0;
+    int descriptionMatchCount = 0;
 };
 
-obs_hotkey_id resolveHotkeyIdFromMappingTarget(const MidiControlMapping& mapping)
+obs_hotkey_id resolveHotkeyIdFromMappingTarget(
+    const MidiControlMapping& mapping,
+    bool descriptionFallbackEnabled,
+    juce::String* resolvedToken = nullptr
+)
 {
     MidiControlHotkeyTarget target;
     if (!parseMidiControlHotkeyTargetToken(mapping.targetUuid, target) || target.hotkeyName.isEmpty())
@@ -254,6 +262,8 @@ obs_hotkey_id resolveHotkeyIdFromMappingTarget(const MidiControlMapping& mapping
 
     HotkeyNameLookupContext lookupContext;
     lookupContext.wantedName = target.hotkeyName;
+    if (descriptionFallbackEnabled)
+        lookupContext.wantedDescription = mapping.targetName;
 
     obs_enum_hotkeys(
         [](void* privateData, obs_hotkey_id id, obs_hotkey_t* key)
@@ -266,17 +276,36 @@ obs_hotkey_id resolveHotkeyIdFromMappingTarget(const MidiControlMapping& mapping
                 return true;
 
             auto* name = obs_hotkey_get_name(key);
-            if (name == nullptr || context->wantedName != juce::String(name))
-                return true;
-
-            context->resolvedId = id;
-            ++context->matchCount;
+            if (name != nullptr && context->wantedName == juce::String(name))
+            {
+                context->resolvedId = id;
+                ++context->matchCount;
+            }
+            auto* description = obs_hotkey_get_description(key);
+            if (name != nullptr
+                && name[0] != '\0'
+                && description != nullptr
+                && context->wantedDescription.isNotEmpty()
+                && context->wantedDescription == juce::String(description).trim())
+            {
+                context->descriptionId = id;
+                context->descriptionRegisteredName = name;
+                ++context->descriptionMatchCount;
+            }
             return true;
         },
         &lookupContext
     );
 
-    return lookupContext.matchCount == 1 ? lookupContext.resolvedId : OBS_INVALID_HOTKEY_ID;
+    if (lookupContext.matchCount > 0)
+    {
+        if (lookupContext.matchCount == 1 && resolvedToken != nullptr)
+            *resolvedToken = mapping.targetUuid;
+        return lookupContext.matchCount == 1 ? lookupContext.resolvedId : OBS_INVALID_HOTKEY_ID;
+    }
+    if (lookupContext.descriptionMatchCount == 1 && resolvedToken != nullptr)
+        *resolvedToken = createMidiControlHotkeyNameTargetToken(lookupContext.descriptionRegisteredName);
+    return lookupContext.descriptionMatchCount == 1 ? lookupContext.descriptionId : OBS_INVALID_HOTKEY_ID;
 }
 
 juce::String createEffectParmLayerToken(juce::String filterUuid)
@@ -1305,6 +1334,7 @@ void MidiControlController::initialize()
     parameterAutoSyncEnabled = atk::settings::isMidiControlParameterAutoSyncEnabled();
     delayedFeedbackOutputEnabled = atk::settings::isMidiControlDelayedFeedbackOutputEnabled();
     matchByNameEnabled = atk::settings::isMidiControlMatchByNameEnabled();
+    hotkeyDescriptionFallbackEnabled = atk::settings::isMidiControlHotkeyDescriptionFallbackEnabled();
     lastTouchedTrackingEnabled = atk::settings::isMidiControlLastTouchedTrackingEnabled();
     LastTouchedParameterTracker::getInstance().setTrackingEnabled(lastTouchedTrackingEnabled);
     delayedFeedbackOutputIdleMs =
@@ -1481,6 +1511,18 @@ bool MidiControlController::isLastTouchedTrackingEnabled() const
     return lastTouchedTrackingEnabled;
 }
 
+bool MidiControlController::isHotkeyDescriptionFallbackEnabled() const
+{
+    return hotkeyDescriptionFallbackEnabled;
+}
+
+juce::String MidiControlController::resolveHotkeyTargetToken(const MidiControlMapping& mapping) const
+{
+    juce::String resolvedToken;
+    resolveHotkeyIdFromMappingTarget(mapping, hotkeyDescriptionFallbackEnabled, &resolvedToken);
+    return resolvedToken;
+}
+
 int MidiControlController::getDelayedFeedbackOutputIdleMs() const
 {
     return delayedFeedbackOutputIdleMs;
@@ -1558,6 +1600,13 @@ void MidiControlController::setMatchByNameEnabled(bool enabled)
     }
 
     atk::settings::setMidiControlMatchByNameEnabled(enabled);
+}
+
+void MidiControlController::setHotkeyDescriptionFallbackEnabled(bool enabled)
+{
+    hotkeyDescriptionFallbackEnabled = enabled;
+    atk::settings::setMidiControlHotkeyDescriptionFallbackEnabled(enabled);
+    mappingsModel->refreshAll();
 }
 
 void MidiControlController::setLastTouchedTrackingEnabled(bool enabled)
@@ -2492,7 +2541,7 @@ void MidiControlController::dispatchHotkeyMapping(const MidiControlMapping& mapp
     if (!shouldActivateFromEvent(mapping, event.message))
         return;
 
-    auto hotkeyId = resolveHotkeyIdFromMappingTarget(mapping);
+    auto hotkeyId = resolveHotkeyIdFromMappingTarget(mapping, hotkeyDescriptionFallbackEnabled);
     if (hotkeyId == OBS_INVALID_HOTKEY_ID)
     {
         monitorDispatchResult = midi_control_dispatch_target_unavailable;

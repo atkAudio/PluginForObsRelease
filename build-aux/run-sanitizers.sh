@@ -12,18 +12,16 @@ export CONTAINER_ARCH=amd64
 export CI=true
 preset="ubuntu-x86_64-${mode}"
 build_dir="build_x86_64_${mode//-/_}"
-runtime="$(container_runtime)"
-
-if ! "${runtime}" image inspect "$(builder_image)" >/dev/null 2>&1; then
+if ! docker image inspect "$(builder_image)" >/dev/null 2>&1; then
     ubuntu_version="${UBUNTU_VERSION:-}"
     if [[ -z "${ubuntu_version}" ]]; then
-        ubuntu_version="$("${runtime}" run --rm ubuntu:latest sh -c '. /etc/os-release; printf "%s" "$VERSION_ID"')"
+        ubuntu_version="$(docker run --rm --label "atkaudio.ci.job=${RUNNER_TRACKING_ID:-local}" ubuntu:latest sh -c '. /etc/os-release; printf "%s" "$VERSION_ID"')"
     fi
     if [[ ! "${ubuntu_version}" =~ ^[0-9]{2}\.[0-9]{2}$ ]]; then
         printf 'Invalid Ubuntu release: %s\n' "${ubuntu_version}" >&2
         exit 1
     fi
-    "${runtime}" build --platform linux/amd64 --build-arg "UBUNTU_VERSION=${ubuntu_version}" \
+    docker build --platform linux/amd64 --build-arg "UBUNTU_VERSION=${ubuntu_version}" \
         -f "${workspace_dir}/.github/docker/linux-amd64-builder.Dockerfile" \
         -t "$(builder_image)" "${workspace_dir}/.github/docker"
 fi

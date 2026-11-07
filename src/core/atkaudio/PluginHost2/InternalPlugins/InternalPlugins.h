@@ -3,11 +3,6 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 using namespace juce;
 
-#include "DeviceIo2Plugin.h"
-#include "ObsOutput.h"
-#include "ObsSource.h"
-#include "../PluginGraph.h"
-
 class InternalPluginFormat final : public AudioPluginFormat
 {
 public:

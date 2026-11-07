@@ -2,6 +2,7 @@
 #include "../../SharedPluginList.h"
 #include <atkaudio/midi_control/last_touched_parameter_tracker.h>
 #include "../UI/HostEditorWindow.h"
+#include "../UI/au_editor_appearance.h"
 
 #include <atkaudio/Logging.h>
 
@@ -163,20 +164,24 @@ void HostAudioProcessorImpl::configureInnerProcessingUnlocked(double sampleRate,
     if (layoutSupported)
     {
         inner->setRateAndBufferSizeDetails(sampleRate, samplesPerBlock);
-        return;
+    }
+    else
+    {
+        auto pluginInputs = inner->getTotalNumInputChannels();
+        auto pluginOutputs = inner->getTotalNumOutputChannels();
+        auto hostInputs = getMainBusNumInputChannels();
+        auto hostOutputs = getMainBusNumOutputChannels();
+
+        inner->setPlayConfigDetails(
+            jmin(pluginInputs, hostInputs),
+            jmin(pluginOutputs, hostOutputs),
+            sampleRate,
+            samplesPerBlock
+        );
     }
 
-    auto pluginInputs = inner->getTotalNumInputChannels();
-    auto pluginOutputs = inner->getTotalNumOutputChannels();
-    auto hostInputs = getMainBusNumInputChannels();
-    auto hostOutputs = getMainBusNumOutputChannels();
-
-    inner->setPlayConfigDetails(
-        jmin(pluginInputs, hostInputs),
-        jmin(pluginOutputs, hostOutputs),
-        sampleRate,
-        samplesPerBlock
-    );
+    int pluginChannels = jmax(inner->getTotalNumInputChannels(), inner->getTotalNumOutputChannels());
+    internalBuffer.setSize(pluginChannels, samplesPerBlock * 2, false, false, true);
 }
 
 void HostAudioProcessorImpl::prepareToPlay(double sr, int bs)
@@ -196,12 +201,8 @@ void HostAudioProcessorImpl::prepareToPlay(double sr, int bs)
         inner->prepareToPlay(sr, bs);
     }
 
-    const int maxChannels = 32;
     const int maxSamples = bs * 2;
     const int maxSubscriptions = 16;
-
-    if (internalBuffer.getNumChannels() < maxChannels || internalBuffer.getNumSamples() < maxSamples)
-        internalBuffer.setSize(maxChannels, maxSamples, false, false, true);
 
     if (deviceInputBuffer.getNumChannels() < maxSubscriptions || deviceInputBuffer.getNumSamples() < maxSamples)
         deviceInputBuffer.setSize(maxSubscriptions, maxSamples, false, false, true);
@@ -251,7 +252,6 @@ void HostAudioProcessorImpl::processBlock(AudioBuffer<float>& buffer, MidiBuffer
         return;
 
     double blockTimeMs = juce::Time::getMillisecondCounterHiRes();
-    AudioBuffer<float> tempBuffer;
 
     int numOutputChannels = 0;
     for (int i = 0; i < inner->getBusCount(false); ++i)
@@ -270,9 +270,8 @@ void HostAudioProcessorImpl::processBlock(AudioBuffer<float>& buffer, MidiBuffer
     int numInputSubs = audioClient.getNumInputSubscriptions();
     int numOutputSubs = audioClient.getNumOutputSubscriptions();
 
-    int pluginChannels = buffer.getNumChannels();
-    if (internalBuffer.getNumChannels() < pluginChannels || internalBuffer.getNumSamples() < buffer.getNumSamples())
-        internalBuffer.setSize(pluginChannels, buffer.getNumSamples(), false, false, true);
+    int pluginChannels = jmax(inner->getTotalNumInputChannels(), numOutputChannels);
+    internalBuffer.setSize(pluginChannels, buffer.getNumSamples(), false, false, true);
 
     if (deviceInputBuffer.getNumChannels() < numInputSubs || deviceInputBuffer.getNumSamples() < buffer.getNumSamples())
         deviceInputBuffer.setSize(std::max(numInputSubs, 1), buffer.getNumSamples(), false, false, true);
@@ -297,16 +296,10 @@ void HostAudioProcessorImpl::processBlock(AudioBuffer<float>& buffer, MidiBuffer
     inputMidiCopy.clear();
     inputMidiCopy.addEvents(midiBuffer, 0, buffer.getNumSamples(), 0);
 
-    tempBuffer.setDataToReferTo(
-        internalBuffer.getArrayOfWritePointers(),
-        internalBuffer.getNumChannels(),
-        buffer.getNumSamples()
-    );
-
     if (inner->isSuspended())
-        tempBuffer.clear();
+        internalBuffer.clear();
     else
-        inner->processBlock(tempBuffer, midiBuffer);
+        inner->processBlock(internalBuffer, midiBuffer);
 
     routingMatrix.applyOutputRouting(
         internalBuffer,
@@ -720,7 +713,13 @@ std::unique_ptr<AudioProcessorEditor> HostAudioProcessorImpl::createInnerEditor(
         pluginToUse = inner.get();
     }
     if (pluginToUse != nullptr && pluginToUse->hasEditor())
-        return rawToUniquePtr(pluginToUse->createEditorAndMakeActive());
+    {
+        auto editor = rawToUniquePtr(pluginToUse->createEditorAndMakeActive());
+#if JUCE_MAC
+        atk::ApplyGenericAudioUnitEditorAppearance(editor.get());
+#endif
+        return editor;
+    }
     return nullptr;
 }
 

@@ -378,7 +378,7 @@ private:
                 activeInputPtrs.push_back(inputChannelData[ch]);
 
         // Channel count mismatch - skip (will resync on next audioDeviceAboutToStart)
-        if (activeInputPtrs.size() != numActiveInputs)
+        if (static_cast<int>(activeInputPtrs.size()) != numActiveInputs)
             return clearOutputs();
 
         // Build output pointers from temp buffer

@@ -63,6 +63,7 @@ private:
     QCheckBox* parameterAutoSyncCheckBox = nullptr;
     QCheckBox* delayedFeedbackOutputCheckBox = nullptr;
     QCheckBox* matchByNameCheckBox = nullptr;
+    QCheckBox* hotkeyDescriptionFallbackCheckBox = nullptr;
     QCheckBox* lastTouchedTrackingCheckBox = nullptr;
     QSpinBox* delayedFeedbackOutputIdleMsSpinBox = nullptr;
     QScrollArea* inputDeviceScrollArea = nullptr;

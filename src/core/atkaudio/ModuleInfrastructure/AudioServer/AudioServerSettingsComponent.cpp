@@ -1284,8 +1284,8 @@ void AudioServerSettingsComponent::buttonClicked(juce::Button* button)
                                "- Clear all device channel subscriptions\n"
                                "- Apply changes immediately"
                            )
-                           .withButton("Reset")
-                           .withButton("Cancel");
+                           .withButton("Reset", 1)
+                           .withButton("Cancel", 0);
 
         juce::AlertWindow::showAsync(
             options,

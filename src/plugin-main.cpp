@@ -265,9 +265,16 @@ bool obs_module_load(void)
         midiObsController->initialize();
 
     // OBS frontend API does not expose extending File->Settings tabs directly.
-    // Tools menu item is the supported plugin-level global settings entry point.
-    obs_frontend_add_tools_menu_item("atkAudio Plugin", openGlobalSettingsDialog, nullptr);
-    obs_frontend_add_tools_menu_item("atkAudio MIDI Control", openMidiControlDialog, nullptr);
+    // Tools menu is the supported plugin-level global settings entry point.
+    auto* pluginMenuAction = static_cast<QAction*>(obs_frontend_add_tools_menu_qaction("atkAudio Plugin"));
+    auto* pluginMenu = new QMenu(static_cast<QWidget*>(obs_frontend_get_main_window()));
+    pluginMenuAction->setMenu(pluginMenu);
+
+    auto* globalSettingsAction = pluginMenu->addAction("Settings");
+    QObject::connect(globalSettingsAction, &QAction::triggered, [] { openGlobalSettingsDialog(nullptr); });
+
+    auto* midiControlAction = pluginMenu->addAction("MIDI Control");
+    QObject::connect(midiControlAction, &QAction::triggered, [] { openMidiControlDialog(nullptr); });
     atk::logging::info("OBS_API", "Registered tools menu item for global atkAudio settings");
 
     obs_register_source(&delay_filter);

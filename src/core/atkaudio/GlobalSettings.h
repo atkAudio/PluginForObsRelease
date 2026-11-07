@@ -28,6 +28,9 @@ void setMidiControlParameterAutoSyncEnabled(bool enabled);
 bool isMidiControlMatchByNameEnabled();
 void setMidiControlMatchByNameEnabled(bool enabled);
 
+bool isMidiControlHotkeyDescriptionFallbackEnabled();
+void setMidiControlHotkeyDescriptionFallbackEnabled(bool enabled);
+
 bool isMidiControlLastTouchedTrackingEnabled();
 void setMidiControlLastTouchedTrackingEnabled(bool enabled);
 

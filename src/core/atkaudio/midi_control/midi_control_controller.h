@@ -139,6 +139,8 @@ public:
     bool isParameterAutoSyncEnabled() const;
     bool isDelayedFeedbackOutputEnabled() const;
     bool isMatchByNameEnabled() const;
+    bool isHotkeyDescriptionFallbackEnabled() const;
+    juce::String resolveHotkeyTargetToken(const MidiControlMapping& mapping) const;
     bool isLastTouchedTrackingEnabled() const;
     int getDelayedFeedbackOutputIdleMs() const;
     int getActiveBank() const;
@@ -148,6 +150,7 @@ public:
     void setParameterAutoSyncEnabled(bool enabled);
     void setDelayedFeedbackOutputEnabled(bool enabled);
     void setMatchByNameEnabled(bool enabled);
+    void setHotkeyDescriptionFallbackEnabled(bool enabled);
     void setLastTouchedTrackingEnabled(bool enabled);
     void setDelayedFeedbackOutputIdleMs(int delayMs);
     void stopRuntimeResources();
@@ -255,6 +258,7 @@ private:
     bool initialStateRestorePending = false;
     bool parameterAutoSyncEnabled = true;
     bool matchByNameEnabled = true;
+    bool hotkeyDescriptionFallbackEnabled = false;
     bool lastTouchedTrackingEnabled = false;
     bool feedbackSyncPending = false;
     double feedbackSyncDeadlineMs = 0.0;

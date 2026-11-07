@@ -489,8 +489,8 @@ public:
 
                 if (message.isController())
                 {
-                    toUiChannel.store(message.getChannel(), std::memory_order_release);
-                    toUiCc.store(message.getControllerNumber(), std::memory_order_release);
+                    toUiChannel.store(static_cast<float>(message.getChannel()), std::memory_order_release);
+                    toUiCc.store(static_cast<float>(message.getControllerNumber()), std::memory_order_release);
                     learnCaptured.store(true, std::memory_order_release);
                     break;
                 }
@@ -528,8 +528,8 @@ public:
 
                 if (message.isController())
                 {
-                    toUiMuteChannel.store(message.getChannel(), std::memory_order_release);
-                    toUiMuteCc.store(message.getControllerNumber(), std::memory_order_release);
+                    toUiMuteChannel.store(static_cast<float>(message.getChannel()), std::memory_order_release);
+                    toUiMuteCc.store(static_cast<float>(message.getControllerNumber()), std::memory_order_release);
                     muteLearnCaptured.store(true, std::memory_order_release);
                     break;
                 }

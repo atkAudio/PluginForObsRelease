@@ -1,6 +1,7 @@
 #pragma once
 #include "LookAndFeel.h"
 #include "atkaudio.h"
+#include "update_check_state.h"
 #include "update_manifest.h"
 
 #include <atkaudio/Logging.h>
@@ -12,8 +13,6 @@ constexpr auto DISPLAY_NAME = PLUGIN_DISPLAY_NAME;
 constexpr auto REPO = UPDATE_REPOSITORY_NAME;
 constexpr auto VERSION = PLUGIN_VERSION;
 constexpr auto FILENAME = UPDATE_FILENAME;
-constexpr long long VERSION_FILE_EXPIRY_MS = 3LL * 30 * 24 * 60 * 60 * 1000;
-constexpr long long UPDATE_CHECK_INTERVAL_MS = 7LL * 24 * 60 * 60 * 1000;
 constexpr int RELEASE_NOTES_WIDTH_PX = 640;
 constexpr int RELEASE_NOTES_HEIGHT_PX = 400;
 constexpr int UPDATE_PROMPT_BUTTON_TOP_MARGIN_PX = 10;
@@ -68,21 +67,9 @@ private:
         }
 
         juce::File lastVersionFile = atk::getSettingsFile("version");
-        if (lastVersionFile.existsAsFile())
-        {
-            auto now = juce::Time::getCurrentTime();
-            if (now.toMilliseconds() - lastVersionFile.getCreationTime().toMilliseconds() > VERSION_FILE_EXPIRY_MS)
-                lastVersionFile.deleteFile();
-        }
-
 #ifndef SIMULATE_UPDATE_CHECK
-        if (lastVersionFile.existsAsFile())
-        {
-            auto now = juce::Time::getCurrentTime();
-            if (now.toMilliseconds() - lastVersionFile.getLastModificationTime().toMilliseconds()
-                < UPDATE_CHECK_INTERVAL_MS)
-                return;
-        }
+        if (!atk::updates::ShouldCheckForUpdate(lastVersionFile, juce::Time::getCurrentTime()))
+            return;
 #endif
 
         atk::updates::Manifest remoteManifest;
@@ -130,16 +117,17 @@ private:
                 + "\""
         );
 
-        juce::String skippedTimestamp;
-        if (ensureVersionFileExists(lastVersionFile))
-        {
-            lastVersionFile.setLastModificationTime(juce::Time::getCurrentTime());
-#ifndef SIMULATE_UPDATE_CHECK
-            skippedTimestamp = lastVersionFile.loadFileAsString().trim();
-#endif
-        }
+        juce::Time checkedAt = juce::Time::getCurrentTime();
+        atk::updates::CheckState state = atk::updates::LoadCheckState(lastVersionFile, checkedAt);
+        juce::Result saved = atk::updates::SaveCheckState(lastVersionFile, &state, checkedAt);
+        if (saved.failed())
+            atk::logging::warning("UpdateCheck::checkForUpdate", saved.getErrorMessage());
 
-        if (atk::updates::ShouldOfferUpdate(&remoteManifest, PLUGIN_BUILD_TIMESTAMP, skippedTimestamp))
+#ifdef SIMULATE_UPDATE_CHECK
+        state = {};
+#endif
+
+        if (atk::updates::ShouldOfferUpdate(&remoteManifest, PLUGIN_BUILD_TIMESTAMP, state.skippedBuildTimestamp))
         {
             fetchReleaseNotes();
             auto message = "A new build is available: " + latestRemoteVersion;
@@ -230,39 +218,6 @@ private:
             releaseNotes = getValueFromJson(json, "body");
     }
 
-    bool ensureVersionFileExists(juce::File& versionFile)
-    {
-        if (versionFile.getFullPathName().isEmpty())
-        {
-            atk::logging::warning(
-                "UpdateCheck::ensureVersionFileExists",
-                "settings file path is empty; unable to persist version state"
-            );
-            return false;
-        }
-
-        auto versionDirectory = versionFile.getParentDirectory();
-        if (!versionDirectory.exists() && !versionDirectory.createDirectory())
-        {
-            atk::logging::warning(
-                "UpdateCheck::ensureVersionFileExists",
-                "failed to create settings directory; path=\"" + versionDirectory.getFullPathName() + "\""
-            );
-            return false;
-        }
-
-        if (!versionFile.existsAsFile() && !versionFile.replaceWithText(""))
-        {
-            atk::logging::warning(
-                "UpdateCheck::ensureVersionFileExists",
-                "failed to create version file; path=\"" + versionFile.getFullPathName() + "\""
-            );
-            return false;
-        }
-
-        return true;
-    }
-
     void modalStateFinished(int returnValue) override
     {
         if (returnValue == 1)
@@ -277,11 +232,14 @@ private:
         else if (returnValue == 2)
         {
             auto lastVersionFile = atk::getSettingsFile("version");
-            if (ensureVersionFileExists(lastVersionFile) && !latestRemoteBuildTimestamp.isEmpty())
+            if (!latestRemoteBuildTimestamp.isEmpty())
             {
-                if (!lastVersionFile.replaceWithText(latestRemoteBuildTimestamp))
+                juce::Time skippedAt = juce::Time::getCurrentTime();
+                atk::updates::CheckState state{latestRemoteBuildTimestamp, skippedAt.toMilliseconds()};
+                juce::Result saved = atk::updates::SaveCheckState(lastVersionFile, &state, skippedAt);
+                if (saved.failed())
                 {
-                    atk::logging::warning("UpdateCheck::modalStateFinished", "unable to save skipped build timestamp");
+                    atk::logging::warning("UpdateCheck::modalStateFinished", saved.getErrorMessage());
                     return;
                 }
                 atk::logging::info(

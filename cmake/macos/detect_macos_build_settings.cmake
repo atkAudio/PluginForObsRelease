@@ -38,6 +38,7 @@ string(
 if(NOT sdk_path_result EQUAL 0 OR NOT plist_result EQUAL 0 OR macos_deployment_major STREQUAL "")
     message(FATAL_ERROR "Unable to determine the Xcode deployment target range")
 endif()
+set(CMAKE_OSX_SYSROOT "${macos_sdk_path}" CACHE PATH "Detected macOS SDK" FORCE)
 while(macos_deployment_major LESS_EQUAL macos_sdk_major)
     execute_process(
         COMMAND

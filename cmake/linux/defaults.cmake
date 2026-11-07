@@ -34,7 +34,7 @@ list(
     "/home/linuxbrew/.linuxbrew"
 )
 
-find_package(libobs QUIET)
+find_package(libobs CONFIG QUIET)
 
 if(NOT TARGET OBS::libobs)
     find_package(LibObs REQUIRED)
