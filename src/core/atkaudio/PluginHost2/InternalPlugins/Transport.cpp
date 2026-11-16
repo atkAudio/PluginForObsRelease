@@ -2,6 +2,8 @@
 #include "../PluginGraph.h"
 #include "../Editor/TransportEditor.h"
 
+#include <config.h>
+
 TransportProcessor::TransportProcessor()
     : AudioPluginInstance(BusesProperties{})
 {
@@ -210,6 +212,8 @@ void TransportProcessor::fillInPluginDescription(juce::PluginDescription& descri
     description.name = description.descriptiveName = description.fileOrIdentifier = "Transport";
     description.pluginFormatName = "Internal";
     description.category = "Utility";
+    description.manufacturerName = PLUGIN_AUTHOR;
+    description.version = PLUGIN_VERSION;
     description.uniqueId = description.deprecatedUid = description.name.hashCode();
     description.isInstrument = false;
 }

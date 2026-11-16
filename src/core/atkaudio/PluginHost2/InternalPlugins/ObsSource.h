@@ -592,7 +592,7 @@ private:
         std::vector<std::unique_ptr<RangedAudioParameter>> params;
 
         auto channelRange = NormalisableRange<float>(0.0f, 16.0f, 1.0f, 1.0f);
-        auto ccRange = NormalisableRange<float>(0.0f, 128.0f, 1.0f, 1.0f);
+        auto ccRange = NormalisableRange<float>(0.0f, 127.0f, 1.0f, 1.0f);
 
         params.push_back(std::make_unique<AudioParameterBool>(ParameterID{"midi", 1}, "MIDI", false));
         params.push_back(std::make_unique<AudioParameterFloat>(ParameterID{"ch", 1}, "Channel", channelRange, 1.0f));

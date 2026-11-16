@@ -1,6 +1,7 @@
 #include "ParentSource.h"
 
 #include <atkaudio/ObsAudioChannelSet.h>
+#include <config.h>
 
 namespace atk
 {
@@ -37,6 +38,8 @@ void ParentSourceProcessor::fillInPluginDescription(juce::PluginDescription& des
     description.pluginFormatName = "Internal";
     description.fileOrIdentifier = getName();
     description.category = "OBS";
+    description.manufacturerName = PLUGIN_AUTHOR;
+    description.version = PLUGIN_VERSION;
     description.uniqueId = description.deprecatedUid = getName().hashCode();
     description.numInputChannels = getTotalNumInputChannels();
     description.numOutputChannels = getTotalNumOutputChannels();

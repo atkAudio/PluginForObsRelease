@@ -1,6 +1,7 @@
 #include "AudioProcessorGraphMT.h"
 
 #include <atkaudio/Logging.h>
+#include <config.h>
 #include "SubgraphExtractor.h"
 #include "RealtimeThreadPool.h"
 #include "DependencyTaskGraph.h"
@@ -3090,11 +3091,11 @@ const String AudioProcessorGraphMT::AudioGraphIOProcessor::getName() const
 
 void AudioProcessorGraphMT::AudioGraphIOProcessor::fillInPluginDescription(PluginDescription& d) const
 {
-    d.name = getName();
+    d.name = d.descriptiveName = getName();
     d.category = "I/O devices";
     d.pluginFormatName = "Internal";
-    d.manufacturerName = "JUCE";
-    d.version = "1.0";
+    d.manufacturerName = PLUGIN_AUTHOR;
+    d.version = PLUGIN_VERSION;
     d.isInstrument = false;
 
     d.deprecatedUid = d.uniqueId = d.name.hashCode();

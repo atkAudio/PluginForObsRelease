@@ -718,6 +718,17 @@ void AudioDeviceHandler::audioDeviceAboutToStart(juce::AudioIODevice* device)
     rtSubscriptionPointers.resize(maxChannels);
     rtInputPointers.resize(maxChannels);
 
+    {
+        std::lock_guard<std::mutex> lock(clientBuffersMutex);
+        for (auto& entry : clientBuffers)
+        {
+            if (entry.second.inputBuffer)
+                prepareSubscriptionBuffer(*entry.second.inputBuffer, true);
+            if (entry.second.outputBuffer)
+                prepareSubscriptionBuffer(*entry.second.outputBuffer, false);
+        }
+    }
+
     auto directSnapshot = directCallbackSnapshot.load(std::memory_order_acquire);
     for (auto& info : directSnapshot->callbacks)
     {
@@ -874,6 +885,7 @@ void AudioDeviceHandler::addClientSubscription(
         if (!buffers.inputBuffer)
         {
             buffers.inputBuffer = std::make_shared<SyncBuffer>(deviceName + " in");
+            prepareSubscriptionBuffer(*buffers.inputBuffer, true);
 
             atk::logging::debug(
                 "AudioDeviceHandler::addClientSubscription",
@@ -889,6 +901,7 @@ void AudioDeviceHandler::addClientSubscription(
         if (!buffers.outputBuffer)
         {
             buffers.outputBuffer = std::make_shared<SyncBuffer>(deviceName + " out");
+            prepareSubscriptionBuffer(*buffers.outputBuffer, false);
 
             atk::logging::debug(
                 "AudioDeviceHandler::addClientSubscription",
@@ -1057,6 +1070,17 @@ void AudioDeviceHandler::resetSubscriptionBuffersAfterRecovery()
         if (buffers.outputBuffer)
             buffers.outputBuffer->reset();
     }
+}
+
+void AudioDeviceHandler::prepareSubscriptionBuffer(SyncBuffer& buffer, bool isInput)
+{
+    int channels = isInput ? device->getActiveInputChannels().getHighestBit() + 1
+                           : device->getActiveOutputChannels().getHighestBit() + 1;
+    buffer.prepare(
+        std::max(1, channels),
+        currentBufferSize.load(std::memory_order_acquire),
+        currentSampleRate.load(std::memory_order_acquire)
+    );
 }
 
 int AudioDeviceHandler::getNumChannels() const
@@ -1868,7 +1892,10 @@ void AudioServer::updateClientSubscriptions(void* clientId, const AudioClientSta
                 buffers.inputMappings = inputMappings;
 
                 if (!buffers.inputBuffer)
+                {
                     buffers.inputBuffer = std::make_shared<SyncBuffer>(handler->getDeviceName() + " in");
+                    handler->prepareSubscriptionBuffer(*buffers.inputBuffer, true);
+                }
 
                 snapshotDirty = true;
 
@@ -1903,7 +1930,10 @@ void AudioServer::updateClientSubscriptions(void* clientId, const AudioClientSta
                 buffers.outputMappings = outputMappings;
 
                 if (!buffers.outputBuffer)
+                {
                     buffers.outputBuffer = std::make_shared<SyncBuffer>(handler->getDeviceName() + " out");
+                    handler->prepareSubscriptionBuffer(*buffers.outputBuffer, false);
+                }
 
                 snapshotDirty = true;
 

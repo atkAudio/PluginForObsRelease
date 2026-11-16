@@ -160,6 +160,12 @@ public:
         {
             currentSampleRate = device->getCurrentSampleRate();
             currentBufferSize = device->getCurrentBufferSizeSamples();
+            int inputChannels = device->getActiveInputChannels().getHighestBit() + 1;
+            int outputChannels = device->getActiveOutputChannels().getHighestBit() + 1;
+            if (inputChannels > 0)
+                toObsBuffer.prepare(inputChannels, currentBufferSize, currentSampleRate);
+            if (outputChannels > 0)
+                fromObsBuffer.prepare(outputChannels, currentBufferSize, currentSampleRate);
         }
         needsBufferClear.store(true);
     }

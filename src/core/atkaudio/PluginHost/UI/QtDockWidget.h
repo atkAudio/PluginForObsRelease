@@ -209,7 +209,15 @@ public:
     bool event(QEvent* event) override
     {
         if (event->type() == QEvent::ScreenChangeInternal)
+        {
             resetConstraints();
+            syncScaleFactorWithQt();
+        }
+
+#if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
+        if (event->type() == QEvent::DevicePixelRatioChange)
+            syncScaleFactorWithQt();
+#endif
 
         if (event->type() == QEvent::ParentChange)
             connectToParentDock();
@@ -342,10 +350,32 @@ private:
             component->removeFromDesktop();
 
         component->addToDesktop(0, parentHandle);
+        syncScaleFactorWithQt();
 
         component->setVisible(true);
         component->toFront(false);
         component->repaint();
+    }
+
+    // JUCE scales child windows by the window DPI, while Qt may use a different device pixel ratio
+    // (e.g. QT_SCALE_FACTOR or disabled high-DPI scaling); both must agree for 1 Qt px == 1 JUCE px.
+    void syncScaleFactorWithQt()
+    {
+#if JUCE_WINDOWS
+        if (!component || useWaylandMode)
+            return;
+
+        auto* peer = component->getPeer();
+        if (!peer)
+            return;
+
+        const auto qtScale = devicePixelRatioF();
+        if (juce::approximatelyEqual(peer->getPlatformScaleFactor(), qtScale))
+            return;
+
+        peer->setCustomPlatformScaleFactor(qtScale);
+        peer->setBounds(component->getBounds(), false);
+#endif
     }
 
     void componentMovedOrResized(juce::Component& comp, bool wasMoved, bool wasResized) override

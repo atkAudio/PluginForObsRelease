@@ -31,6 +31,11 @@
 #define TEXT_LAYOUT_STEREO MT_("Stereo")
 #define S_LAYOUT "layout"
 
+enum
+{
+    MAX_SOURCES = 100
+};
+
 struct source_data
 {
     obs_source_t* source;
@@ -336,7 +341,7 @@ static obs_properties_t* properties(void* data)
 
     // Show minimum 8 slots, or configured+1 (one extra empty slot)
     const size_t minSlots = 8;
-    const size_t totalSlots = std::max<size_t>(minSlots, configured + 1);
+    const size_t totalSlots = std::min<size_t>(MAX_SOURCES, std::max<size_t>(minSlots, configured + 1));
 
     for (size_t i = 0; i < totalSlots; ++i)
     {
@@ -396,7 +401,7 @@ static void update(void* data, obs_data_t* s)
 
     // First pass: count how many sources are configured in the saved settings
     size_t configuredCount = 0;
-    for (size_t i = 0; i < 1000; ++i) // reasonable upper limit
+    for (size_t i = 0; i < MAX_SOURCES; ++i)
     {
         std::string sidechainText = S_SIDECHAIN_SOURCE;
         sidechainText += std::to_string(i + 1);
@@ -407,7 +412,7 @@ static void update(void* data, obs_data_t* s)
     }
 
     // Ensure we have at least 8 sources, and enough for all configured sources + 1 empty
-    const size_t requiredSize = std::max<size_t>(8, configuredCount + 1);
+    const size_t requiredSize = std::min<size_t>(MAX_SOURCES, std::max<size_t>(8, configuredCount + 1));
     while (asmd->sources->size() < requiredSize)
     {
         asmd->sources->emplace_back();
@@ -415,7 +420,7 @@ static void update(void* data, obs_data_t* s)
     }
 
     // Trim to maintain minimum 8 sources, or configuredCount+1 (one empty slot after configured)
-    const size_t targetSize = std::max<size_t>(8, configuredCount + 1);
+    const size_t targetSize = requiredSize;
     while (asmd->sources->size() > targetSize)
         asmd->sources->pop_back();
 
@@ -514,7 +519,7 @@ static void update(void* data, obs_data_t* s)
         sidechainText += std::to_string(idx);
         const char* sidechain_name = obs_data_get_string(s, sidechainText.c_str());
         const bool valid_sidechain = sidechain_name && *sidechain_name && strcmp(sidechain_name, "none") != 0;
-        if (valid_sidechain)
+        if (valid_sidechain && asmd->sources->size() < MAX_SOURCES)
         {
             asmd->sources->emplace_back();
             source_data& newSrc = asmd->sources->back();
@@ -552,8 +557,7 @@ static void compressor_defaults(obs_data_t* s)
 {
     obs_data_set_default_string(s, S_SIDECHAIN_SOURCE, "none");
 
-    // Set defaults for all slots (support up to 100 slots)
-    for (int i = 1; i <= 100; ++i)
+    for (int i = 1; i <= MAX_SOURCES; ++i)
     {
         std::string postFaderKey = S_POSTFADER + std::to_string(i);
         std::string postMuteKey = S_POSTMUTE + std::to_string(i);

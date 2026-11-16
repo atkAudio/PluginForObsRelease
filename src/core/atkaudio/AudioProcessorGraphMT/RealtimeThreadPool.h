@@ -355,7 +355,7 @@ public:
         return false;
     }
 
-    // Executes a dependency graph to completion. Returns false when every fixed dispatch slot is busy.
+    // Returns false when the graph exceeds the task limit or every dispatch slot is busy.
     bool executeDependencyGraph(DependencyTaskGraph* graph)
     {
         if (!initialized.load(std::memory_order_acquire))
@@ -364,9 +364,11 @@ public:
         if (!graph || graph->empty())
             return true;
 
+        if (!graph->prepare())
+            return false;
+
         if (graph->getTaskCount() == 1 || isCalledFromWorkerThread())
         {
-            graph->prepare();
             graph->waitUntilDone();
             return true;
         }
@@ -383,7 +385,6 @@ public:
             }
         );
 
-        graph->prepare();
         slot->graph.store(graph, std::memory_order_release);
         slot->readers.open();
         wakeAllWorkers();

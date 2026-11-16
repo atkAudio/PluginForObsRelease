@@ -105,7 +105,7 @@ public:
 
     int getTotalSize() const
     {
-        return totalSize;
+        return totalSize > 0 ? totalSize - 1 : 0;
     }
 
     int getFreeSpace() const
@@ -121,11 +121,13 @@ public:
 
     void setSize(int newNumChannels, int numSamples)
     {
-        if (newNumChannels == numChannels && numSamples == totalSize)
+        // One extra storage slot distinguishes full from empty.
+        int storageSize = numSamples + 1;
+        if (newNumChannels == numChannels && storageSize == totalSize)
             return;
 
         numChannels = newNumChannels;
-        totalSize = numSamples;
+        totalSize = storageSize;
         buffer.resize(numChannels);
         for (auto& channel : buffer)
             channel.resize(totalSize, 0.0f);

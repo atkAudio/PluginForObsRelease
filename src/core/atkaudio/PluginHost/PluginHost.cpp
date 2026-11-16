@@ -4,6 +4,7 @@
 #include "UI/HostEditorWindow.h"
 #include <atkaudio/AudioProcessorGraphMT/RealtimeThreadPool.h>
 #include <atkaudio/FifoBuffer.h>
+#include <atkaudio/Logging.h>
 #include <chrono>
 #include <memory>
 
@@ -15,6 +16,11 @@
 
 struct atk::PluginHost::Impl : public juce::AsyncUpdater
 {
+    enum
+    {
+        STATE_WAIT_TIMEOUT_MS = 3000
+    };
+
     enum UpdateFlags
     {
         None = 0,
@@ -45,27 +51,19 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
 
         void markCompleted()
         {
-            completed.store(true, std::memory_order_release);
             std::lock_guard<std::mutex> lock(mutex);
-            cv.notify_one();
+            completed.store(true, std::memory_order_release);
+            cv.notify_all();
         }
 
         void waitForCompletion()
         {
-            // Fast path: already done
-            if (completed.load(std::memory_order_acquire))
-                return;
-
             std::unique_lock<std::mutex> lock(mutex);
             cv.wait(lock, [this] { return completed.load(std::memory_order_acquire); });
         }
 
-        bool waitForCompletionWithTimeout(std::chrono::microseconds timeout)
+        bool waitForCompletionWithTimeout(std::chrono::milliseconds timeout)
         {
-            // Fast path: already done
-            if (completed.load(std::memory_order_acquire))
-                return true;
-
             std::unique_lock<std::mutex> lock(mutex);
             return cv.wait_for(lock, timeout, [this] { return completed.load(std::memory_order_acquire); });
         }
@@ -249,8 +247,7 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
             hostProc->getLatencyMs = nullptr;
         }
 
-        if (useThreadPool.load(std::memory_order_acquire))
-            jobContext.waitForCompletionWithTimeout(std::chrono::milliseconds(100));
+        jobContext.waitForCompletion();
 
         if (mainComponent)
             mainComponent->detachProcessor();
@@ -356,10 +353,15 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
 
             loadMeasurer.reset(rate, samples);
 
-            const int fifoSize = 8192;
+            enum
+            {
+                BUFFERED_BLOCKS = 8
+            };
+
+            const int fifoSize = samples * BUFFERED_BLOCKS;
             inputFifo.setSize(channels * 2, fifoSize);
             outputFifo.setSize(channels * 2, fifoSize);
-            workerBuffer.setSize(channels * 2, fifoSize);
+            workerBuffer.setSize(channels * 2, samples);
             workerMidiBuffer.ensureSize(fifoSize);
 
             isPrepared = true;
@@ -718,8 +720,14 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
     {
         juce::MemoryBlock state;
 
-        if (!jobContext.waitForCompletionWithTimeout(std::chrono::milliseconds(100)))
+        if (!jobContext.waitForCompletionWithTimeout(std::chrono::milliseconds(STATE_WAIT_TIMEOUT_MS)))
+        {
+            atk::logging::warning(
+                "PluginHost::getState",
+                "audio worker did not finish within 3000 ms; state was not saved"
+            );
             return;
+        }
 
         s.clear();
 
@@ -890,8 +898,14 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
         if (stateString.empty())
             return;
 
-        if (!jobContext.waitForCompletionWithTimeout(std::chrono::milliseconds(100)))
+        if (!jobContext.waitForCompletionWithTimeout(std::chrono::milliseconds(STATE_WAIT_TIMEOUT_MS)))
+        {
+            atk::logging::warning(
+                "PluginHost::restoreState",
+                "audio worker did not finish within 3000 ms; state was not restored"
+            );
             return;
+        }
 
         juce::ScopedLock lock(processorLock);
         auto* processor = hostProcessor.get();
@@ -920,7 +934,7 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
         }
         else if (!enabled && wasEnabled)
         {
-            jobContext.waitForCompletionWithTimeout(std::chrono::milliseconds(100));
+            jobContext.waitForCompletion();
         }
     }
 

@@ -316,6 +316,7 @@ public:
     void markRecoveryPending();
     void clearRecoveryPending();
     void resetSubscriptionBuffersAfterRecovery();
+    void prepareSubscriptionBuffer(SyncBuffer& buffer, bool isInput);
     void preparePendingDirectCallbacks();
     std::atomic<bool> activationRequested{false};
 

@@ -143,6 +143,11 @@ struct TaskNode
 class DependencyTaskGraph
 {
 public:
+    enum
+    {
+        MAX_TASKS = 1024
+    };
+
     using WakeCallback = void (*)();
 
     struct ScheduledTask
@@ -199,10 +204,13 @@ public:
         tasks[taskIndex]->pendingDependencies.fetch_add(1, std::memory_order_relaxed);
     }
 
-    void prepare()
+    bool prepare()
     {
         readyQueue.reset();
         completedCount.store(0, std::memory_order_relaxed);
+        totalTasks = 0;
+        if (tasks.size() > MAX_TASKS)
+            return false;
         totalTasks = tasks.size();
         const uint64_t nextGeneration = generation.fetch_add(1, std::memory_order_acq_rel) + 1;
 
@@ -213,6 +221,7 @@ public:
             if (tasks[i]->initialDependencyCount == 0)
                 readyQueue.tryPush({i, nextGeneration});
         }
+        return true;
     }
 
     void waitUntilDone()
@@ -272,8 +281,8 @@ public:
     void synchronizeTaskCompletions()
     {
         const auto executionGeneration = generation.load(std::memory_order_acquire);
-        for (const auto& task : tasks)
-            while (task->completedGeneration.load(std::memory_order_acquire) != executionGeneration)
+        for (size_t i = 0; i < totalTasks; ++i)
+            while (tasks[i]->completedGeneration.load(std::memory_order_acquire) != executionGeneration)
                 cpuPause();
     }
 
@@ -340,7 +349,7 @@ private:
     }
 
     std::vector<std::unique_ptr<TaskNode>> tasks;
-    LockFreeReadyQueue<ScheduledTask, 1024> readyQueue;
+    LockFreeReadyQueue<ScheduledTask, MAX_TASKS> readyQueue;
     std::atomic<size_t> completedCount{0};
     std::atomic<uint64_t> generation{0};
     std::atomic<uint64_t> progressGeneration{0};

@@ -1,5 +1,7 @@
 #include "ChordAnalyzerPlugin.h"
 
+#include <config.h>
+
 namespace
 {
 class ChordAnalyzerEditor
@@ -189,8 +191,8 @@ void ChordAnalyzerPlugin::fillInPluginDescription(juce::PluginDescription& descr
     description.name = description.descriptiveName = description.fileOrIdentifier = "Chord Analyzer";
     description.pluginFormatName = "Internal";
     description.category = "MIDI";
-    description.manufacturerName = "atkAudio";
-    description.version = "1.0";
+    description.manufacturerName = PLUGIN_AUTHOR;
+    description.version = PLUGIN_VERSION;
     description.uniqueId = description.deprecatedUid = description.name.hashCode();
     description.numInputChannels = description.numOutputChannels = 0;
     description.isInstrument = false;
