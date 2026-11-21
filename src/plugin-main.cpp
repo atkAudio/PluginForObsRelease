@@ -6,6 +6,7 @@ It is distributed under the AGPLv3 license. See the LICENSE file for details.
 #include "config.h"
 #include "core/atkaudio/obs_monitoring.h"
 #include "core/atkaudio/About.h"
+#include "core/atkaudio/DeviceIo2/DeviceIo2ObsControl.h"
 #include "core/atkaudio/GlobalSettings.h"
 #include "core/atkaudio/Logging.h"
 #include "core/atkaudio/midi_control/midi_control_controller.h"
@@ -99,6 +100,13 @@ void showDuplicateInstallAlert(obs_module_t* loadedModule)
 void onFrontendEvent(enum obs_frontend_event event, void* private_data)
 {
     UNUSED_PARAMETER(private_data);
+
+    // DeviceIo filters read this from the graphics thread, where the frontend API is not safe to call.
+    if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING
+        || event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED
+        || event == OBS_FRONTEND_EVENT_TRANSITION_CHANGED
+        || event == OBS_FRONTEND_EVENT_TRANSITION_DURATION_CHANGED)
+        atk::deviceIo2ObsControl::setTransitionDurationMs(obs_frontend_get_transition_duration());
 
     if (event == OBS_FRONTEND_EVENT_THEME_CHANGED)
     {

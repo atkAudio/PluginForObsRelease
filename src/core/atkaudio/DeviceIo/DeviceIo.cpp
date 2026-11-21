@@ -215,18 +215,7 @@ void atk::DeviceIo::getState(std::string& s)
     juce::XmlElement state("DEVICEIO_STATE");
     state.setAttribute("outputDelayMs", outputDelayMs.load(std::memory_order_acquire));
 
-    auto& dm = deviceIoApp->getDeviceManager();
-    auto setup = dm.getAudioDeviceSetup();
-
-    // Device selection and this instance's own channel subset are plugin-specific;
-    // rate/buffer are shared per-device state owned by AudioServer (see AudioDeviceHandler::setSetup).
-    auto* deviceSetup = new juce::XmlElement("DEVICESETUP");
-    deviceSetup->setAttribute("deviceType", dm.getCurrentAudioDeviceType());
-    deviceSetup->setAttribute("audioOutputDeviceName", setup.outputDeviceName);
-    deviceSetup->setAttribute("audioInputDeviceName", setup.inputDeviceName);
-    deviceSetup->setAttribute("audioDeviceInChans", setup.inputChannels.toString(2));
-    deviceSetup->setAttribute("audioDeviceOutChans", setup.outputChannels.toString(2));
-    state.addChildElement(deviceSetup);
+    state.addChildElement(deviceIoApp->createDeviceSetupXml().release());
 
     s = state.toString().toStdString();
 }

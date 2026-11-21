@@ -1,8 +1,8 @@
 #include <atkaudio/obs_monitoring.h>
 
 #include "core/atkaudio/DeviceIo/DeviceIo.h"
+#include "core/atkaudio/DeviceIo2/DeviceIo2ObsControl.h"
 #include <atomic>
-#include <obs-frontend-api.h>
 #include <obs-module.h>
 #include <juce_dsp/juce_dsp.h>
 
@@ -229,210 +229,31 @@ static void save(void* data, obs_data_t* settings)
     obs_data_set_string(settings, FILTER_ID, s.c_str());
 }
 
-struct scene_uuid_search
-{
-    const char* targetUuid = nullptr;
-    bool found = false;
-};
-
-static bool scene_contains_source_uuid_recursive(obs_scene_t* scene, const char* targetUuid);
-
-static bool scene_contains_source_uuid_item(obs_scene_t* scene, obs_sceneitem_t* item, void* privateData)
-{
-    UNUSED_PARAMETER(scene);
-
-    auto* search = (scene_uuid_search*)privateData;
-    if (search == nullptr || item == nullptr)
-        return true;
-
-    auto* itemSource = obs_sceneitem_get_source(item);
-    if (itemSource == nullptr)
-        return true;
-
-    auto* itemUuid = obs_source_get_uuid(itemSource);
-    if (itemUuid != nullptr && search->targetUuid != nullptr && strcmp(itemUuid, search->targetUuid) == 0)
-    {
-        search->found = true;
-        return false;
-    }
-
-    auto* childScene = obs_scene_from_source(itemSource);
-    if (childScene != nullptr && scene_contains_source_uuid_recursive(childScene, search->targetUuid))
-    {
-        search->found = true;
-        return false;
-    }
-
-    return true;
-}
-
-static bool scene_contains_source_uuid_recursive(obs_scene_t* scene, const char* targetUuid)
-{
-    if (scene == nullptr || targetUuid == nullptr || targetUuid[0] == '\0')
-        return false;
-
-    scene_uuid_search search;
-    search.targetUuid = targetUuid;
-    obs_scene_enum_items(scene, scene_contains_source_uuid_item, &search);
-    return search.found;
-}
-
-static bool source_uuid_exists_in_any_scene(const char* targetUuid)
-{
-    if (targetUuid == nullptr || targetUuid[0] == '\0')
-        return false;
-
-    obs_frontend_source_list sceneList = {};
-    obs_frontend_get_scenes(&sceneList);
-
-    bool found = false;
-    for (size_t i = 0; i < sceneList.sources.num; ++i)
-    {
-        obs_source_t* sceneSource = sceneList.sources.array[i];
-        if (sceneSource == nullptr)
-            continue;
-
-        obs_scene_t* scene = obs_scene_from_source(sceneSource);
-        if (scene != nullptr && scene_contains_source_uuid_recursive(scene, targetUuid))
-        {
-            found = true;
-            break;
-        }
-    }
-
-    obs_frontend_source_list_free(&sceneList);
-    return found;
-}
-
-static bool try_current_scene_contains_source_uuid(const char* targetUuid, bool& contains)
-{
-    contains = false;
-
-    if (targetUuid == nullptr || targetUuid[0] == '\0')
-        return false;
-
-    obs_source_t* currentSceneSource = obs_frontend_get_current_scene();
-    if (currentSceneSource == nullptr)
-        return false;
-
-    bool resolved = false;
-    obs_scene_t* currentScene = obs_scene_from_source(currentSceneSource);
-    if (currentScene != nullptr)
-    {
-        contains = scene_contains_source_uuid_recursive(currentScene, targetUuid);
-        resolved = true;
-    }
-
-    obs_source_release(currentSceneSource);
-    return resolved;
-}
-
-static bool try_transition_desired_bypass(obs_source_t* parent, bool& desiredBypass)
-{
-    const char* parentUuid = obs_source_get_uuid(parent);
-    if (parentUuid == nullptr || parentUuid[0] == '\0')
-        return false;
-
-    constexpr float kTransitionEpsilon = 0.001f;
-    obs_source_t* transition = obs_frontend_get_current_transition();
-    if (transition == nullptr)
-        return false;
-
-    bool resolved = false;
-    float transitionTime = obs_transition_get_time(transition);
-    bool transitionActive = transitionTime > kTransitionEpsilon && transitionTime < (1.0f - kTransitionEpsilon);
-    if (transitionActive)
-    {
-        obs_source_t* sourceSceneSrc = obs_transition_get_source(transition, OBS_TRANSITION_SOURCE_A);
-        obs_source_t* destSceneSrc = obs_transition_get_source(transition, OBS_TRANSITION_SOURCE_B);
-
-        bool sourceSceneResolved = false;
-        bool destSceneResolved = false;
-        bool inSourceScene = false;
-        bool inDestScene = false;
-
-        if (sourceSceneSrc != nullptr)
-        {
-            obs_scene_t* sourceScene = obs_scene_from_source(sourceSceneSrc);
-            if (sourceScene != nullptr)
-            {
-                inSourceScene = scene_contains_source_uuid_recursive(sourceScene, parentUuid);
-                sourceSceneResolved = true;
-            }
-            obs_source_release(sourceSceneSrc);
-        }
-
-        if (destSceneSrc != nullptr)
-        {
-            obs_scene_t* destScene = obs_scene_from_source(destSceneSrc);
-            if (destScene != nullptr)
-            {
-                inDestScene = scene_contains_source_uuid_recursive(destScene, parentUuid);
-                destSceneResolved = true;
-            }
-            obs_source_release(destSceneSrc);
-        }
-
-        if (sourceSceneResolved && destSceneResolved)
-        {
-            desiredBypass = !inDestScene;
-            if (inSourceScene && inDestScene)
-                desiredBypass = false;
-
-            resolved = true;
-        }
-    }
-
-    obs_source_release(transition);
-    return resolved;
-}
-
-static bool try_resolve_desired_bypass(obs_source_t* parent, bool& desiredBypass)
-{
-    const char* parentUuid = obs_source_get_uuid(parent);
-    if (parentUuid == nullptr || parentUuid[0] == '\0')
-        return false;
-
-    if (!source_uuid_exists_in_any_scene(parentUuid))
-    {
-        desiredBypass = false;
-        return true;
-    }
-
-    if (try_transition_desired_bypass(parent, desiredBypass))
-        return true;
-
-    bool inCurrentScene = false;
-    if (try_current_scene_contains_source_uuid(parentUuid, inCurrentScene))
-    {
-        desiredBypass = !inCurrentScene;
-        return true;
-    }
-
-    return false;
-}
-
 static void tick(void* data, float seconds)
 {
     struct adio_data* adio = (struct adio_data*)data;
     auto* settings = adio->settings;
 
-    // Cache transition duration from frontend API (called on main thread)
+    // Runs on the OBS graphics thread: the frontend API must not be called here.
     if (adio->followScene.load(std::memory_order_acquire))
     {
-        int transitionDurationMs = obs_frontend_get_transition_duration();
-        adio->fadeTimeSeconds.store(transitionDurationMs / 1000.0, std::memory_order_release);
+        adio->fadeTimeSeconds.store(
+            atk::deviceIo2ObsControl::getCurrentTransitionFadeSeconds(),
+            std::memory_order_release
+        );
     }
 
-    // Compute bypass state on main thread for audio thread to read
+    // Compute bypass state for the audio thread to read
     obs_source_t* parent = obs_filter_get_parent(adio->context);
 
     bool bypass = false;
     if (adio->followScene.load(std::memory_order_acquire) && parent)
     {
         bool desiredBypass = true;
+        auto* parentUuid = obs_source_get_uuid(parent);
+        std::string parentUuidString = parentUuid ? parentUuid : "";
 
-        if (try_resolve_desired_bypass(parent, desiredBypass))
+        if (atk::deviceIo2ObsControl::resolveDesiredBypass(parentUuidString, desiredBypass))
         {
             adio->desiredBypass = desiredBypass;
             adio->hasDesiredBypass = true;

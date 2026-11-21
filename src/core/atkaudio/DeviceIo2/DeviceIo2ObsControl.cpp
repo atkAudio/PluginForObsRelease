@@ -2,13 +2,20 @@
 
 #include "DeviceIo2ObsControl.h"
 
-#include <obs-frontend-api.h>
 #include <obs-module.h>
+
+#include <atomic>
 
 namespace atk::deviceIo2ObsControl
 {
+// Called from the OBS graphics thread and the JUCE message thread, so only libobs (which locks its own
+// state) may be used here. The frontend API reads Qt widgets owned by the UI thread; OBS clears them on
+// quit and on scene collection switches, which crashed tick() (atkAudio/PluginForObsRelease#64).
 namespace
 {
+constexpr int DEFAULT_TRANSITION_DURATION_MS = 300;
+std::atomic<int> cachedTransitionDurationMs = DEFAULT_TRANSITION_DURATION_MS;
+
 struct SceneUuidSearch
 {
     const char* targetUuid = nullptr;
@@ -57,41 +64,32 @@ bool sceneContainsSourceUuidRecursive(obs_scene_t* scene, const char* targetUuid
     return search.found;
 }
 
-bool sourceUuidExistsInAnyScene(const char* targetUuid)
+bool enumSceneContainsSourceUuid(void* privateData, obs_source_t* sceneSource)
 {
-    if (targetUuid == nullptr || targetUuid[0] == '\0')
-        return false;
-
-    obs_frontend_source_list sceneList = {};
-    obs_frontend_get_scenes(&sceneList);
-
-    bool found = false;
-    for (size_t i = 0; i < sceneList.sources.num; ++i)
+    auto* search = (SceneUuidSearch*)privateData;
+    obs_scene_t* scene = obs_scene_from_source(sceneSource);
+    if (scene != nullptr && sceneContainsSourceUuidRecursive(scene, search->targetUuid))
     {
-        obs_source_t* sceneSource = sceneList.sources.array[i];
-        if (sceneSource == nullptr)
-            continue;
-
-        obs_scene_t* scene = obs_scene_from_source(sceneSource);
-        if (scene != nullptr && sceneContainsSourceUuidRecursive(scene, targetUuid))
-        {
-            found = true;
-            break;
-        }
+        search->found = true;
+        return false;
     }
 
-    obs_frontend_source_list_free(&sceneList);
-    return found;
+    return true;
 }
 
-bool tryCurrentSceneContainsSourceUuid(const char* targetUuid, bool& contains)
+bool sourceUuidExistsInAnyScene(const char* targetUuid)
+{
+    SceneUuidSearch search;
+    search.targetUuid = targetUuid;
+    obs_enum_scenes(enumSceneContainsSourceUuid, &search);
+    return search.found;
+}
+
+bool tryCurrentSceneContainsSourceUuid(obs_source_t* programTransition, const char* targetUuid, bool& contains)
 {
     contains = false;
 
-    if (targetUuid == nullptr || targetUuid[0] == '\0')
-        return false;
-
-    obs_source_t* currentSceneSource = obs_frontend_get_current_scene();
+    obs_source_t* currentSceneSource = obs_transition_get_active_source(programTransition);
     if (currentSceneSource == nullptr)
         return false;
 
@@ -107,16 +105,9 @@ bool tryCurrentSceneContainsSourceUuid(const char* targetUuid, bool& contains)
     return resolved;
 }
 
-bool tryTransitionDesiredBypass(const char* parentUuid, bool& desiredBypass)
+bool tryTransitionDesiredBypass(obs_source_t* transition, const char* parentUuid, bool& desiredBypass)
 {
-    if (parentUuid == nullptr || parentUuid[0] == '\0')
-        return false;
-
     constexpr float kTransitionEpsilon = 0.001f;
-    obs_source_t* transition = obs_frontend_get_current_transition();
-    if (transition == nullptr)
-        return false;
-
     bool resolved = false;
     float transitionTime = obs_transition_get_time(transition);
     bool transitionActive = transitionTime > kTransitionEpsilon && transitionTime < (1.0f - kTransitionEpsilon);
@@ -162,7 +153,6 @@ bool tryTransitionDesiredBypass(const char* parentUuid, bool& desiredBypass)
         }
     }
 
-    obs_source_release(transition);
     return resolved;
 }
 
@@ -211,17 +201,26 @@ bool resolveDesiredBypass(const std::string& parentSourceUuid, bool& desiredBypa
         return true;
     }
 
-    if (tryTransitionDesiredBypass(uuid, desiredBypass))
-        return true;
+    // The frontend keeps its current transition on program output channel 0.
+    obs_source_t* programTransition = obs_get_output_source(0);
+    if (programTransition == nullptr)
+        return false;
 
-    bool inCurrentScene = false;
-    if (tryCurrentSceneContainsSourceUuid(uuid, inCurrentScene))
+    bool resolved = false;
+    if (obs_source_get_type(programTransition) == OBS_SOURCE_TYPE_TRANSITION)
     {
-        desiredBypass = !inCurrentScene;
-        return true;
+        resolved = tryTransitionDesiredBypass(programTransition, uuid, desiredBypass);
+
+        bool inCurrentScene = false;
+        if (!resolved && tryCurrentSceneContainsSourceUuid(programTransition, uuid, inCurrentScene))
+        {
+            desiredBypass = !inCurrentScene;
+            resolved = true;
+        }
     }
 
-    return false;
+    obs_source_release(programTransition);
+    return resolved;
 }
 
 bool readSourceLevelState(const std::string& parentSourceUuid, SourceLevelState& state)
@@ -244,9 +243,13 @@ bool readSourceLevelState(const std::string& parentSourceUuid, SourceLevelState&
     return true;
 }
 
+void setTransitionDurationMs(int durationMs)
+{
+    cachedTransitionDurationMs.store(durationMs, std::memory_order_release);
+}
+
 double getCurrentTransitionFadeSeconds()
 {
-    int transitionDurationMs = obs_frontend_get_transition_duration();
-    return transitionDurationMs / 1000.0;
+    return cachedTransitionDurationMs.load(std::memory_order_acquire) / 1000.0;
 }
 } // namespace atk::deviceIo2ObsControl

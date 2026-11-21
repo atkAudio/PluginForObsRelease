@@ -279,6 +279,31 @@ public:
         return state ? state->toString() : juce::String();
     }
 
+    // While the configured device is unavailable, persist the pending setup so the routing survives a save.
+    std::unique_ptr<juce::XmlElement> createDeviceSetupXml() const
+    {
+        if (deviceManager.getCurrentAudioDevice() == nullptr && pendingStateXml.isNotEmpty())
+        {
+            if (auto xml = juce::parseXML(pendingStateXml))
+            {
+                auto* pendingSetup = xml->hasTagName("DEVICESETUP") ? xml.get() : xml->getChildByName("DEVICESETUP");
+                if (pendingSetup != nullptr)
+                    return std::make_unique<juce::XmlElement>(*pendingSetup);
+            }
+        }
+
+        // Device selection and this instance's own channel subset are plugin-specific;
+        // rate/buffer are shared per-device state owned by AudioServer (see AudioDeviceHandler::setSetup).
+        auto setup = deviceManager.getAudioDeviceSetup();
+        auto deviceSetup = std::make_unique<juce::XmlElement>("DEVICESETUP");
+        deviceSetup->setAttribute("deviceType", deviceManager.getCurrentAudioDeviceType());
+        deviceSetup->setAttribute("audioOutputDeviceName", setup.outputDeviceName);
+        deviceSetup->setAttribute("audioInputDeviceName", setup.inputDeviceName);
+        deviceSetup->setAttribute("audioDeviceInChans", setup.inputChannels.toString(2));
+        deviceSetup->setAttribute("audioDeviceOutChans", setup.outputChannels.toString(2));
+        return deviceSetup;
+    }
+
     void setStateXml(const juce::String& xmlString)
     {
         if (xmlString.isEmpty())
