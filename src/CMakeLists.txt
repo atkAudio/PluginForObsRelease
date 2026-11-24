@@ -19,7 +19,7 @@ target_include_directories(
 set(JUCE_MODULES_ONLY ON CACHE BOOL "Only build JUCE modules" FORCE)
 
 # Keep each pinned JUCE version in its own reusable checkout.
-set(_juce_version 9.0.5)
+set(_juce_version 9.0.6)
 set(_juce_base_dir "${CMAKE_SOURCE_DIR}/_deps/juce-${_juce_version}")
 set(_juce_source_dir "${_juce_base_dir}/juce-src")
 set(FETCHCONTENT_BASE_DIR "${_juce_base_dir}")

@@ -16,6 +16,9 @@ public:
     void prepare(int numChannels, int maxNumSamples, double sampleRate);
     void process(float** buffer, int numChannels, int numSamples, double sampleRate) override;
 
+    // Whether the OBS filter has a sidechain source selected; any thread.
+    void setSidechainSelected(bool selected);
+
     // WindowModule interface
     void getState(std::string& s) override;
     void setState(std::string& s) override;

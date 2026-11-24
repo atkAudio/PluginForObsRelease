@@ -154,6 +154,8 @@ static void pluginhost_update(void* data, obs_data_t* s)
     ph->sample_rate = sample_rate;
 
     bool valid_sidechain = *sidechain_name && strcmp(sidechain_name, "none") != 0;
+    if (ph->pluginHost)
+        ph->pluginHost->setSidechainSelected(valid_sidechain);
     obs_weak_source_t* old_weak_sidechain = NULL;
 
     ph->sidechain_update_mutex.lock();

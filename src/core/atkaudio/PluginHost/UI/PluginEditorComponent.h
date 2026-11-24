@@ -221,38 +221,8 @@ private:
                         juce::StringArray inputChannelNames;
                         juce::StringArray outputChannelNames;
 
-                        // Get INPUT channel names from the loaded plugin
-                        int numPluginInputs = innerPlugin->getTotalNumInputChannels();
-                        for (int i = 0; i < numPluginInputs; ++i)
-                        {
-                            juce::String channelName;
-                            // Find which bus this channel belongs to
-                            for (int bus = 0; bus < innerPlugin->getBusCount(true); ++bus)
-                            {
-                                auto* busPtr = innerPlugin->getBus(true, bus);
-                                if (busPtr)
-                                {
-                                    int busStart = busPtr->getChannelIndexInProcessBlockBuffer(0);
-                                    int busEnd = busStart + busPtr->getNumberOfChannels();
-                                    if (i >= busStart && i < busEnd)
-                                    {
-                                        int chInBus = i - busStart;
-                                        auto layout = busPtr->getCurrentLayout();
-                                        auto channelType = layout.getTypeOfChannel(chInBus);
-                                        auto typeName = juce::AudioChannelSet::getChannelTypeName(channelType);
-                                        // Add bus name for non-main buses
-                                        if (bus == 0)
-                                            channelName = typeName;
-                                        else
-                                            channelName = typeName + " " + busPtr->getName();
-                                        break;
-                                    }
-                                }
-                            }
-                            if (channelName.isEmpty())
-                                channelName = "In " + juce::String(i + 1);
-                            inputChannelNames.add(channelName);
-                        }
+                        // INPUT channel names, including the sidechain while that bus is off
+                        inputChannelNames = hostProc->getInnerInputChannelNames();
 
                         // Get OUTPUT channel names from the loaded plugin
                         int numPluginOutputs = innerPlugin->getTotalNumOutputChannels();

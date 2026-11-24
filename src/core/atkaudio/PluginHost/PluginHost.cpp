@@ -25,13 +25,15 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
     {
         None = 0,
         PrepareProcessor = 1 << 0,
-        RestoreState = 1 << 1
+        RestoreState = 1 << 1,
+        SidechainSelection = 1 << 2
     };
 
     std::atomic<int> pendingUpdateFlags{UpdateFlags::None};
     std::atomic<int> pendingChannels{0};
     std::atomic<int> pendingSamples{0};
     std::atomic<double> pendingSampleRate{0.0};
+    std::atomic<bool> pendingSidechainSelected{false};
     std::string pendingStateString;
     juce::CriticalSection pendingStateLock;
 
@@ -299,6 +301,14 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
     {
         auto flags = pendingUpdateFlags.exchange(UpdateFlags::None);
 
+        // Before RestoreState, so a plugin loaded by the restore gets the right sidechain layout
+        // straight away instead of a second prepare.
+        if (flags & UpdateFlags::SidechainSelection)
+        {
+            if (auto* processor = hostProcessor.get())
+                processor->setObsSidechainSelected(pendingSidechainSelected.load());
+        }
+
         if (flags & UpdateFlags::PrepareProcessor)
         {
             int channels = pendingChannels.load();
@@ -316,6 +326,13 @@ struct atk::PluginHost::Impl : public juce::AsyncUpdater
             }
             restoreStateOnMessageThread(stateString);
         }
+    }
+
+    void setSidechainSelected(bool selected)
+    {
+        pendingSidechainSelected.store(selected);
+        pendingUpdateFlags.fetch_or(UpdateFlags::SidechainSelection);
+        triggerAsyncUpdate();
     }
 
     void prepareProcessorOnMessageThread(int channels, int samples, double rate)
@@ -1068,6 +1085,11 @@ void atk::PluginHost::prepare(int numChannels, int maxNumSamples, double sampleR
 void atk::PluginHost::process(float** buffer, int numChannels, int numSamples, double sampleRate)
 {
     pImpl->process(buffer, numChannels, numSamples, sampleRate);
+}
+
+void atk::PluginHost::setSidechainSelected(bool selected)
+{
+    pImpl->setSidechainSelected(selected);
 }
 
 void atk::PluginHost::getState(std::string& s)

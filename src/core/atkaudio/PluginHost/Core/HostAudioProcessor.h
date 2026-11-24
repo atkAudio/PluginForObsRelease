@@ -15,6 +15,7 @@ enum class EditorStyle
 class HostAudioProcessorImpl
     : public juce::AudioProcessor
     , private juce::ChangeListener
+    , private atk::AudioServer::Listener
 {
 public:
     explicit HostAudioProcessorImpl(int numChannels = 2);
@@ -56,6 +57,13 @@ public:
 
     juce::AudioPluginInstance* getInnerPlugin() const;
 
+    // Whether the OBS filter has a sidechain source selected. Message thread only.
+    void setObsSidechainSelected(bool selected);
+
+    // Input channel names of the hosted plugin, one per routing matrix column. Includes its
+    // sidechain channels while that bus is off, so the user can still route into them.
+    juce::StringArray getInnerInputChannelNames() const;
+
     void setInputChannelMapping(const std::vector<std::vector<bool>>& mapping);
 
     std::vector<std::vector<bool>> getInputChannelMapping() const;
@@ -92,7 +100,10 @@ private:
 
     static juce::AudioChannelSet getChannelSetForCount(int numChannels);
     void changeListenerCallback(juce::ChangeBroadcaster* source) final;
+    void audioServerDeviceListChanged() final;
     void configureInnerProcessingUnlocked(double sampleRate, int samplesPerBlock);
+    bool isInnerSidechainFed() const;
+    void updateInnerSidechainActivation();
 
     static inline juce::InterProcessLock appPropertiesLock{"atkAudioPluginHostLock"};
 
@@ -106,6 +117,11 @@ private:
     juce::String ownerFilterName;
     EditorStyle editorStyle = EditorStyle::thisWindow;
     bool active = false;
+    bool obsSidechainSelected = false;
+    // Fed state the hosted plugin's layout was last chosen for, and the channel count its
+    // sidechain bus takes when enabled (0 when it has none). Guarded by innerMutex.
+    bool configuredSidechainFed = false;
+    int innerSidechainChannels = 0;
     juce::ScopedMessageBox messageBox;
     AtkAudioPlayHead atkPlayHead;
 

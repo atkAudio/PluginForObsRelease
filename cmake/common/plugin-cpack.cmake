@@ -573,6 +573,9 @@ if(APPLE AND TARGET ${TARGET_NAME}_scanner)
         set(_sign_identity "-")
     endif()
 
+    # The scanner loads third-party plugins, so it needs the entitlements that
+    # lift the hardened runtime's library validation. Sign it first, then the
+    # bundle without --deep, which would re-sign the scanner and drop them.
     add_custom_command(
         TARGET ${TARGET_NAME}
         POST_BUILD
@@ -580,8 +583,11 @@ if(APPLE AND TARGET ${TARGET_NAME}_scanner)
             ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:${TARGET_NAME}_scanner>
             "$<TARGET_BUNDLE_DIR:${TARGET_NAME}>/Contents/MacOS/"
         COMMAND
-            codesign --force --sign "${_sign_identity}" --deep --timestamp -o runtime
-            "$<TARGET_BUNDLE_DIR:${TARGET_NAME}>"
+            codesign --force --sign "${_sign_identity}" --timestamp -o runtime --entitlements
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/macos/scanner.entitlements"
+            "$<TARGET_BUNDLE_DIR:${TARGET_NAME}>/Contents/MacOS/$<TARGET_FILE_NAME:${TARGET_NAME}_scanner>"
+        COMMAND
+            codesign --force --sign "${_sign_identity}" --timestamp -o runtime "$<TARGET_BUNDLE_DIR:${TARGET_NAME}>"
         VERBATIM
         COMMENT "Adding scanner to bundle and re-signing"
     )

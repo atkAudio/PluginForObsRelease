@@ -1,4 +1,5 @@
 #include "HostAudioProcessor.h"
+#include "SidechainRouting.h"
 #include "../../SharedPluginList.h"
 #include <atkaudio/midi_control/last_touched_parameter_tracker.h>
 #include "../UI/HostEditorWindow.h"
@@ -86,6 +87,9 @@ HostAudioProcessorImpl::HostAudioProcessorImpl(int numChannels)
 
     routingMatrix.initializeDefaultMapping(numChannels * 2);
 
+    if (auto* server = atk::AudioServer::getInstanceWithoutCreating())
+        server->addListener(this);
+
     atk::logging::info("HostAudioProcessorImpl::ctor", "initialized PluginHost processor");
 }
 
@@ -96,6 +100,9 @@ HostAudioProcessorImpl::~HostAudioProcessorImpl()
         if (inner != nullptr)
             atk::LastTouchedParameterTracker::getInstance().unregisterProcessor(*inner);
     }
+
+    if (auto* server = atk::AudioServer::getInstanceWithoutCreating())
+        server->removeListener(this);
 
     pluginList.removeChangeListener(this);
     atk::logging::info("HostAudioProcessorImpl::dtor", "destroyed PluginHost processor");
@@ -120,49 +127,13 @@ void HostAudioProcessorImpl::configureInnerProcessingUnlocked(double sampleRate,
     if (inner == nullptr)
         return;
 
-    bool layoutSupported = false;
-    auto layout = getBusesLayout();
+    configuredSidechainFed = isInnerSidechainFed();
+    auto choice = atk::ChooseInnerLayout(inner.get(), getBusesLayout(), configuredSidechainFed);
+    innerSidechainChannels = choice.numSidechainChannels;
 
-    if (inner->checkBusesLayoutSupported(layout))
+    if (choice.supported)
     {
-        inner->setBusesLayout(layout);
-        layoutSupported = true;
-    }
-
-    if (!layoutSupported && layout.inputBuses.size() > 1)
-    {
-        layout.inputBuses.removeLast();
-        layout.inputBuses.add(AudioChannelSet::stereo());
-        if (inner->checkBusesLayoutSupported(layout))
-        {
-            inner->setBusesLayout(layout);
-            layoutSupported = true;
-        }
-    }
-
-    if (!layoutSupported && layout.inputBuses.size() > 1)
-    {
-        layout.inputBuses.removeLast();
-        layout.inputBuses.add(AudioChannelSet::mono());
-        if (inner->checkBusesLayoutSupported(layout))
-        {
-            inner->setBusesLayout(layout);
-            layoutSupported = true;
-        }
-    }
-
-    if (!layoutSupported && layout.inputBuses.size() > 1)
-    {
-        layout.inputBuses.removeLast();
-        if (inner->checkBusesLayoutSupported(layout))
-        {
-            inner->setBusesLayout(layout);
-            layoutSupported = true;
-        }
-    }
-
-    if (layoutSupported)
-    {
+        inner->setBusesLayout(choice.layout);
         inner->setRateAndBufferSizeDetails(sampleRate, samplesPerBlock);
     }
     else
@@ -182,6 +153,95 @@ void HostAudioProcessorImpl::configureInnerProcessingUnlocked(double sampleRate,
 
     int pluginChannels = jmax(inner->getTotalNumInputChannels(), inner->getTotalNumOutputChannels());
     internalBuffer.setSize(pluginChannels, samplesPerBlock * 2, false, false, true);
+}
+
+bool HostAudioProcessorImpl::isInnerSidechainFed() const
+{
+    // OBS hands PluginHost its main channels followed by the same number of sidechain channels.
+    int numObsChannels = getMainBusNumInputChannels();
+
+    atk::SidechainFeedSources sources;
+    sources.numObsMainChannels = numObsChannels;
+    sources.numObsSidechainChannels = numObsChannels;
+    sources.obsSidechainSelected = obsSidechainSelected;
+    sources.numDeviceInputs = audioClient.getNumInputSubscriptions();
+
+    // The hosted plugin's main bus matches PluginHost's, so its sidechain columns follow it.
+    return atk::IsSidechainFed(routingMatrix.getInputMapping(), sources, numObsChannels);
+}
+
+void HostAudioProcessorImpl::updateInnerSidechainActivation()
+{
+    JUCE_ASSERT_MESSAGE_THREAD
+    const ScopedLock sl(innerMutex);
+
+    if (inner == nullptr || !active || innerSidechainChannels == 0)
+        return;
+
+    if (isInnerSidechainFed() == configuredSidechainFed)
+        return;
+
+    const auto sampleRate = getSampleRate();
+    const auto blockSize = getBlockSize();
+    if (sampleRate <= 0.0 || blockSize <= 0)
+        return;
+
+    // VST3 only accepts bus (de)activation while the plugin is inactive.
+    inner->releaseResources();
+    configureInnerProcessingUnlocked(sampleRate, blockSize);
+    inner->prepareToPlay(sampleRate, blockSize);
+
+    atk::logging::info(
+        "HostAudioProcessorImpl::updateInnerSidechainActivation",
+        configuredSidechainFed ? "enabled hosted plugin sidechain" : "disabled hosted plugin sidechain"
+    );
+}
+
+void HostAudioProcessorImpl::audioServerDeviceListChanged()
+{
+    // Device inputs only count once their device is open, which can happen after the
+    // routing was set, e.g. at OBS startup.
+    updateInnerSidechainActivation();
+}
+
+void HostAudioProcessorImpl::setObsSidechainSelected(bool selected)
+{
+    JUCE_ASSERT_MESSAGE_THREAD
+    obsSidechainSelected = selected;
+    updateInnerSidechainActivation();
+}
+
+StringArray HostAudioProcessorImpl::getInnerInputChannelNames() const
+{
+    JUCE_ASSERT_MESSAGE_THREAD
+    StringArray names;
+    AudioPluginInstance* plugin = nullptr;
+    int sidechainChannels = 0;
+    {
+        const ScopedLock sl(innerMutex);
+        plugin = inner.get();
+        sidechainChannels = innerSidechainChannels;
+    }
+    if (plugin == nullptr)
+        return names;
+
+    for (int bus = 0; bus < plugin->getBusCount(true); ++bus)
+    {
+        auto* busPtr = plugin->getBus(true, bus);
+        auto layout = busPtr->getCurrentLayout();
+        if (bus == 1 && layout.isDisabled() && sidechainChannels > 0)
+            layout = getChannelSetForCount(sidechainChannels);
+
+        for (int channel = 0; channel < layout.size(); ++channel)
+        {
+            auto typeName = AudioChannelSet::getChannelTypeName(layout.getTypeOfChannel(channel));
+            if (typeName.isEmpty())
+                typeName = "In " + String(names.size() + 1);
+            names.add(bus == 0 ? typeName : typeName + " " + busPtr->getName());
+        }
+    }
+
+    return names;
 }
 
 void HostAudioProcessorImpl::prepareToPlay(double sr, int bs)
@@ -383,6 +443,7 @@ void HostAudioProcessorImpl::changeProgramName(int, const String&)
 void HostAudioProcessorImpl::setInputChannelMapping(const std::vector<std::vector<bool>>& mapping)
 {
     routingMatrix.setInputMapping(mapping);
+    updateInnerSidechainActivation();
 }
 
 std::vector<std::vector<bool>> HostAudioProcessorImpl::getInputChannelMapping() const
@@ -592,6 +653,9 @@ void HostAudioProcessorImpl::setStateInformation(const void* data, int sizeInByt
             routingMatrix.setOutputMapping(outputMapping);
         }
     }
+
+    // The restored routing and device subscriptions may change whether the sidechain is fed.
+    updateInnerSidechainActivation();
 
     if (auto* pluginNode = xml->getChildByName("PLUGIN"))
     {
